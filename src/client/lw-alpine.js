@@ -2041,6 +2041,23 @@ var LW = (function () {
         var names = { sum: '合计', avg: '平均', count: '计数' };
         return (names[sm.type] || '') + ' ' + (sm.field || '') + ' = ' + (sm.value == null ? '' : sm.value);
     }
+    /* 这张网格里是否正有一个单元格处于就地编辑状态（编辑器是 td 里的
+       input/select）。补丁若此时重灌行，编辑器会连同 td 一起被换掉 */
+    function dbCellEditing(id) {
+        var el = S.E[id];
+        if (!el) return false;
+        return !!el.querySelector('.lw-dbgrid-body input.lw-input,' +
+            '.lw-dbgrid-body select.lw-input,.lw-dbgrid-body textarea.lw-input');
+    }
+
+    /* 行数据内容是否一致。x-for 按数组引用判断，赋一个新数组就整表重建，
+       所以内容没变时不要赋值（点击单元格回发的补丁就是这种） */
+    function sameRows(a, b) {
+        var x = a || [], y = b || [];
+        if (x.length !== y.length) return false;
+        try { return JSON.stringify(x) === JSON.stringify(y); } catch (e) { return false; }
+    }
+
     function syncDbGridExtras(id, n) {
         var r = S.R[id];
         if (!r) return;
@@ -2847,16 +2864,27 @@ var LW = (function () {
                 var csig2 = JSON.stringify(n.cols || null) + '|' + JSON.stringify(n.hg || null);
                 if (prev.__dbSig !== dsig) {
                     if (n.rows) {
-                        if (prev.__dbColSig === csig2) {
-                            /* 列没变只灌行数据（Alpine x-for 自动协调） */
-                            r.rows = n.rows || [];
+                        /* 就地编辑中：整表重灌行会把刚建出来的编辑器拆掉，
+                           用户看到的就是"点不开/改不了"。编辑器提交或取消
+                           时自己会发事件并带来新一轮补丁，这里先不记签名，
+                           等编辑器摘掉后再同步（否则这次变化就永远丢了） */
+                        if (dbCellEditing(id)) {
+                            /* 只放过列变化的重建以外的一切，等编辑结束 */
+                        } else if (prev.__dbColSig === csig2) {
+                            /* 列没变只灌行数据；内容其实没变就不要赋新数组 ——
+                               x-for 按引用比较，赋新数组会整表重建 */
+                            if (!sameRows(r.rows, n.rows)) r.rows = n.rows || [];
+                            prev.__dbColSig = csig2;
+                            prev.__dbSig = dsig;
                         } else {
                             /* 列变了整块重建（表头 + 行） */
                             rebuildDbGrid(id, n);
+                            prev.__dbColSig = csig2;
+                            prev.__dbSig = dsig;
                         }
-                        prev.__dbColSig = csig2;
+                    } else {
+                        prev.__dbSig = dsig;
                     }
-                    prev.__dbSig = dsig;
                 }
                 syncDbGridExtras(id, n);
             } else if (n.kind === 'tree') {

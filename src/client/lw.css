@@ -291,3 +291,10 @@ html, body {
     font-size: 12px;
     pointer-events: none;
 }
+
+/* ---------- 两级表头（TLWDBGrid.HeaderGroups）：表头文字居中 ----------
+   Ext 的分组表头原生居中，叶子表头却跟随列对齐（默认左），两行看起来
+   不在同一套对齐规则里。挂 lw-hg-grid 后两级表头文字统一居中；
+   只动表头，数据单元格仍按各自的 align。 */
+.lw-hg-grid .x-column-header-text-container { text-align: center; }
+.lw-hg-grid .x-column-header-text { text-align: center; }

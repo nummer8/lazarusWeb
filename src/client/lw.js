@@ -1499,6 +1499,11 @@ var LW = (function () {
         cfg.columns = dbColumns(node);
         cfg.columnLines = true;
         cfg.border = true;
+        /* 两级表头：Ext 的分组表头原生居中，叶子表头却跟随列对齐（左），
+           两行不统一。挂 lw-hg-grid 让 CSS 把两级表头文字都居中
+           （只动表头，数据单元格仍按各自 align） */
+        if ((node.hg || []).length)
+            cfg.cls = (cfg.cls ? cfg.cls + ' ' : '') + 'lw-hg-grid';
         cfg.selType = 'rowmodel';
         cfg.multiSelect = false;
         cfg.viewConfig = { stripeRows: true, markDirty: !node.readonly };
@@ -2430,6 +2435,9 @@ var LW = (function () {
                         cmp.__lwColSig = csig;
                         if (st) fillGridRows(st, n);
                         else cmp.reconfigure(buildGridStore(n), dbEditColumns(n));
+                        /* 两级表头出现/消失时同步表头居中类（hg 变化必走这里） */
+                        if ((n.hg || []).length) cmp.addCls('lw-hg-grid');
+                        else cmp.removeCls('lw-hg-grid');
                     }
                 }
                 selectDBRow(cmp, n);

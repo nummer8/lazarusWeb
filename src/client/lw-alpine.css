@@ -824,7 +824,9 @@ html, body {
 .lw-table.lw-hg th, .lw-table.lw-hg td { border-width: 0 1px 1px 0; }
 .lw-table.lw-hg thead tr:first-child th { border-top-width: 1px; }
 .lw-table thead.lw-thead-hg { position: sticky; top: 0; z-index: 2; }
-.lw-table thead.lw-thead-hg th { position: static; }
+/* 两级表头模式下整行居中：分组格本来居中，叶子格不居中的话
+   两行看起来不在同一套对齐规则里（用户会当成没对齐） */
+.lw-table thead.lw-thead-hg th { position: static; text-align: center; }
 .lw-table th.lw-th-grp { text-align: center; background: var(--lw-surface4); }
 
 /* ---------- drawgrid 自绘单元格（$lwDrawCell） ---------- */
