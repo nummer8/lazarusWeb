@@ -2629,6 +2629,7 @@ var LW = (function () {
 
     function applyPayload(p) {
         if (!p || !p.forms) return;
+        var winsBefore = document.querySelectorAll('.x-window').length;
         S.sid = p.sid || S.sid;
         var seen = {};
         p.forms.forEach(function (f) {
@@ -2661,6 +2662,17 @@ var LW = (function () {
                 try { w.close(); w.destroy(); } catch (e) { }
             }
         });
+        /* 全部窗体关闭且无登录窗体可回（点主窗体菜单"退出"）：
+           给个明确的结束提示，别留一张白纸（坑 35 的无登录版） */
+        if (winsBefore > 0 && document.querySelectorAll('.x-window').length === 0 &&
+            !document.getElementById('lw-end')) {
+            var end = document.createElement('div');
+            end.id = 'lw-end';
+            end.innerHTML =
+                '<div class="lw-end-box"><div class="lw-end-t">会话已结束</div>' +
+                '<div class="lw-end-s">窗体已全部关闭。服务端仍在运行时，刷新本页可重新进入。</div></div>';
+            document.body.appendChild(end);
+        }
         hideSplash();
     }
 
@@ -3154,6 +3166,14 @@ var LW = (function () {
             booting = false;
             if (err || !resp || !resp.ok) {
                 /* 会话过期 / 服务重启：清掉旧 sid，老老实实新建 */
+                forgetSid();
+                newSession(cfg);
+                return;
+            }
+            if (resp.forms && resp.forms.length === 0) {
+                /* 会话还活着但窗体已全部关闭（点过"退出"后刷新本页）：
+                   这条会话已经结束，空载荷渲染出来就是一张白纸 ——
+                   清掉旧 sid，开新会话重新进入 */
                 forgetSid();
                 newSession(cfg);
                 return;

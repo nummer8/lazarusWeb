@@ -1879,7 +1879,10 @@ var LW = (function () {
                 e.stopPropagation();
                 if (m.enabled === false) return;
                 closeAllMenus();
-                fire(m, 'OnClick');
+                /* fire 收数字 id（Ext 版的 fire 才收节点对象），传 m 会把
+                   整个节点当 id 发出去，服务端 JGetInt 直接抛
+                   EJSON —— 菜单点什么都没反应（坑 142） */
+                fire(m.id, 'OnClick');
             });
             if (m.items && m.items.length) {
                 el.addEventListener('mouseenter', function () {
@@ -2463,7 +2466,7 @@ var LW = (function () {
                     if (!m) return;
                     if (!m.items || !m.items.length) {
                         closeAllMenus();
-                        fire(m, 'OnClick');
+                        fire(m.id, 'OnClick');
                         return;
                     }
                     var existed = el.__lwOpen;
@@ -3164,6 +3167,7 @@ var LW = (function () {
 
     function applyPayload(p) {
         if (!p || !p.forms) return;
+        var winsBefore = document.querySelectorAll('.lw-win').length;
         S.sid = p.sid || S.sid;
         S.nFull++;
         S.tver = (typeof p.tver === 'number') ? p.tver : -1;
@@ -3196,6 +3200,18 @@ var LW = (function () {
         Object.keys(S.forms).forEach(function (id) {
             if (!seen[id]) closeFormWin(id);
         });
+        /* 所有窗体都关了且没有登录窗体可回（点主窗体菜单"退出"）：
+           给个明确的结束提示，别留一张白纸 —— 那看起来更像"坏了"
+           （坑 35 的无登录版） */
+        if (winsBefore > 0 && document.querySelectorAll('.lw-win').length === 0 &&
+            !document.getElementById('lw-end')) {
+            var end = document.createElement('div');
+            end.id = 'lw-end';
+            end.innerHTML =
+                '<div class="lw-end-box"><div class="lw-end-t">会话已结束</div>' +
+                '<div class="lw-end-s">窗体已全部关闭。服务端仍在运行时，刷新本页可重新进入。</div></div>';
+            document.body.appendChild(end);
+        }
         hideSplash();
     }
 
@@ -3604,6 +3620,14 @@ var LW = (function () {
         api('/lw/api/attach', null, function (resp, err) {
             booting = false;
             if (err || !resp || !resp.ok) {
+                forgetSid();
+                newSession(cfg);
+                return;
+            }
+            if (resp.forms && resp.forms.length === 0) {
+                /* 会话还活着但窗体已全部关闭（点过"退出"后刷新本页）：
+                   这条会话已经结束，空载荷渲染出来就是一张白纸 ——
+                   清掉旧 sid，开新会话重新进入 */
                 forgetSid();
                 newSession(cfg);
                 return;

@@ -1222,3 +1222,22 @@ html, body {
 .lw-ch-title { fill: var(--lw-ch-title); font-weight: bold; }
 .lw-ch-track { stroke: var(--lw-track2); }
 .lw-ch-sep   { stroke: var(--lw-surface); }
+
+/* ---------- 会话结束提示（所有窗体被关闭且无登录窗体可回） ---------- */
+.lw-end {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--lw-win-bg);
+    z-index: 9999;
+}
+.lw-end-box { text-align: center; padding: 32px 44px; }
+.lw-end-t {
+    font-size: 17px;
+    font-weight: bold;
+    color: var(--lw-fg);
+    margin-bottom: 8px;
+}
+.lw-end-s { font-size: 13px; color: var(--lw-fg2); }
