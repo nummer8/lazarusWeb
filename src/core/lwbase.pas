@@ -428,7 +428,10 @@ begin
   Result := ADef;
   if O = nil then Exit;
   d := O.Find(AName);
-  if (d <> nil) and (d.JSONType <> jtNull) then
+  { 客户端 bug 可能把整节点对象发过来当值（坑 142：菜单 fire(m)）。
+    标量才取值；对象/数组直接回默认 —— 别让一条坏请求把整个事件
+    处理打断，还刷一屏 EJSON }
+  if (d <> nil) and (d.JSONType in [jtString, jtNumber, jtBoolean]) then
     Result := d.AsString;
 end;
 
@@ -439,7 +442,7 @@ begin
   Result := ADef;
   if O = nil then Exit;
   d := O.Find(AName);
-  if (d <> nil) and (d.JSONType <> jtNull) then
+  if (d <> nil) and (d.JSONType in [jtString, jtNumber, jtBoolean]) then
     Result := d.AsInteger;
 end;
 
@@ -450,7 +453,7 @@ begin
   Result := ADef;
   if O = nil then Exit;
   d := O.Find(AName);
-  if (d <> nil) and (d.JSONType <> jtNull) then
+  if (d <> nil) and (d.JSONType in [jtString, jtNumber, jtBoolean]) then
     Result := d.AsBoolean;
 end;
 

@@ -231,6 +231,9 @@ begin
   if (C = nil) or (AReq = nil) then Exit;
   d := AReq.Find('val');
   if d = nil then Exit;
+  { val 应该是标量；客户端 bug 发来对象/数组时回默认，别抛 EJSON
+    把整个事件处理打断（坑 142） }
+  if not (d.JSONType in [jtString, jtNumber, jtBoolean]) then Exit;
   s := d.AsString;
 
   { TPageControl：浏览器把切换后的页签序号回传，服务端跟着切。
