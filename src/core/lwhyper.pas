@@ -797,8 +797,9 @@ end;
 procedure TLWHyperServer.Route(var ARequest: TFPHTTPConnectionRequest;
   var AResponse: TFPHTTPConnectionResponse);
 var
-  p, method, sid: string;
+  p, method, sid, iconPath: string;
   idx: Integer;
+  ms: TMemoryStream;
 begin
   method := UpperCase(ARequest.Method);
   p := PathPart(ARequest.URL);
@@ -822,7 +823,29 @@ begin
   end;
   if p = '/favicon.ico' then
   begin
-    AResponse.Code := 204;
+    { 站点图标：root 下 favicon.ico → exe 同目录 → 204 兜底。
+      hyper 自己就该答 favicon，别把这种高频小请求转发给 worker }
+    iconPath := IncludeTrailingPathDelimiter(FCfg.Root) + 'favicon.ico';
+    if not FileExists(iconPath) then
+      iconPath := ExtractFilePath(ParamStr(0)) + 'favicon.ico';
+    if FileExists(iconPath) then
+    begin
+      ms := TMemoryStream.Create;
+      try
+        ms.LoadFromFile(iconPath);
+        AResponse.Code := 200;
+        AResponse.CodeText := 'OK';
+        AResponse.ContentType := 'image/x-icon';
+        AResponse.SetCustomHeader('Cache-Control', 'public, max-age=86400');
+        AResponse.ContentStream := ms;
+        AResponse.FreeContentStream := True;
+      except
+        ms.Free;
+        AResponse.Code := 204;
+      end;
+    end
+    else
+      AResponse.Code := 204;
     Exit;
   end;
 

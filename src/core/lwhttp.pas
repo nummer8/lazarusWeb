@@ -1094,6 +1094,7 @@ begin
   Result := Result + LineEnding + '<html><head><meta charset="utf-8">';
   Result := Result + LineEnding + '<meta name="viewport" content="width=device-width, initial-scale=1">';
   Result := Result + LineEnding + '<title>' + FCfg.Title + '</title>';
+  Result := Result + LineEnding + '<link rel="icon" href="/favicon.ico" type="image/x-icon">';
   Result := Result + LineEnding + '<link rel="stylesheet" href="/ext/' + ver + '/build/classic/theme-' + th + '/resources/theme-' + th + '-all.css">';
   if hasChartCss then
   begin
@@ -1132,6 +1133,7 @@ begin
   s := s + LineEnding + '<html><head><meta charset="utf-8">';
   s := s + LineEnding + '<meta name="viewport" content="width=device-width, initial-scale=1">';
   s := s + LineEnding + '<title>' + FCfg.Title + '</title>';
+  s := s + LineEnding + '<link rel="icon" href="/favicon.ico" type="image/x-icon">';
   s := s + LineEnding + '<link rel="stylesheet" href="/lw/lw.css?v=' + LW_VERSION + '">';
   s := s + LineEnding + '<link rel="stylesheet" href="/lw/lw-alpine.css?v=' + LW_VERSION + '">';
   s := s + LineEnding + '<script src="/lw/alpine.min.js" defer></script>';
@@ -1963,7 +1965,16 @@ begin
 
   if p = '/favicon.ico' then
   begin
-    AResponse.Code := 204;
+    { 站点图标：先找 --root 下的 favicon.ico，再找 exe 同目录。
+      都没有时保持 204 —— 浏览器显示默认图标，行为同旧版 }
+    if FileExists(IncludeTrailingPathDelimiter(FCfg.Root) + 'favicon.ico') then
+      ServeFile(IncludeTrailingPathDelimiter(FCfg.Root) + 'favicon.ico', AResponse)
+    else if FileExists(ExtractFilePath(ParamStr(0)) + 'favicon.ico') then
+      ServeFile(ExtractFilePath(ParamStr(0)) + 'favicon.ico', AResponse)
+    else
+      AResponse.Code := 204;
+    if AResponse.Code = 200 then
+      AResponse.SetCustomHeader('Cache-Control', 'public, max-age=86400');
     Exit;
   end;
 
