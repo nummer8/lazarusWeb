@@ -1,6 +1,6 @@
 # lazarusWeb
 
-Lazarus 桌面程序的 Web 化运行，参考 uniGUI 的思路，但用**真实的 LCL 控件树**直接序列化成 Alpine.js 或 Ext JS 界面。业务程序只需要把窗体基类从 `TForm` 改成 `TLWForm`，其余代码（事件、属性、`.lfm`）原样保留，就能以服务程序的形式跑在浏览器里。
+Lazarus 桌面程序的 Web 化运行时 —— 参考 uniGUI 的思路，但用**真实的 LCL 控件树**直接序列化成 Alpine.js 或 Ext JS 界面。业务程序只需要把窗体基类从 `TForm` 改成 `TLWForm`，其余代码（事件、属性、`.lfm`）原样保留，就能以服务程序的形式跑在浏览器里。
 
 浏览器 (Alpine.js 或 Ext JS 7.0.0) 服务端 (Lazarus, nogui widgetset)
 | 浏览器端 (Ext JS 7.0.0 或 Alpine.js) | 通信 | 服务端 (Lazarus, nogui widgetset) |
@@ -13,11 +13,6 @@ Lazarus 桌面程序的 Web 化运行，参考 uniGUI 的思路，但用**真实
 - Alpine.js（内置依赖）
 - Ext JS 7.0.0（GPLv3 版，**可选**：发布包不包含，需自行从 Sencha 官方渠道获取后放入 `ext-7.0.0\`；不放置时默认使用内置的 Alpine.js 渲染层）  
 - **Ext 支持为可选功能，ext-js 文件由用户自行获取，其授权合规由使用者自行负责。**  
-
-## 安装lazarusWeb
-1、lwserver.lpk  只编译  
-2、lwcore.lpk   只编译    
-3、lwdesign.lpk 编译并安装  
 
 ## 跨平台构建矩阵（宿主 → 目标）
 
@@ -209,18 +204,18 @@ TMainForm = class(TLWForm)   // 原来是 class(TForm)
 | 半扁平 | `<exe目录>/lw/lw.js`，或 `<root>/lw/lw.js`（旧部署的 `<root>/client/` 仍兼容） |
 | 兜底 | 从 root 逐级向上找 `src/client/lw.js` |
 
-最小自包含部署目录：
+最小自包含部署目录（**默认 Alpine.js 渲染层，不需要 ext 目录**）：
 
 ```
 MyApp/
   MyApp.exe
-  ext-7.0.0/           Ext JS 目录
-  src/client/lw.js     86 KB
-  src/client/lw.css    3 KB
+  src/client/lw-alpine.js    Alpine 渲染层（+ lw-alpine.css、alpine.min.js）
+  favicon.ico                可选：浏览器标签图标（放 exe 同目录或 --root 目录皆可）
+  ext-<版本>/                可选：Ext JS 渲染层（约 75MB，需 --client=ext 显式切换）
 ```
 
-验证：启动后看横幅的 `Root :` 行，或
-`curl -o /dev/null -w "%{http_code}" http://127.0.0.1:8090/lw/lw.js`（应为 200）。
+验证：启动后看横幅的 `Root :` 与 `Client :` 行（默认应为 alpine），或
+`curl -o /dev/null -w "%{http_code}" http://127.0.0.1:8090/lw/lw-alpine.js`（应为 200）。
 
 ### 启动演示
 
@@ -443,6 +438,7 @@ end;
 | `GET /lw/ajax/<名字>` | **自定义 AJAX 端点**：`TLWApp.AddAjax(name, handler)` 注册，第三方 JS 直接 fetch |
 | `GET /lw/healthz` | 健康检查（LB/k8s 探针）：`{"ok":true,"sessions":..,"uptime":..}` |
 | `GET /ext/<版本>/<路径>` | Ext JS 静态资源（两版本并存） |
+| `GET /favicon.ico` | 站点图标：`--root` 目录 → exe 同目录 → 都没有回 204；命中时 200 + `Cache-Control: public, max-age=86400`。两套外壳 HTML head 均带 `<link rel="icon">` |
 
 
 ## 控件支持度（实测）
@@ -728,5 +724,3 @@ Copyright (c) 2026 szlbz(秋风) QQ:315795176
 <img width="1817" height="1179" alt="QQ_2026-11-12_17-18-11" src="https://github.com/user-attachments/assets/8b8df772-352e-43ad-97e9-f559cfc02b66" />
 <img width="1824" height="1173" alt="QQ_2026-11-13_09-15-53" src="https://github.com/user-attachments/assets/90ca9690-cba7-48da-bb30-1cefebaad4d1" />
 <img width="1770" height="1118" alt="QQ_2026-11-14_05-46-50" src="https://github.com/user-attachments/assets/c9a81e47-b5a5-45a1-93a2-fd6443108711" />
-<img width="1638" height="1120" alt="QQ_2026-11-14_10-22-53" src="https://github.com/user-attachments/assets/6569bbb4-c090-455e-80c8-aac0485f5b10" />
-<img width="1646" height="1118" alt="QQ_2026-11-14_10-24-05" src="https://github.com/user-attachments/assets/c172ee7f-9e72-4355-b20e-41c0f11ee99d" />
