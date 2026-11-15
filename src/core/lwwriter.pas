@@ -85,6 +85,15 @@ procedure LWKindProfReport;
 
 implementation
 
+type
+  { TCustomEditButton.ButtonCaption / ButtonWidth 在 LCL 里是 protected，
+    跨单元读不到；用派生类重声明为 public（不改 LCL 源码） }
+  TCustomEditButtonAccess = class(TCustomEditButton)
+  public
+    property ButtonCaption;
+    property ButtonWidth;
+  end;
+
 { ---- 临时剖析：按 kind 累计 WriteKindProps 的耗时（LW_KIND_PROF=1 打开）---- }
 var
   GKindProfOn: Boolean = False;
@@ -1730,9 +1739,15 @@ begin
   end
   else if AKind = 'editbtn' then
   begin
-    { TCustomEditButton 族（TFileNameEdit 等）：本体是单行编辑框 + "…"按钮 }
+    { TCustomEditButton 族（TFileNameEdit 等）：本体是单行编辑框 + 按钮 }
     O.Add('text', TCustomEditButton(C).Text);
     O.Add('readonly', TCustomEditButton(C).ReadOnly);
+    { 按钮文字/宽度按 LCL 的实际值下发（ButtonCaption='ok' 就显示 ok）；
+      仅默认情况（空文字 / 宽度未设）不下发，客户端回退 "…" + 26px }
+    if TCustomEditButtonAccess(C).ButtonCaption <> '' then
+      O.Add('btncap', TCustomEditButtonAccess(C).ButtonCaption);
+    if TCustomEditButtonAccess(C).ButtonWidth > 0 then
+      O.Add('btnw', TCustomEditButtonAccess(C).ButtonWidth);
   end
   else if AKind = 'button' then
   begin

@@ -20,7 +20,7 @@ uses
   Classes, SysUtils, Graphics, Controls, Forms, TypInfo, fpjson;
 
 const
-  LW_VERSION = '0.9.0';
+  LW_VERSION = '0.9.2';
   { Alpine.js 客户端外壳引用的 alpine.min.js 版本（src\client\alpine.min.js）。
     换文件时同步改这里，横幅显示用 }
   ALPINE_VERSION = '3.14.9';
