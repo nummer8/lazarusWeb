@@ -288,13 +288,20 @@ INI 配置（模板 `lazarusWeb.ini.sample`，放 exe 旁改名 `<exe名>.ini` �
 
 ```
 yourapp.exe
-src\client\lw-alpine.js    （+ lw-alpine.css、alpine.min.js）
-favicon.ico                （可选：浏览器标签图标）
+src\client\alpine.min.js    Alpine.js 本体（44KB，defer 加载，不走 CDN）
+src\client\lw-alpine.js     渲染/协调器（177KB）
+src\client\lw-alpine.css    样式，含亮/暗主题 CSS 变量（41KB）
+favicon.ico                 （可选：浏览器标签图标）
 ```
+
+三个 alpine 文件**缺一不可**：少 `alpine.min.js`（或 `lw-alpine.js`）会被
+自动探测判为 alpine 不可用而回退 ext；少 `lw-alpine.css` 页面能跑但没有任何
+样式。文件可平铺放（与 exe 同目录或 `lw\` 子目录均兼容，查找顺序见 README
+「部署」节的扁平/半扁平布局表）。
 
 Ext JS 渲染层为**可选**（默认不部署）：需要时把 `ext-x.x.x\` 放到 exe 旁
 （完整约 75MB；精简版约 23MB，见 `tools\make_ext_min.bat`），并用
-`--client=ext` 显式切换。
+`--client=ext` 显式切换，前端文件换成 `lw.js` + `lw.css`。
 
 ### 站点图标（favicon）
 
