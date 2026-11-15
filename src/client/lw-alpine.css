@@ -721,6 +721,12 @@ html, body {
     min-width: 26px;
     border-radius: 0 3px 3px 0 !important;
     border-left: 0 !important;
+    /* 覆盖 .lw-btn 的 3px 12px：26px 宽的按钮被左右内边距占满，
+       "…"被挤到右缘不居中；弹性格式化 + 清零内边距还原居中 */
+    padding: 0 !important;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .lw-btn {

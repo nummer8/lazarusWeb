@@ -1134,12 +1134,18 @@ var LW = (function () {
                     ro + ' ' + dis + ' @change="' + evAttr(id, 'OnChange', '{val:' + r + '.txt}') +
                     '" @focus="' + evAttr(id, 'OnEnter') + '" @blur="' + evAttr(id, 'OnExit') + '"/>';
 
-            case 'editbtn':
+            case 'editbtn': {
+                /* 按钮文字/宽度取 LCL 的 ButtonCaption / ButtonWidth；
+                   服务端只在非默认时下发，缺省回退 "…" + CSS 的 26px */
+                var ebCap = (node.btncap != null && node.btncap !== '') ? node.btncap : '…';
+                var ebW = (node.btnw > 0) ? ('width:' + (node.btnw | 0) + 'px;') : '';
                 return '<div class="lw-editbtn"><input type="text" class="lw-input" style="' + fs +
                     '" x-model="' + r + '.txt"' + ro + ' ' + dis +
                     ' @change="' + evAttr(id, 'OnChange', '{val:' + r + '.txt}') + '"/>' +
-                    '<button type="button" class="lw-btn lw-eb-btn" ' + dis +
-                    ' @click="' + evAttr(id, 'OnButtonClick') + '">…</button></div>';
+                    '<button type="button" class="lw-btn lw-eb-btn" style="' + ebW + '" ' + dis +
+                    ' @click="' + evAttr(id, 'OnButtonClick') + '">' +
+                    accHtml(esc(ebCap)) + '</button></div>';
+            }
 
             case 'memo':
             case 'dbmemo':
