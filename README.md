@@ -195,24 +195,31 @@ TMainForm = class(TLWForm)   // 原来是 class(TForm)
 3. 都找不到 → `C://LazarusWeb`。
 4. 显式 `--root=<路径>` 优先级最高，压过以上三条。
 
-`/lw/lw.js`、`/lw/lw.css` 的查找也做了多路回退，下面几种布局都能跑：
+`/lw/lw.js`、`/lw/lw.css`（以及 alpine 的 `/lw/lw-alpine.js`、`/lw/lw-alpine.css`、
+`/lw/alpine.min.js`）的查找都做了多路回退，下面几种布局都能跑：
 
-| 布局 | 需要的文件 |
+| 布局 | 需要的文件（按渲染层取其中一套） |
 |---|---|
-| 标准仓库布局（推荐） | `<root>/src/client/lw.js`、`lw.css` |
-| 扁平部署 | `lw.js` / `lw.css` 与 exe 同目录 |
-| 半扁平 | `<exe目录>/lw/lw.js`，或 `<root>/lw/lw.js`（旧部署的 `<root>/client/` 仍兼容） |
-| 兜底 | 从 root 逐级向上找 `src/client/lw.js` |
+| 标准仓库布局（推荐） | `<root>/src/client/lw.js`、`lw.css`；或 `lw-alpine.js`、`lw-alpine.css`、`alpine.min.js` |
+| 扁平部署 | 上述文件与 exe 同目录 |
+| 半扁平 | `<exe目录>/lw/` 或 `<root>/lw/` 下放上述文件（旧部署的 `<root>/client/` 仍兼容） |
+| 兜底 | 从 root 逐级向上找 `src/client/` 下的同名文件 |
 
 最小自包含部署目录（**默认 Alpine.js 渲染层，不需要 ext 目录**）：
 
 ```
 MyApp/
   MyApp.exe
-  src/client/lw-alpine.js    Alpine 渲染层（+ lw-alpine.css、alpine.min.js）
-  favicon.ico                可选：浏览器标签图标（放 exe 同目录或 --root 目录皆可）
-  ext-<版本>/                可选：Ext JS 渲染层（约 75MB，需 --client=ext 显式切换）
+  src/client/alpine.min.js   44 KB   Alpine.js 本体（defer 加载，不走 CDN）
+  src/client/lw-alpine.js    177 KB  渲染/协调器
+  src/client/lw-alpine.css    41 KB  样式（亮/暗主题 CSS 变量都在这里）
+  favicon.ico                       可选：浏览器标签图标（放 exe 同目录或 --root 目录皆可）
+  ext-<版本>/                       可选：Ext JS 渲染层（约 75MB，需 --client=ext 显式切换）
 ```
+
+（走 Ext 渲染层时对应换成 `src/client/lw.js` + `lw.css` + `ext-<版本>/`；
+三个 alpine 文件缺一不可——少了 `alpine.min.js` 自动探测会判 alpine 不可用并
+回退 ext，少了 css 页面能跑但完全没样式。）
 
 验证：启动后看横幅的 `Root :` 与 `Client :` 行（默认应为 alpine），或
 `curl -o /dev/null -w "%{http_code}" http://127.0.0.1:8090/lw/lw-alpine.js`（应为 200）。
