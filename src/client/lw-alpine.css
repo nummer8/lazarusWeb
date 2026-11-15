@@ -1040,6 +1040,13 @@ html, body {
     background: var(--lw-surface);
     overflow: hidden;
 }
+/* TPageControl / TTabControl 的客户区描边：模板给的是 .lw-tabs-body
+   而非 .lw-body，.lw-body.lw-boxed 的边框规则匹配不到 → 客户区没边框。
+   补同款 1px 描边；box-sizing 防止边框把盒子顶出 2px（坑 110 教训） */
+.lw-tabs-body.lw-boxed {
+    border: 1px solid var(--lw-border);
+    box-sizing: border-box;
+}
 .lw-tabcard {
     position: absolute;
     left: 0; top: 0; right: 0; bottom: 0;
