@@ -3,7 +3,7 @@
 > 版本 0.9.0 · 更新日期 2026-11-09
 > 配套文档：`README.md`（快速上手）、`docs/COMPARISON_unigui.md`（与 uniGUI 对照）、
 > `docs/CONTROL_MATRIX.md` / `docs/DB_AWARE_MATRIX.md`（控件支持度实测矩阵）、
-> `docs/NOTES.md`（108 个坑的踩坑实录，坑 23/66 等旧结论已被后续坑修订）、`deploy/README.md`（HTTPS/反向代理/集群）。
+> `docs/NOTES.md`（146 个坑的踩坑实录，坑 23/66/108 等旧结论已被后续坑修订）、`deploy/README.md`（HTTPS/反向代理/集群）。
 
 ---
 
@@ -36,7 +36,7 @@ lazarusWeb 是 **Lazarus 桌面程序的 Web 化运行时**：把真实运行的
 ### 1.3 总体架构
 
 ```
-浏览器 (Ext JS 7.5.1 或 Alpine.js 3.14.9)   服务端 (FPC 3.3.1 + Lazarus, nogui)
+浏览器 (Alpine.js 3.14.9 默认 / Ext JS x.x.x 可选)   服务端 (FPC 3.3.1 + Lazarus, nogui)
 ┌────────────────────────────┐  WS/长轮询 ┌──────────────────────────────┐
 │ lw.js 或 lw-alpine.js       │  JSON     │ lwhttp   fphttpserver 多线程   │
 │  Ext.window/panel/grid/... │ ←────────→ │ lwsession 每标签页一棵 LCL 树  │
@@ -80,7 +80,11 @@ nogui widgetset 缺显示器、缺画布，直接 `TForm.Create` 就 AV（坑 1�
 - 事件捕获：Ext 组件事件带上 `id/ev/val`（连着 WS 时走 WS 帧，否则 `POST /lw/api/event`）；
 - **长轮询 `/lw/api/poll` 是唯一推送通道**：推送统一入会话队列带序号（模态/消息框/遮罩/下载指令），各页签带 `after` 游标各取各的；
 - **WebSocket `/lw/ws` 只传事件请求/响应**：连上后事件走 WS 帧（长轮询不停），断了自动退回 HTTP `/lw/api/event`；
-- 跨页签：sid 存 localStorage，新标签页 `attach` 到已有会话，按游标各取各的推送。
+- 会话归属：sid 存 **sessionStorage**（页签级）。刷新留在同一会话；
+  **关标签页即失效**（下次打开重新登录）；新标签页默认是独立会话。
+  `/lw/api/attach` 仍在：显式带同一个 sid 打开（刷新、或业务自己把
+  sid 传给新页签）就挂到已有会话上，按游标各取各的推送。
+  `localStorage['lw.persist']='1'` 可改成跨页签/跨重启保持。
 
 ### 2.4 lwsession.pas —— 会话与同步模态（976 行）
 
@@ -128,7 +132,7 @@ fphttpserver 多线程服务器，路由表：
 `--root=` 显式指定。`--trust-proxy` 时客户端 IP 取 `X-Forwarded-For`。
 
 **Ext 目录解析与版本无关**（坑 40）：URL 里的版本段只是一个"目录名"，不再
-和 7.0.0 / 7.5.1 这些具体版本号绑定。
+和 7.0.0 / x.x.x 这些具体版本号绑定。
 
 ```
 ExtRootFor(ver):
@@ -174,7 +178,8 @@ CSS 三件套是否存在回落 crisp → classic → neptune，都不再写死�
 ### 2.10 数据感知（lwdbgrid / lwdbnav + LCL 原生 DB 控件）
 
 - `TLWDBGrid`：行定位、列头排序、单元格编辑回写、`PageSize` 分页、
-  `ShowFilter` 过滤条、`SummaryType(gsSum/gsAvg/gsCount)` 汇总条；
+  `ShowFilter` 过滤条、`SummaryType(gsSum/gsAvg/gsCount)` 汇总条、
+  `HeaderGroups` 两级表头（`hg=[{t,a,n}]`，Alpine 两行 thead / Ext 嵌套列）；
 - `TDBNavigator` 在 nogui 下构造即崩（位图图元链，坑 23）→ `LWNewNavigator`
   工厂出安全子类，lfm 靠 `RegisterClassAlias` 自动落子类，用户代码写原生类型；
 - 12 种 data-aware 控件全部实测（`docs/DB_AWARE_MATRIX.md`），三条硬规则见
@@ -184,7 +189,7 @@ CSS 三件套是否存在回落 crisp → classic → neptune，都不再写死�
 
 | 单元 | 能力 |
 |---|---|
-| `lwchart.pas` | `TLWChart` ctLine/ctBar/ctPie，ext-7.5.1 charts 包渲染，运行时切类型 |
+| `lwchart.pas` | `TLWChart` ctLine/ctBar/ctPie，ext-x.x.x charts 包渲染，运行时切类型 |
 | `lwreport.pas` | 报表引擎：可打印 HTML（A4/@media print/thead 逐页重复）+ CSV（BOM+CRLF）+ **真 XLSX**（zipper 打包 OOXML，零第三方依赖） |
 | `lwdiff.pas` | 增量补丁（`--patch=1`）：两次 BuildPayload 的 forms 数组 diff 出 ops，客户端按 `tver` 自愈回全量（设计见 `docs/SCALE.md` §2） |
 | `lwui.pas` | `TLWGauge` / `TLWColorPicker` / 会话级遮罩 |
@@ -232,7 +237,7 @@ fphttpserver（每请求一线程）
 ### 3.1 环境与构建
 
 - FPC 3.3.1 + Lazarus（本机 `c:\111\fpc`、`c:\111\lazarus`）；
-- Ext JS 7.0.0 / 7.5.1（仓库根目录已带）。
+- Ext JS 7.0.0 / x.x.x（仓库根目录已带）。
 
 ```bat
 cd c:\lazarusWeb
@@ -261,7 +266,7 @@ Linux/macOS 用 `./build.sh`，`LAZBUILD` 环境变量可覆盖 lazbuild 路径�
 [lazarusWeb]
 Port=8090
 Theme=crisp
-ExtDir=ext-7.5.1
+ExtDir=ext-x.x.x
 ;Patch=0
 ;Client=ext
 ```
@@ -317,7 +322,7 @@ TMainForm = class(TLWForm)   // 原来是 class(TForm)
 
 ### 3.5 部署
 
-- **自包含部署**：exe + `ext-7.5.1/`（约 75MB）+ `src/client/lw.js`(86KB) + `lw.css`。
+- **自包含部署**：exe + `ext-x.x.x/`（约 75MB）+ `src/client/lw.js`(86KB) + `lw.css`。
   缺 lw.js 会白屏（Ext 加载完等不到渲染脚本），启动横幅会警告；
 - **HTTPS**：fphttpserver 无 TLS，由 nginx/Caddy 反代终结
   （现成配置 `deploy/nginx.conf`、`deploy/Caddyfile`）。反代后加 `--trust-proxy`；
@@ -358,7 +363,7 @@ TMainForm = class(TLWForm)   // 原来是 class(TForm)
 
 ### 3.8 踩坑实录
 
-108 个坑（编号 1–108，缺 92 无对应记录）全部沉淀在 `docs/NOTES.md`
+截至 2026-11-15 共 146 个坑全部沉淀在 `docs/NOTES.md`
 （nogui 基础设施 → fpjson/编码 → SQLite/WAL → 设计期包 → multipart 安全 →
 对话框钩子 → WebSocket → 多页签游标 → GUI 面板 → lfm 化改造 → 性能剖析 →
 压测排障），是这份框架最贵的资产——每个坑都带根因分析和验证手段。

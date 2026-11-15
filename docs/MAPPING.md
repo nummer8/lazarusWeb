@@ -54,14 +54,16 @@
 反例：`TFileNameEdit` / `TDateEdit` / `TCalcEdit` / `TDirectoryEdit` /
 `TTimeEdit` / `TEditButton` 在 LCL 里继承链是
 `TCustomEditButton → TCustomAbstractGroupedEdit → TCustomControl`，
-**不是** `TCustomEdit` 的后代，所以仍是占位（见文末 🔶 清单）。
+**不是** `TCustomEdit` 的后代，不会自动落到 `edit`。其中 `TDateEdit`/`TTimeEdit`
+后来补了专用 kind（`dateedit`/`timeedit`，见文末 2026-11-09 新增映射与坑 55/70）；
+其余仍是占位（见文末 🔶 清单）。
 
 ## 数据控件
 
 | LCL | kind | 说明 |
 |---|---|---|
 | TStringGrid | grid | 表头/列宽/行高/固定行、整树下发；OnEditingDone 回写 Cells；OnClick 前先回写 Row/Col（浏览器送数据行号，服务端加回 FixedRows） |
-| TDrawGrid | drawgrid | 同上（无列标题语义） |
+| TDrawGrid | drawgrid | 只读展示（TDrawGrid 无 Cells/Objects 字符串存储）。2026-11-13 起支持**自绘单元格**：`LWSetDrawCellText(G, c, r, '@bar(72,#dc2626)')`（lwui）写标记，writer 从挂靠仓库下发，浏览器端 `$lwDrawCell` 渲染成进度条/徽章/迷你图/星级。标记：`@bar(0-100[,#色])`、`@chip(文本[,#色])`、`@spark(v1,v2,…[,#色])`、`@stars(0-5)`。表头取固定行 0（`LWSetDrawCellText(G, c, 0, …)` + FixedRows≥1）。nogui 是无头 widgetset，LCL 级 OnDrawCell 画不出像素，浏览器端 DSL 是唯一自绘路径；纯文本格直接可用（TStringGrid 的 grid 渲染不受影响） |
 | TTreeView | tree | Ext.tree.Panel，nodes 下发 |
 | TListView | listview | 复用表格渲染（`buildGrid`）：`cols` 来自 `Columns[].Caption`，行 = `Caption` + `SubItems`；**设计期至少加一列**，否则列数为 0、看起来是空表 |
 | TProgressBar | progress | pos/min/max/orientation，单向（服务端 → 浏览器） |
@@ -181,7 +183,7 @@ TLWFileUpload 上传本地 PDF 显示）与"HTML 展示"页签（TMemo 编辑源
 
 | LCL | kind | 浏览器端 | 回写目标 | 事件 |
 |---|---|---|---|---|
-| TDBGrid | dbgrid | 只读表格（行选中高亮） | 点行 → `DataSet.RecNo := 行+1` | OnCellClick(Column)、OnTitleClick(Column)（点列头，业务代码里做排序） |
+| TDBGrid | dbgrid | 表格（行选中高亮；**多表头**见下方 TLWDBGrid） | 点行 → `DataSet.RecNo := 行+1` | OnCellClick(Column)、OnTitleClick(Column)（点列头，业务代码里做排序） |
 | TDBEdit | dbedit | textfield | `Field.AsString/AsFloat/AsInteger`（自动进编辑态） | OnChange / OnExit |
 | TDBMemo | dbmemo | textarea | 同上 | 同上 |
 | TDBCheckBox | dbcheckbox | checkboxfield | `Field.AsBoolean` | OnChange / OnClick |
@@ -217,38 +219,44 @@ SQLite + SQLdb 的三条硬规则（TEXT→ftMemo、sqoAutoApplyUpdates、编辑
 | TMainMenu / TMenuItem | 独立于控件树序列化进 form.menu，浏览器端 Ext.menu.Menu；支持 Caption、Shortcut（ShortCutToText）、Checked、Enabled、分隔线、OnClick |
 | TPopupMenu | 同上（右键上下文按 kind 预留） |
 | TToolBar | 绝对定位容器 + 按钮项 |
-| TStatusBar | form.status 面板文本数组；服务端改 Panels[i].Text 后随下次响应同步到浏览器 |
+| TStatusBar | 文本走 form.status 面板数组；外观走 form.sb（高度 / 每格 Width、Alignment、Bevel / SimplePanel+SimpleText）。前端按 LCL 规则画：最后一格延到右边缘，高度按 DesignTimePPI 折算。服务端改 Panels[i].Text 后随下次响应同步 |
 
-## 占位（🔶，26 个）
+## 占位（🔶，14 个，2026-11-09 快照）
 
 这些控件在服务端是**活的**（属性、事件、业务逻辑都照常跑），只是浏览器端
 没有渲染器，显示成一个写着类名的灰框（`.lw-unknown`）。补一个 kind +
 一个 `lw.js` 渲染分支即可升级。
+（早期版本占位 26 个；`TRadioGroup`/`TCheckGroup`/`TCheckListBox`/`TValueListEditor`
+已实现渲染器并实测 ok，见坑 25/42/97。最新清单以 `docs/CONTROL_MATRIX.md` 为准。）
 
 | 单元 | 控件 |
 |---|---|
-| CheckLst | `TCheckListBox` |
 | ColorBox | `TColorBox`、`TColorListBox` |
 | ComboEx | `TComboBoxEx` |
 | ComCtrls | `THeaderControl` |
-| DBCtrls | （已全部适配，见上表；`TDBNavigator` 经 lwdbnav 子类可在 nogui 下使用，用户侧写原生类型） |
-| EditBtn | `TEditButton`、`TFileNameEdit`、`TDirectoryEdit`、`TDateEdit`、`TTimeEdit`、`TCalcEdit` |
-| ExtCtrls | `TPaintBox`、`TNotebook`、`TRadioGroup`、`TCheckGroup`、`TFlowPanel`、`TScrollBar` |
+| EditBtn | `TEditButton`、`TFileNameEdit`、`TDirectoryEdit`、`TCalcEdit` |
+| ExtCtrls | `TPaintBox`、`TNotebook`、`TFlowPanel`、`TScrollBar` |
 | FileCtrl | `TFileListBox`、`TFilterComboBox` |
-| ValEdit | `TValueListEditor` |
 
-> 想用 `TRadioGroup` / `TCheckGroup` 的，现在可以用 TGroupBox + 若干
-> TRadioButton / TCheckBox 组合替代，浏览器端效果一致。
 > 想用 `TFileNameEdit` 的，用 `TLWFileUpload` 更合适（真上传）。
+
+## kind-only（1 个）
+
+| 控件 | kind | 说明 |
+|---|---|---|
+| `TTimeEdit` | `timeedit` | lwwriter 已输出 kind，lw.js 尚缺渲染分支（补一个 case 即可升级） |
 
 ## 创建失败（⛔，1 个）
 
 | 控件 | 原因 |
 |---|---|
-| `TDBNavigator` | nogui 下构造即抛 `FPImageException` —— 由 lwdbnav 的 TLWDBNavigator 跳过 LCLGlyphs 解决：lfm 用 alias，代码用 `LWNewNavigator()` |
-| 前端分页箭头 | 闭包捕获构建时的 node 快照，翻页后 `node.page` 过期 → 只能到第 2 页；每次点击须从 `S.nodes[id]` 取实时节点 |
+| `TDBNavigator`（原生） | nogui 下构造即抛 `FPImageException`（LCLGlyphs 位图）。解法：用 `lwdbnav` 的 `TLWDBNavigator` —— lfm 里必须写真实类名 `TLWDBNavigator` 并 `RegisterClass(TLWDBNavigator)`，`RegisterClassAlias` 顶替不了已注册类名（坑 29/41 已推翻早期 alias 方案）；代码侧也可用 `LWNewNavigator()` 工厂 |
 
-这种控件服务端连创建都过不去，只能换实现（自己排几个 TButton）。
+## 序列化失败（render-failed，1 个）
+
+| 控件 | 现象 |
+|---|---|
+| `TDateEdit` | NullDate 序列化时 EConvertError；坑 107 已在 dateedit 序列化加 FormatDateTime 兜底（晚于矩阵快照，重跑 lwaudit 可确认） |
 
 ## 不序列化（➖）
 
@@ -264,14 +272,22 @@ SQLite + SQLdb 的三条硬规则（TEXT→ftMemo、sqoAutoApplyUpdates、编辑
 visible / hint / fg / bg / font(name,size,style,color) / tab(order) / ev(白名单事件)`
 + 各 kind 的特有字段（cols/colwidths/rowheight/rows/fixedcols/filter/…）。
 
+**`acc`（可选，只在需要时出现）**：Caption 里的 `&X` 是 LCL 的加速键标记
+（画成带下划线的 X、Alt+X 触发），浏览器端默认按 LCL 规则解析；只有控件的
+`ShowAccelChar` 被显式关掉（`TPanel` 就是默认关的）时才下发 `acc: 0`，
+前端改为原样显示。字段不出现 = 解析，所以普通控件载荷一个字节不多。
+详见 NOTES 坑 136（含"哪些文本解析、哪些不解析"的完整表格）。
+
 事件白名单见 `lwbase.IsLWClickEvent`：
 OnClick、OnChange、OnEditingDone、OnExit、OnSelect、OnClose 等；
 通过 RTTI `GetMethodProp` 取方法指针直接调用，业务代码不需要任何注册。
 
 ## 覆盖率快照
 
-66 个实测可视控件中：**39 个完整支持（59.1%）**、26 个占位（39.4%）、
-1 个创建失败。按「常用度加权」实际覆盖要高得多 —— StdCtrls / ComCtrls /
+66 个实测可视控件中（2026-11-09 快照，`docs/CONTROL_MATRIX.md`）：
+**49 个完整支持（74.2%）**、14 个占位（21.2%）、1 个 kind-only、
+1 个创建失败（原生 TDBNavigator，用 TLWDBNavigator 替代）、1 个序列化失败。
+按「常用度加权」实际覆盖要高得多 —— StdCtrls / ComCtrls /
 ExtCtrls / Grids / DBCtrls 的日常控件基本都在 ✅ 一栏。
 
 ## 2026-11-09 新增映射
@@ -280,7 +296,17 @@ ExtCtrls / Grids / DBCtrls 的日常控件基本都在 ✅ 一栏。
 |---|---|---|
 | `TLWLoginForm`（lwlogin.pas） | form（带 RequireAuth 会话语义） | 登录窗体渲染 + TryLogin → `S.Authenticated` |
 | `TLWChart`（lwchart.pas） | `chart`（charttype/title/categories/series） | Ext.chart.CartesianChart（line/bar）/ PolarChart（pie），`__lwChartSig` 指纹增量 |
-| `TLWDBGrid`（lwdbgrid.pas） | `dbgrid`（pagesize/page/pages/total/filtertext/showfilter/summary） | tbar 过滤条 + bbar 页码条/汇总条；OnPageChange/OnFilter 框架级事件 |
+| `TLWDBGrid`（lwdbgrid.pas） | `dbgrid`（pagesize/page/pages/total/filtertext/showfilter/summary + hg） | tbar 过滤条 + bbar 页码条/汇总条；`hg=[{t,a,n}]` 两级表头（Alpine 两行 thead：分组格 colspan、未分组列 rowspan=2 贯通；Ext 嵌套 columns 分组列）；OnPageChange/OnFilter 框架级事件 |
+
+TLWDBGrid 多表头：LCL 的 `TColumnTitle` 只有 Caption/Alignment/MultiLine，
+没有跨列分层能力，多表头由框架扩展——`TLWDBGrid.HeaderGroups.Add('标题|起-止')`，
+起/止是**可见列**下标（0 起、含止；Visible=False 的列不占号），没写进任何
+分组的列自己贯通两行（rowspan=2）。服务端序列化成 `hg=[{t,a,n}]` 附在 dbgrid
+节点上；前端分组表头不回发 OnTitleClick（跨列标题没有唯一列），叶子表头照常。
+lfm 里必须写 `TLWDBGrid`（FPC 的 GetClass 只认精确类名，同 TLWDBNavigator）。
+演示：`demos/db`（基本信息/价格与库存 + 统计页混排）、`demos/gallery`（数据感知
+页 grdDb 三组 + 末列贯通、大表分页页 grdBig 两组）；验收
+`tests/cdp_dbgrid_headergroups.py`（29 项）、`tests/cdp_gallery_dbgrid_hg.py`（24 项）。
 | `TDateEdit`（EditBtn） | `dateedit`（text + iso） | Ext.form.field.Date，format Y-m-d，ISO 回传 |
 | `TTimeEdit`（EditBtn） | `timeedit`（text + iso） | Ext.form.field.Time，format H:i:s，ISO 回传 |
 | `TLWForm.ShowToast` | cmd `{type:'toast',title,text}` | Ext.window.Toast（align:'t'） |

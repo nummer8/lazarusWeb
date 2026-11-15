@@ -49,7 +49,7 @@
 | `TTabSheet` | tabsheet | ok | 需要在 TPageControl 里 |
 | `TToolBar` | toolbar | ok |  |
 | `TToolButton` | toolbutton | ok | 需要在 TToolBar 里 |
-| `TStatusBar` | statusbar | ok |  |
+| `TStatusBar` | statusbar | ok | 高度/分格宽/对齐/Bevel/SimpleText 按 LFM 画（form.sb），最后一格延到右边缘 |
 | `TProgressBar` | progress | ok |  |
 | `TTrackBar` | trackbar | ok |  |
 | `TUpDown` | updown | ok |  |
@@ -78,6 +78,7 @@
 | 控件 | kind | 状态 | 说明 |
 |---|---|---|---|
 | `TDBGrid` | dbgrid | ok |  |
+| `TLWDBGrid` | dbgrid | ok | 扩展：`HeaderGroups` 两级表头、`PageSize` 分页、`ShowFilter`、`SummaryType/SummaryField` |
 
 ## EditBtn
 

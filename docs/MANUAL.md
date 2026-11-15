@@ -18,8 +18,9 @@ lazarusWeb 让一个普通的 Lazarus/FPC 桌面程序**不改架构**跑进浏�
 - 服务端每个浏览器页签持有一棵真实 LCL 控件树，事件经 HTTP/WebSocket
   回来后 RTTI 派发给真实控件事件；`ShowModal`/`ShowMessage`/`TOpenDialog`
   自动改道成浏览器模态框，服务端真的阻塞等待；
-- 浏览器端由 `lw.js`（Ext JS 7.5.1）或 `lw-alpine.js`（Alpine.js 3.14.9）
-  渲染并按 id 对账增量更新；`--patch=1` 时事件只回 2~4KB 差量。
+- 浏览器端由 `lw-alpine.js`（Alpine.js 3.14.9，**默认**）或 `lw.js`
+  （Ext JS x.x.x，可选）渲染并按 id 对账增量更新；`--patch=1` 时事件只回
+  2~4KB 差量。
 
 对标商业产品 uniGUI。技术总览见 `docs/ARCHITECTURE.md`。
 
@@ -95,6 +96,7 @@ TLWApp.Run;                         // 起 HTTP 服务
 - 自定义 AJAX 端点：`TLWApp.AddAjax(name, handler)`（对应 uniGUI 的
   AddAjaxProcedure），第三方 JS 直接 fetch `/lw/ajax/<名字>`；
 - 登录：`TLWApp.SetLogin(TXxxLoginForm)` 一行启用，见 `demos/login/`；
+  图形验证码见下面「登录窗体的图形验证码」；
 - 图表 `TLWChart`、报表 `lwreport`（HTML/CSV/XLSX）、富内容 `TLWHTMLFrame`
   /`TLWPDFFrame`、仪表 `TLWGauge`、取色器 `TLWColorPicker` 都是框架自带控件；
 - 定时器用 **TFPTimer**（必须 `UseTimerThread=True`）——nogui 下 TTimer
@@ -111,6 +113,137 @@ tools\lwconvert_gui.exe                :: GUI 版：选目录→分析/转换→
 工程，附控件支持度报告。IDE 里也有向导：设计期包 `lwdesign`（New Project
 两个模板 + New Form + 组件面板）。
 
+### 登录窗体的图形验证码（TLWCaptcha）
+
+TLWLoginForm 的验证码是「拖一个控件就启用」，不写一行代码：
+
+1. 组件面板 **lazarusWeb** 页把 `TLWCaptcha` 拖到登录窗体上
+   （它就是可视控件，尺寸 = 图片尺寸，默认 110×34）；
+2. 再放一个 `TEdit` 当输入框，名字用约定的 **`edCode`**。
+   不按约定命名也行：基类先找名字里带 `code` / `captcha` / `vcode`
+   的编辑框，最后退化成「除用户名、密码之外的第一个 TEdit」；
+3. 完事。`TLWLoginForm.TryLogin` 会**先验码、再验账号密码**（顺序不能反：
+   先查账号就等于给暴力枚举开后门），码错推一条 Toast 并自动换一张图。
+
+细节：
+
+- 比较忽略大小写和首尾空格；**一枚码只允许试一次**（比完即作废，
+  失败自动换图），同一张图无法反复猜；
+- 「点图片换一张」是纯前端动作（`src` 后追加 `&r=<时间戳>`），
+  不占会话执行锁、不等一次往返；服务端见到 `r` 就重新生成答案。
+  服务端主动换图（登录失败、业务代码调 `RefreshCaptcha`）走的是
+  版本号 `&v=`，补丁里 `src` 变了浏览器才会重拉；
+- 图片是服务端用内置 5×7 点阵字模 + FPImage 现画的 PNG：零字体、
+  零 widgetset 依赖，nogui 档一样出图；
+- 深色主题不重画第二张图，客户端用 `filter: invert(...)` 反相，
+  所以切换主题不会多一次请求；
+- 不想用：窗体上不放 `TLWCaptcha` 即可（**老工程完全不受影响**，
+  验证码只在窗体上真有这个控件时才校验），或把 `RequireCaptcha`
+  设成 `False`；
+- 想调：`Left/Top/Width/Height` 定位置与大小，`CaptchaLength`（2..8，
+  默认 4）定字符数；业务代码可调 `RefreshCaptcha` 主动换图
+  （例如账号被锁定后强制换码）；
+- 排障：设环境变量 `LW_CAPTCHA_DEBUG=1` 启动，服务端把
+  `[lw] captcha <令牌> = <答案>` 打到 stderr —— 用来分清到底是
+  「码不对」还是「图不对」（生产环境别开）。
+
+### 登录窗体开箱即用：新建就有验证码
+
+两种新建方式都自带验证码，不用自己摆控件、不用写校验代码：
+
+- **IDE 文件 → 新建 → `lazarusWeb Login form`**：模板 .lfm 里已经放好
+  `lblCode` / `captcha1` / `edCode`（还有两个按钮挂好基类的
+  `DoLogin` / `DoReset`），改了设计期包记得在 IDE 里重编一次；
+- **新建普通窗体、基类改成 `TLWLoginForm`（或 `SetLogin(TLWLoginForm)`
+  直接用基类）**：窗体上一个控件都没有时，基类在 `AfterConstruction`
+  里按同一套坐标自动补建 用户名 / 密码 / 验证码 / 两个按钮
+  （`AutoBuildUI`，默认开）。设计期看不到这套控件，但跑起来就有；
+  一旦你自己摆过任何控件（lfm 或 `FormCreate` 里建的），它就不再插手。
+
+### 登录会话什么时候失效
+
+sid 存在 **sessionStorage**（`lw.sid`）里，不是 localStorage，也不是 cookie：
+
+- 刷新页面 —— 还在同一个标签页里，不会刷一下就掉登录；
+- **关掉这个标签页 —— sessionStorage 随页签销毁，下次打开必须重新登录**
+  （"关标签页即退出"，与桌面程序"关窗口 = 退出"同一个心智）；
+- 关掉浏览器 —— 当然也退出；
+- **浏览器"启动时恢复上次打开的网页"也一样退出**：恢复会话会把
+  sessionStorage 连同 sid 一起还原，所以客户端在 `pagehide` 留一枚
+  墓碑（`lw.bye` = 卸载时刻）。卸载到下一次加载只隔几十毫秒的算"刷新"，
+  保持登录；隔了 3 秒以上才回来的（= 中间关过窗口）不认旧 sid，重新登录。
+  判据用 `performance.timeOrigin`（本次导航开始的时刻）减去墓碑时刻，
+  页面自己加载多久不计入，所以服务器慢也不会把刷新误判成关过窗口。
+  阈值 `BYE_GRACE_MS = 3000`，写在 `lw-alpine.js` / `lw.js` 里；
+- 每个标签页各自一个会话：同一浏览器开第二个标签页是**新会话**，
+  不会自动共享上一页的登录身份（要共享就显式带着同一个 sid 打开，
+  框架的 `/lw/api/attach` 仍然在，见 `docs/ARCHITECTURE.md` 2.3）；
+- 不带端口名：sessionStorage 本来就按源（协议+主机+端口）隔离，
+  同机跑多个 demo 天然互不干扰。
+
+要「记住我」（跨页签、跨浏览器重启都保持登录），在页面里设
+`localStorage['lw.persist'] = '1'`；调试时想强制开新会话，URL 加
+`?fresh=1`。老版本留在浏览器里的会话 cookie（`lw_sid_<端口>`）
+会在启动时被顺手清掉，不会影响新语义。
+
+### 状态栏（TStatusBar）：分格宽度/对齐都照 LFM 画
+
+把 `TStatusBar` 拖到窗体上（默认 `Align=alBottom`），在 IDE 里设
+`Panels`（每格的 `Text` / `Width` / `Alignment` / `Bevel`），浏览器端就是
+一条和桌面端同构的分格栏：
+
+- **高度** 取 `TStatusBar.Height`，按窗体的 `DesignTimePPI / 当前 PPI`
+  折算（144PPI 设计、96PPI 运行时 → 34 变 23），和子控件坐标同一把尺子；
+- **分格宽度** 用 `Panels[i].Width`，**最后一格延到右边缘**（LCL 的
+  `SB_SETPARTS` 规则）；格与格之间有 1px 分隔线，`Bevel=pbNone` 的格子没有；
+- **对齐** `taLeftJustify / taRightJustify / taCenter` 分别映射到
+  `text-align`；文本太长按格宽裁掉（`ellipsis`），不会撑开格子；
+- 状态栏宽度 = 客户区宽度：窗体外框用 inset 阴影画，不占盒模型
+  （否则客户区比 LFM 的 `Width` 少 2px，`Align=alNone` 的容器会溢出）；
+- `SimplePanel=True` 时只显示 `SimpleText`（与 LCL 一致）；
+- 文本由业务代码写：`stbMain.Panels[0].Text := '就绪';` —— 服务端改了，
+  下一次补丁就把新文本送到浏览器（`demos/multi` 的第二格显示行数）。
+
+需要自定义样式时改 CSS 变量或 `.lw-statusbar` / `.lw-status-item` 两条规则，
+不影响服务端。
+
+### 多级表头（TLWDBGrid.HeaderGroups）
+
+LCL 的 `TDBGrid` 表头只有一行，要"多表头"用框架扩展的 `TLWDBGrid`（lfm 里
+网格类名就写 `TLWDBGrid`，FPC 的 GetClass 只认精确类名）：
+
+```pascal
+uses lwdbgrid;
+
+with grdMain.HeaderGroups do
+begin
+  Add('基本信息|0-2');     // 标题|起-止：起/止是"可见列"下标（0 起、含止）
+  Add('价格与库存|3-5');
+end;
+// 没写进任何分组的列自己贯通两行（上下两行合成一格）
+```
+
+- 隐藏列（`Visible=False`）不占列号，分组按可见列从左数；
+- 分组表头点击不产生 `OnTitleClick`（跨列标题没有唯一列），叶子表头照常回发；
+- 两行表头整体粘在网格顶部，滚动时不会散开；
+- 演示见 `demos/db` 与 `demos/gallery`（数据感知 / 大表分页两个页签）。
+
+### Caption 里的 `&`（加速键 / 助记符）
+
+跟 LCL 一样，`Caption := '确定(&O)'` 在网页上显示成 **确定(O)**，`O` 带下划线，
+按 `Alt+O` 等于点了这个按钮——`&` 不会露出来。规则是**按控件**的：
+
+- 解析：TLabel、TStaticText、按钮族、TCheckBox/TRadioButton、
+  TRadioGroup/TCheckGroup（标题与选项）、TGroupBox、TPageControl/TTabControl
+  页签、TMenuItem；
+- 不解析：**TPanel.Caption**（`TCustomPanel.ShowAccelChar` 默认就是 False）、
+  显式 `ShowAccelChar := False` 的任何控件、TListBox/TComboBox/TCheckListBox
+  的 `Items`、`TStatusBar.Panels[].Text`、窗体标题；
+- 想写字面 `&` 就写两个：`'A && B'` → `A & B`。
+
+演示：`demos/accel`（每类控件一个，点一下回显到日志标签），
+验收：`tests/cdp_accel_audit.py`（Alpine + Ext 共 114 项断言）。
+
 ## 5. 配置
 
 命令行参数（完整表以 `src/core/lwapp.pas` 的 `--help` 为准）：
@@ -125,22 +258,61 @@ INI 配置（模板 `lazarusWeb.ini.sample`，放 exe 旁改名 `<exe名>.ini` �
 `lazarusWeb.ini`）：`Port` / `Theme` / `ExtDir` / `Patch` / `Client`。
 优先级：**内置默认 < 配置文件 < 命令行**。编码须 UTF-8 或纯 ASCII。
 
-渲染层二选一：
+渲染层二选一（**默认 Alpine.js**：`--client` 不指定时自动探测——两套都
+可用优先 alpine，只有一套用在那套；alpine 文件内置恒可用，所以实际默认
+就是 alpine）：
 
-- `ext`（默认候选）：Ext JS，需要 `ext-7.5.1/` 目录（约 75MB）；
-- `alpine`：Alpine.js 3.14.9（内置 `src/client/alpine.min.js`），**不需要
-  ext 目录**，部署最轻；`--client=alpine`、INI `Client=alpine` 或 URL
-  `?client=alpine` 启用。协议两者完全一致。
+- `alpine`（默认）：Alpine.js 3.14.9（内置 `src/client/alpine.min.js`），
+  **不需要 ext 目录**，部署最轻；
+- `ext`：Ext JS，需要 `ext-x.x.x/` 目录（约 75MB）；`--client=ext`、
+  INI `Client=ext` 或 URL `?client=ext` 显式启用。协议两者完全一致。
+
+### 5.1 Alpine 渲染层的配色（亮色 / 深色 / 跟随系统）
+
+只有 Alpine 渲染层有这一套（Ext 层仍用 `--theme=` 选 Ext 主题）：
+
+- 窗体标题栏右侧有 ☀/☾/◐ 按钮，点开三选一：**亮色 / 深色 / 跟随系统**；
+  选择存 `localStorage['lw-theme']`，刷新、多标签页保持一致；
+- "跟随系统" 监听 `prefers-color-scheme`，系统切深色时页面即时跟着变；
+- 设计期可在对象检查器设窗体属性 `LWTheme`（`twAuto`/`twLight`/`twDark`，
+  缺省 `twAuto`）作为**首次默认值**；用户手动选过之后以用户本地选择为准；
+- 代码里想强制切换：`LW.theme.set('dark')` / `$lwTheme.set('light')`
+  （`LW.theme.get()` 读偏好，`LW.theme.current()` 读实际生效值）；
+  不想显示标题栏按钮：`LW.theme.button(false)`；
+- 配色全在 `src/client/lw-alpine.css` 顶部两块 CSS 变量（`:root` 与
+  `html[data-lw-theme="dark"]`），改主题只改颜色值，不用动组件规则。
 
 ## 6. 部署
 
-最小目录（自包含）：
+最小目录（自包含，**默认 Alpine.js 渲染层，不需要 ext 目录**）：
 
 ```
 yourapp.exe
-ext-7.5.1\            （alpine 客户端可省；精简版约 23MB，见 tools\make_ext_min.bat）
-src\client\lw.js      （+ lw.css；alpine 模式则 lw-alpine.js + lw-alpine.css）
+src\client\lw-alpine.js    （+ lw-alpine.css、alpine.min.js）
+favicon.ico                （可选：浏览器标签图标）
 ```
+
+Ext JS 渲染层为**可选**（默认不部署）：需要时把 `ext-x.x.x\` 放到 exe 旁
+（完整约 75MB；精简版约 23MB，见 `tools\make_ext_min.bat`），并用
+`--client=ext` 显式切换。
+
+### 站点图标（favicon）
+
+浏览器标签上的小图标不靠框架画，**放一个 `favicon.ico` 文件即可**：
+
+- 查找顺序：`--root` 指定目录 → exe 同目录 → 都没有时 `/favicon.ico` 回 204
+  （浏览器显示默认图标，不报错）；
+- 命中时返回 200 + `image/x-icon` + `Cache-Control: public, max-age=86400`
+  （文件级缓存即可，改图标后用户侧最多一天内生效；**Ctrl+F5 立即刷新**）；
+- Ext 版与 Alpine 版两套外壳的 HTML head 都已带
+  `<link rel="icon" href="/favicon.ico" type="image/x-icon">`，无需改前端；
+- 图标建议做多尺寸 ico（16/32/48px），SVG 不经转换在部分浏览器不生效；
+- 排障：如果之前部署期间访问过（当时回 204），浏览器可能把空响应缓存了——
+  强刷一次或关掉标签重开即可；
+- 反向代理无需为 favicon 配置任何转发规则（由应用自身直答，不经 worker）。
+
+**注意**：升级自旧版本时用户浏览器很可能缓存了旧 204 空响应，发布说明里
+提醒一次 Ctrl+F5。
 
 - 应用进程只说 HTTP（无 TLS）；HTTPS 由 nginx/Caddy 反代终结，完整示例
   在 `deploy/nginx.conf`、`deploy/Caddyfile`（含 `/lw/ws` Upgrade、
@@ -178,9 +350,11 @@ src\client\lw.js      （+ lw.css；alpine 模式则 lw-alpine.js + lw-alpine.cs
 | SQLite database is locked | WAL + busy_timeout=10000 + 写前 CommitRetaining（坑 9） |
 | 公网日志 IP 全是反代地址 | 加 `--trust-proxy` |
 | 端口被强杀残留孤儿 socket | `LISTENING PID 0`，换端口最省事 |
+| 浏览器标签没图标（还是默认地球） | exe 同目录或 `--root` 没有 favicon.ico → 放一个；或浏览器缓存了旧 204 空响应 → Ctrl+F5 强刷（坑 144） |
+| 从 AI 终端/脚本启动的服务跑一会儿就消失、无日志 | 命令跑在 kill-on-job-close 的 Job Object 里被回收；后台任务方式也可能在轮次结束后被收走 → 用 `Start-Process`（脱离 Job）或真实用户终端启动（坑 108/145） |
 
-更多案例与调试方法论：`docs/DEBUGGING.md`；108 个坑按编号检索
-`docs/NOTES.md`（坑 23/66 等旧结论已被后续坑修订，以标注为准）。
+更多案例与调试方法论：`docs/DEBUGGING.md`；146 个坑按编号检索
+`docs/NOTES.md`（坑 23/66/108 等旧结论已被后续坑修订，以标注为准）。
 
 ## 9. 已知限制
 
@@ -222,7 +396,7 @@ src/
 | lwdiff.pas | 增量补丁 diff（两次 payload → ops） |
 | lwws/lwwebsocket.pas | WS 只传事件请求/响应；推送走长轮询游标 |
 | lwdbgrid.pas / lwdbnav.pas | TLWDBGrid / TLWDBNavigator（lfm 写真实类名） |
-| lwchart/lwui/lwweb/lwreport/lwlogin/lwpanel/lwrlog | 图表/仪表取色遮罩/富内容/报表/登录/面板/日志 |
+| lwchart/lwui/lwweb/lwreport/lwlogin/lwcaptcha/lwpanel/lwrlog | 图表/仪表取色遮罩/富内容/报表/登录/图形验证码/面板/日志 |
 | lwhyper.pas | 负载均衡核心（tools 的控制台/GUI 版共用） |
 | lwnewproject.pas | 工程骨架模板（IDE 向导与 tools\lwnew 共用） |
 | lwproxyws.pas | 自动生成（gen_proxyws.py），GUI 构建专用代理 widgetset，勿手改 |
