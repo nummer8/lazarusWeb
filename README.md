@@ -1,11 +1,11 @@
 # lazarusWeb
 
-Lazarus 桌面程序的 Web 化运行时 —— 参考 uniGUI 的思路，但用**真实的 LCL 控件树**直接序列化成 Alpine.js 或 Ext JS 界面。业务程序只需要把窗体基类从 `TForm` 改成 `TLWForm`，其余代码（事件、属性、`.lfm`）原样保留，就能以服务程序的形式跑在浏览器里。
+Lazarus 桌面程序的 Web 化运行时 —— 参考 uniGUI 的思路，但用**真实的 LCL 控件树**直接序列化成界面；**默认渲染层是 Alpine.js**（内置依赖，零额外部署），Ext JS 是可选渲染层（需自行提供 ext 目录并用 `--client=ext` 显式启用）。业务程序只需要把窗体基类从 `TForm` 改成 `TLWForm`，其余代码（事件、属性、`.lfm`）原样保留，就能以服务程序的形式跑在浏览器里。
 
-浏览器 (Alpine.js 或 Ext JS 7.0.0) 服务端 (Lazarus, nogui widgetset)
-| 浏览器端 (Ext JS 7.0.0 或 Alpine.js) | 通信 | 服务端 (Lazarus, nogui widgetset) |
+浏览器 (Alpine.js 默认 / Ext JS 可选) 服务端 (Lazarus, nogui widgetset)
+| 浏览器端（默认 Alpine.js，可选 Ext JS） | 通信 | 服务端 (Lazarus, nogui widgetset) |
 | :--- | :---: | :--- |
-| `lw.js` 渲染/协调器<br><br>`Ext.window/panel/grid/...`<br><br>`WS传事件/长轮询游标收推送` | <br>**HTTP←→JSON**<br><br> | `lwhttp` fcl-web 多线程服务器<br>`lwsession` 每标签页一棵 LCL 控件树<br>`lwwriter` LCL 树→JSON<br>`lwdispatch` 事件→RTTI 调业务代码<br>`lwws` nogui 补丁(虚拟显示器/画布) |
+| `lw-alpine.js` + `alpine.min.js` 渲染/协调器<br>（可选：`lw.js` + `ext-<版本>/`）<br><br>原生 DOM/CSS（可选：Ext.window/panel/grid/...）<br><br>`WS传事件/长轮询游标收推送` | <br>**HTTP←→JSON**<br><br> | `lwhttp` fcl-web 多线程服务器<br>`lwsession` 每标签页一棵 LCL 控件树<br>`lwwriter` LCL 树→JSON<br>`lwdispatch` 事件→RTTI 调业务代码<br>`lwws` nogui 补丁(虚拟显示器/画布) |
 
 ## 环境要求
 
@@ -59,6 +59,7 @@ Linux 宿主上直接 `lazbuild` 各 demo 的 `.lpi` 即可；`build.sh` 与
 | `src/core/lwapp.pas` | 应用门面（注册/命令行/启动） |
 | `src/core/lwconfig.pas` | 服务端配置文件（INI：Port / Theme / ExtDir） |
 | `src/core/lwfileupload.pas` | `TLWFileUpload` 上传按钮控件 |
+| `src/core/lwcamera.pas` | `TLWCamera` 拍照控件（手机唤起系统相机 / 桌面页面内取景） |
 | `src/core/lwdlg.pas` | **LCL 对话框改道浏览器**（ShowMessage / MessageDlg / InputQuery / TOpenDialog …） |
 | `src/core/lwupload.pas` | multipart 解析与落盘 |
 | `src/core/lwdownload.pas` | 下载令牌表（URL 里不暴露路径） |
@@ -103,9 +104,9 @@ start-gui.bat           :: 双击启动 GUI 版（dbaware_gui.exe，见下节）
 ```
 --config=path         指定配置文件（缺省自动找 <exe名>.ini / lazarusWeb.ini，见下节）
 --port=8090           监听端口
---root=C:\LazarusWeb  项目根目录（含 ext-<版本> 目录）；缺省取当前目录
+--root=C:\LazarusWeb  项目根目录（含 src/client；ext-<版本> 仅在可选 Ext 层需要）；缺省取当前目录
 --form=Name           默认窗体名
---client=ext          浏览器渲染层：ext | alpine；不指定时自动探测（都在则优先 alpine）
+--client=alpine       浏览器渲染层：alpine（默认，内置）| ext（可选，需 ext 目录）；不指定时自动探测（都在则优先 alpine）
 --ext=7.0.0           默认 Ext 版本（URL 也可 ?ext=<版本> 临时切换）
 --extdir=目录         ext-js 目录（配置项 ExtDir 的等价物）
 --theme=crisp         默认主题（classic/crisp/gray/material/neptune/graphite）
@@ -215,6 +216,8 @@ MyApp/
   src/client/lw-alpine.css    41 KB  样式（亮/暗主题 CSS 变量都在这里）
   favicon.ico                       可选：浏览器标签图标（放 exe 同目录或 --root 目录皆可）
   ext-<版本>/                       可选：Ext JS 渲染层（约 75MB，需 --client=ext 显式切换）
+  cert/                             可选：开 SSL 且使用自有 PEM 时放 server.crt/server.key/ca.crt
+  libssl-3-x64.dll + libcrypto-3-x64.dll  可选：开 SSL 时必须放 exe 同目录
 ```
 
 （走 Ext 渲染层时对应换成 `src/client/lw.js` + `lw.css` + `ext-<版本>/`；
@@ -270,7 +273,7 @@ tools/build.sh hyper_gui          # GUI 工具用宿主 widgetset 编
 | 依赖 | Windows | Linux | macOS |
 |---|---|---|---|
 | SQLite（demo 用） | `sqlite3.dll`（demo 目录已带） | `libsqlite3.so`（`apt install libsqlite3-0`） | 系统自带 |
-| Ext JS / lw.js | 同左 | 同左（路径按 `PathDelim` 拼） | 同左 |
+| Alpine.js / lw-alpine.js（默认）；Ext JS / lw.js（可选） | 同左 | 同左（路径按 `PathDelim` 拼） | 同左 |
 | 命令行参数 | `--port=` `--root=` `--theme=` `--config=` | 同左 | 同左 |
 
 注意 Unix 文件名区分大小写（Windows 不区分），`src/client`
@@ -285,7 +288,7 @@ tools/build.sh hyper_gui          # GUI 工具用宿主 widgetset 编
 |---|---|
 | File → New → Project | **lazarusWeb Application**（默认 widgetset，IDE 里 F9 直接跑）与 **lazarusWeb Application (nogui)**（`LCLWidgetType=nogui` 控制台服务，部署档）两个模板；一键生成 `.lpr/.lpi/umain.pas/.lfm/build.bat/build.sh` |
 | File → New → File | **lazarusWeb Form** —— 一个 `TLWForm` 窗体单元，直接进设计器 |
-| 组件面板 | **lazarusWeb** 页：`TLWFileUpload` |
+| 组件面板 | **lazarusWeb** 页：`TLWFileUpload` / `TLWCamera` 等 |
 
 安装（只需一次）：
 
@@ -333,6 +336,27 @@ end;
 ```
 
 - 浏览器端弹系统文件对话框，XHR 带进度上传，按钮文字实时显示百分比；
+
+## 拍照（TLWCamera）
+
+`TLWCamera`（`TLWFileUpload` 的专用后代）拖到窗体上即可：
+
+```pascal
+procedure TMainForm.camPhotoCapture(Sender: TObject; const AFileName: string);
+begin
+  // 照片已在服务端落盘（uploads\<会话>\camPhoto\xxx.jpg）
+end;
+```
+
+- 手机/平板：点按钮直接唤起**系统相机**（`Facing` 换前后置），拍完经既有
+  上传通道传回并触发 `OnCapture`；**局域网 http 就能用**；
+- 桌面：HTTPS 或 localhost 下弹**页面内取景框**（getUserMedia，实时画面 +
+  拍摄/取消/选择图片），拍下的帧压到长边 1600px 转 JPEG 走同一通道；
+  局域网 http 的桌面页面浏览器禁止调摄像头，自动退化为「选择图片文件」；
+- 预览：`PreviewImage := 'imgPhoto'` —— 浏览器拍完立刻本地显示到指定
+  TImage，照片数据不走组件树补丁；服务端只拿文件路径；
+- 完整说明见 `docs/MANUAL.md` 使用篇「拍照」，范例
+  `demos/mobile_demo`，回归 `tests/cdp_camera.py`。
 - 服务端解析 `multipart/form-data`，落到
   `%TEMP%\lw_uploads\<会话号>\<控件名>\`（或用 `TargetFolder` 指定）；
 - 文件名会做安全化处理（去路径、去 `..`、去非法字符），多选时逐个触发 `OnUpload`；
@@ -468,6 +492,34 @@ end;
 另有 16 个非可视组件（`TTimer`/`TOpenDialog`/`TDataSource`/`TMainMenu`…）
 服务端可直接使用，不参与渲染统计。
 
+## 移动端（手机 / 窄窗口）
+
+Alpine 渲染层内置移动端自适应，**业务代码零改动**：视口 ≤834px 自动进入
+移动布局（≥1100px 退出，中间回滞防抖动），手机/平板/桌面窄窗口都会自动适配：
+
+- **不配模板**：窗体按设计尺寸渲染（字号不缩小），超出屏幕的部分滚动
+  平移查看——能用，但不是小屏优化的排布；
+- **配模板**：为窗体写一份 HTML 模板（`{%控件名%}` 占位符引用控件 Name，
+  浏览器把既有控件 DOM 搬进模板流式排布），事件与增量补丁照旧，跨断点
+  两端自动切换、不丢状态；改模板刷新即生效，无需重编：
+  - 移动 `<root>\tpl\<窗体名>.m.html` —— 手机单列排布，窗体贴满视口；
+  - 桌面 `<root>\tpl\<窗体名>.html` —— 自定义桌面排布（居中卡片、
+    双栏等），**窗体位置尺寸保持设计期**，只有客户区内容变流式；
+- 手动切换：URL `?layout=mobile|desktop` 或 `LW.layout.set()`；
+- **一键生成模板骨架**：装了设计期包 `lwdesign` 后，IDE 的 **Tools 菜单**
+  多一项「生成 lazarusWeb 窗体模板（当前单元 LFM）」——按当前打开窗体的
+  .lfm 一次生成**桌面 + 移动**两份模板骨架到 `<工程目录>\tpl\`（含
+  `{%控件名%}` 占位符与按设计期逐控件定高的基础 CSS，已存在逐份询问覆盖），
+  生成完拷到运行根目录（或工程目录即运行根目录时直接生效），刷新即见；
+  详见 `MANUAL.md` 16.0，范例 `demos\gallery`；
+- **拍照上传**：`TLWCamera` 控件（组件面板拖上即用）——手机点按钮唤起
+  系统相机，拍完自动传回服务端（`OnCapture`），浏览器本地即时预览；
+  局域网 http 可用（不需要 HTTPS），见 README「拍照（TLWCamera）」节；
+- 使用说明见 `docs/MANUAL.md` 使用篇「移动端」节，模板开发指南见
+  `MANUAL.md` 第二篇「16. 窗体模板开发指南（桌面 + 移动）」，机制与
+  实测见 `docs/MOBILE.md` §8，可跑范例 `demos/mobile_demo`
+  （同一窗体配了桌面 + 移动两份模板）。
+
 ## 已知限制
 
 - 单窗体应用默认端口一条线程一个会话请求；模态期间该会话的其他请求会在事件队列上排队（与桌面程序模态语义一致）；
@@ -477,8 +529,9 @@ end;
   想在服务端选文件请自己用 `TListView`/`TShellListView` 之类拼一个界面；
 - 未适配的控件浏览器端是灰框占位（服务端照常活着），不影响别的控件；
   具体清单见 `docs/CONTROL_MATRIX.md`；
-- `TSplitter` 只画分隔条，**不支持拖动**；`TUpDown` / `TProgressBar` /
-  `TTrackBar` 是单向（服务端→浏览器），浏览器上的调整不会回写；
+- `TSplitter` 只画分隔条，**不支持拖动**；`TProgressBar` / `TTrackBar`
+  浏览器端的调整不会回写服务端（`TUpDown` 上下箭头会回写并联动
+  Associate 编辑框，见 `docs/NOTES.md` 坑 152）；
 - 高 DPI 只按虚拟显示器 96 DPI 处理（`lwws.pas` 常量可改）；
   在 125%/150% 缩放的 Windows 上设计的窗体（lfm 里 `DesignTimePPI=120/144`）
   会在创建时自动缩放回 96 DPI（几何 + 字体一起，由 `Application.Scaled` 驱动，
@@ -582,7 +635,7 @@ FormField()` 与 `Session`（`?sid=` 或 `X-LW-Sid` 头，可读会话级数据�
 
 GUI 版启动后是一个服务端面板（对标 uniGUI 独立服务器的那个窗口）：
 
-- 标题 `lazarusWeb 0.9.0 独立服务器 - 端口 <N>`；
+- 标题 `lazarusWeb 0.9.6 独立服务器 - 端口 <N>`；
 - 菜单「文件」：打开浏览器（F5）/ 复制访问地址 / 退出；
 - 菜单「管理」：清空日志 / 切换详细日志（verbose）/ 关于；
 - 中间是滚动日志区（启动横幅 + 会话创建 + 请求日志，限 4000 行）；
@@ -603,9 +656,21 @@ console 构建写控制台、GUI 构建写面板、两者都可同时写文件�
 
 ## 部署（HTTPS / 反向代理 / 集群）
 
-应用进程只说 HTTP，HTTPS 由反向代理终结（fphttpserver 无 TLS）——完整指南
-与现成配置见 **`deploy/README.md`**、[`deploy/nginx.conf`](deploy/nginx.conf)、
-[`deploy/Caddyfile`](deploy/Caddyfile)。要点：
+HTTPS 有两条路，都是零改代码：
+
+1. **直接用 FPC 自带的 TLS（推荐，无需任何代理）**：给业务 exe 或
+   `lwhyper` 加 `--ssl`，同一端口即从 HTTP 变 HTTPS；证书不给就自动生成
+   自签证书。需随包带 `libssl-3-x64.dll` + `libcrypto-3-x64.dll`。
+   集群场景在 lwhyper 外层开即可，worker 之间仍走明文。
+2. **前置反向代理**：nginx / Caddy 终结 TLS，exe 保持 HTTP。完整指南与
+   现成配置见 **`deploy/README.md`**、[`deploy/nginx.conf`](deploy/nginx.conf)、
+   [`deploy/Caddyfile`](deploy/Caddyfile)。
+
+`--ssl-host` 填的是**证书主机名**（浏览器地址里的域名/IP，须与证书 SAN
+一致），不是监听地址。正式 CA 或私有 CA 的非自签证书命令行范例、内网
+CA 生成步骤见 `deploy/README.md` §1.1；两参数留空时才是自动生成自签证书。
+
+要点：
 
 - 代理后面启动 exe 加 `--trust-proxy`（日志里的 IP 才是真实客户端 IP）；
 - nginx 的 `/lw/ws` location 必须带 `Upgrade`/`Connection` 头（WebSocket），
@@ -658,7 +723,8 @@ GUI 版与控制台版共用 `src/core/lwhyper.pas`，代理行为完全一致�
   worker 回 410 → 浏览器自动重建会话（兜底链路既有）；
 - **worker 崩溃**：2 秒探针周期内自动重启（`restarts` 计数可见），
   该 worker 上的会话随进程丢失（会话在进程内存里，会话外置 Redis 未做）；
-- **HTTP 场景不再需要 nginx**；公网 HTTPS 仍需前置一层反代做 TLS 终结，
+- **HTTP 场景不再需要 nginx**；HTTPS 直接在 lwhyper 加 `--ssl` 即可
+  （纯 FPC 自带，worker 仍明文；自签证书零配置）。前置反代也支持，
   但反代配置不再需要 `ip_hash` / worker 清单（粘性由 lwhyper 管）；
 - 回归：`tests/t_hyper.py`（20 项，需先手动起 lwhyper）+
   `tests/t_hyper_ws.py`（6 项 WS 隧道，run_with_server 全自动）。
