@@ -72,6 +72,7 @@ demo 一览（可执行入口全在 `demos/`，框架本体是库不是 exe）�
 | login | 登录/权限框架 |
 | gallery | 全功能画廊（压测基线，附 lwperf/lwdump） |
 | audit | lfm 链路审计演示（auditdemo） |
+| mobile_demo | 窗体模板示例（同一窗体配桌面卡片双栏 + 手机单列两份模板，无模板窗体对照 gallery；配 `tpl/MobileMainForm.html` 与 `.m.html`） |
 
 ## 4. 写你自己的程序
 
@@ -112,6 +113,59 @@ tools\lwconvert_gui.exe                :: GUI 版：选目录→分析/转换→
 改写内容：`.pas` 基类与 uses、`.lpr` 启动代码、`.lpi` 重新生成为 nogui
 工程，附控件支持度报告。IDE 里也有向导：设计期包 `lwdesign`（New Project
 两个模板 + New Form + 组件面板）。
+
+### 移动端：手机 / 窄窗口自适应（业务代码零改动）
+
+Alpine 渲染层（默认）内置移动端自适应，判定在浏览器端完成，服务端不参与：
+
+- **自动判定**：视口宽 ≤834px 进入移动布局，≥1100px 退出，835~1099 为
+  回滞区保持现状（拖窗口、软键盘弹收都不会来回抖动）；手机、平板、
+  桌面窄窗口都会自动进入。触屏细节（输入框字号 ≥16px、去双击缩放
+  延迟）由指针能力独立判定，与窗口宽度无关；
+- **没配模板的窗体（两端一致：设计期所见即所得）**：移动端按设计尺寸
+  原样渲染（**字号不缩小**），超出屏幕的部分由页面滚动平移查看——能用，
+  但不是为小屏优化的排布；桌面端是绝对定位原样（历来行为，完全不变）；
+- **配了模板的窗体**：浏览器把窗体顶层控件搬进模板的流式排布，同一棵
+  控件树、同一套事件与增量补丁；移动模板（`.m.html`）做单列自适应、
+  桌面模板（`.html`）做自定义排布（居中卡片、双栏等，**窗体几何保持
+  设计期**）；拖宽/拖窄窗口跨过断点自动换端来回切换，不丢状态；
+- **手动切换**（演示 / 排障）：URL 加 `?layout=mobile` 或 `?layout=desktop`；
+  控制台 `LW.layout.set('mobile'|'desktop'|'auto')`、`LW.layout.get()`；
+  选择存 `sessionStorage['lw-layout']`，只影响当前标签页；
+- 写模板的方法与完整范例见第二篇「16. 窗体模板开发指南（桌面 + 移动）」；
+  可跑的对照 demo 是 `demos/mobile_demo`（`--port=8106`，同一窗体配了
+  桌面 + 移动两份模板，手机打开即见单列排布，模板改动刷新即生效，
+  无需重编）。
+
+### 拍照：TLWCamera（手机唤起系统相机，桌面页面内取景）
+
+组件面板拖 `TLWCamera`（`TLWFileUpload` 的专用后代）到窗体上，写一个事件：
+
+```pascal
+procedure TMainForm.camPhotoCapture(Sender: TObject; const AFileName: string);
+begin
+  // AFileName 是服务端上的完整路径（uploads\<会话>\<控件名>\xxx.jpg），
+  // 直接 TFileStream / 后续入库处理即可；预览不在服务端做
+end;
+```
+
+按下拍照按钮后浏览器按环境自动选路（**同一份代码，无需判断**）：
+
+| 环境 | 行为 | 前提 |
+| --- | --- | --- |
+| 手机 / 平板 | `<input capture>` 唤起**系统相机 App**（默认后置，`Facing := cfFront` 前置），拍完经 `/lw/api/upload` 传回服务端落盘并触发 `OnCapture` | 无，局域网 http 可用 |
+| 桌面 + HTTPS/localhost | **页面内取景弹层**（getUserMedia）：实时画面 + 「拍摄 / 取消 / 选择图片」，拍下的帧压到长边 1600px 转 JPEG 走同一上传通道 | 需要安全上下文 |
+| 桌面 + 局域网 http | 退化成「选择图片文件」对话框（浏览器禁止 http 页面调摄像头，这是硬限制） | — |
+
+- 回显预览：把窗体上某个 `TImage` 的 Name 填进 `TLWCamera.PreviewImage`
+  （如 `imgPhoto`），浏览器拍完**立刻本地显示**（不走服务端补丁——手机
+  照片几 MB，转 base64 塞进组件树会让之后每次增量补丁都白跑）；
+  服务端 `TImage.Picture` 始终为空，要服务端缩略图/入库自己处理文件；
+- 大小上限 `MaxSizeKB`（KB，0 不限）、保存目录 `TargetFolder`（留空用
+  会话上传目录）与上传按钮同语义；`UploadedFiles`/`LastFileName` 可查历史；
+- `OnUpload` 与 `OnCapture` 都会触发，业务里挂一个就够；
+- 可跑范例：`demos/mobile_demo`（拍照 + 本地预览 + 日志，配了桌面/移动
+  两份模板，手机打开体验完整）；回归 `tests/cdp_camera.py`。
 
 ### 登录窗体的图形验证码（TLWCaptcha）
 
@@ -249,7 +303,7 @@ end;
 命令行参数（完整表以 `src/core/lwapp.pas` 的 `--help` 为准）：
 
 ```
---config=path  --port=  --root=  --form=  --client=ext|alpine  --ext=
+--config=path  --port=  --root=  --form=  --client=alpine|ext  --ext=
 --extdir=  --theme=  --title=  --timeout=  --trust-proxy  --ajax-cors
 --verbose  --nogui  --patch=1  --log=path  --help
 ```
@@ -358,9 +412,14 @@ Ext JS 渲染层为**可选**（默认不部署）：需要时把 `ext-x.x.x\` �
 | 公网日志 IP 全是反代地址 | 加 `--trust-proxy` |
 | 端口被强杀残留孤儿 socket | `LISTENING PID 0`，换端口最省事 |
 | 浏览器标签没图标（还是默认地球） | exe 同目录或 `--root` 没有 favicon.ico → 放一个；或浏览器缓存了旧 204 空响应 → Ctrl+F5 强刷（坑 144） |
+| **本机 127.0.0.1 能开、所有手机/平板同时打不开**（换 Wi-Fi 或重启后突然全挂） | 先查本机入站，不用翻代码：`Get-NetConnectionProfile` 看当前是 Private 还是 Public，再 `Get-NetFirewallRule -DisplayName 'mobile_demo' \| select Profile` 看放行规则落在哪个 Profile —— **两者不一致时入站全被丢**，回环不受影响，所以"本机能开、设备全挂"。管理员运行 `tools\allow-firewall.bat`（写 `profile=any` 的 TCP/UDP + 端口兜底），不用重启服务（坑 159） |
+| 手机/平板打不开网页（"已丢失网络连接"/无法访问），但某个设备能开 | ① **URL 必须带端口**（`http://192.168.x.x:8090/`），只写 IP 会走 80 端口，服务端没监听；横幅 `LAN:` 行给的就是该用的完整地址。② iOS：设置 → 隐私与安全性 → **本地网络** → 允许 Safari（被拒一次会一直静默失败）。③ 确认三台设备在同一 Wi-Fi/同一网段，不是访客网络或 5G 独立 SSID。④ 关掉 VPN / 代理 / iCloud 专用代理。⑤ 用 `/lw/healthz` 单独验证：能返回 ok 说明网络通、问题在页面层 |
+| 手机打开后布局没变成单列 | 该窗体没配移动模板（回退平移模式，属正常）；或视口宽在 835~1099 回滞区；确认 URL 没带 `?layout=desktop` 覆盖 |
+| 改了模板没生效 | 模板路径不对（移动 `<root>\tpl\<窗体名>.m.html`、桌面 `<root>\tpl\<窗体名>.html`）；或浏览器缓存 → 模板是 no-store 下发，普通刷新即应生效，强刷一次排查中间层缓存 |
+| 模板"半套"（部分控件跑版） | 占位符写了不存在的控件名会整体回退，不会半套；出现跑版多半是模板 CSS 层级写错（占位符 > .lw-n > .lw-body 隔层，见开发篇 16.3） |
 | 从 AI 终端/脚本启动的服务跑一会儿就消失、无日志 | 命令跑在 kill-on-job-close 的 Job Object 里被回收；后台任务方式也可能在轮次结束后被收走 → 用 `Start-Process`（脱离 Job）或真实用户终端启动（坑 108/145） |
 
-更多案例与调试方法论：`docs/DEBUGGING.md`；146 个坑按编号检索
+更多案例与调试方法论：`docs/DEBUGGING.md`；159 个坑按编号检索
 `docs/NOTES.md`（坑 23/66/108 等旧结论已被后续坑修订，以标注为准）。
 
 ## 9. 已知限制
@@ -370,7 +429,10 @@ Ext JS 渲染层为**可选**（默认不部署）：需要时把 `ext-x.x.x\` �
 - `TSplitter` 不可拖动；`Anchors` 不做前端吸附计算；
 - 高 DPI 按 96 处理（125%/150% 设计的 lfm 自动缩回）；
 - PDF 直出暂以浏览器"另存为 PDF"代替；会话外置 Redis 未实现；
-- 未适配控件浏览器端灰框占位（服务端照常活着），不影响其他控件。
+- 未适配控件浏览器端灰框占位（服务端照常活着），不影响其他控件；
+- `TLWCamera` 桌面取景是简化版（单帧拍摄，不能连拍/手动对焦/切换分辨率）；
+  桌面局域网 http 页面**无法**调摄像头（浏览器硬限制），只能选图片文件，
+  要完整桌面相机体验把页面挂到 HTTPS 或本机 localhost 访问。
 
 ---
 
@@ -403,7 +465,7 @@ src/
 | lwdiff.pas | 增量补丁 diff（两次 payload → ops） |
 | lwws/lwwebsocket.pas | WS 只传事件请求/响应；推送走长轮询游标 |
 | lwdbgrid.pas / lwdbnav.pas | TLWDBGrid / TLWDBNavigator（lfm 写真实类名） |
-| lwchart/lwui/lwweb/lwreport/lwlogin/lwcaptcha/lwpanel/lwrlog | 图表/仪表取色遮罩/富内容/报表/登录/图形验证码/面板/日志 |
+| lwchart/lwui/lwweb/lwreport/lwlogin/lwcaptcha/lwcamera/lwpanel/lwrlog | 图表/仪表取色遮罩/富内容/报表/登录/图形验证码/拍照/面板/日志 |
 | lwhyper.pas | 负载均衡核心（tools 的控制台/GUI 版共用） |
 | lwnewproject.pas | 工程骨架模板（IDE 向导与 tools\lwnew 共用） |
 | lwproxyws.pas | 自动生成（gen_proxyws.py），GUI 构建专用代理 widgetset，勿手改 |
@@ -480,7 +542,142 @@ python tests/run_with_server.py <exe路径> <测试脚本> [端口] [exe额外�
 `docs/HOW_IT_WORKS.md`；改 lwproxyws 相关内容必须走 `gen_proxyws.py`
 重新生成。
 
-## 16. 仓库注意
+## 16. 窗体模板开发指南（桌面 + 移动）
+
+布局由「客户端 DOM 搬迁 + 窗体级 HTML 模板」实现：业务窗体一行代码不改，
+只需为要自定义排布的窗体多写一份模板 HTML。**桌面与移动是同一套机制、
+同一套占位符语法**，只是文件名与窗体几何规则不同：
+
+| 端 | 模板文件 | 窗体几何 | 无模板时 |
+|---|---|---|---|
+| 移动 | `<root>\tpl\<窗体名>.m.html` | 客户端接管：贴满视口 | 设计期所见即所得（平移模式） |
+| 桌面 | `<root>\tpl\<窗体名>.html` | **保持设计期位置尺寸不动**，只有客户区内容变流式 | 设计期所见即所得（绝对定位原样） |
+
+判定机制与实测数据见 `docs/MOBILE.md` §8，本节是动手指南；可跑的完整
+范例是 `demos/mobile_demo` + `tpl/MobileMainForm.m.html`（移动）+
+`tpl/MobileMainForm.html`（桌面，同一窗体双模板演示）。
+
+### 16.0 一键生成：IDE Tools 菜单（lwdesign）
+
+装了设计期包 `lwdesign` 后，IDE 的 **Tools 菜单**多一项
+「**生成 lazarusWeb 窗体模板（当前单元 LFM）**」：
+
+1. 打开窗体单元（.pas，自动找同名 .lfm）或直接打开 .lfm；
+2. 点该菜单 → 在 `<工程目录>\tpl\` 下生成两份模板骨架：
+   `<窗体名>.html`（桌面，按设计期宽度比例的流式换行）与
+   `<窗体名>.m.html`（移动，单列流式）；文件已存在会逐份询问是否覆盖；
+3. 生成内容：文件头注释列出解析到的顶层控件清单（含类名与设计期几何）、
+   每个控件的 `{%控件名%}` 占位符、基础 CSS（宽 100%/百分比宽、
+   **按设计期逐控件定高**——搬迁会清掉内联宽高，不定高容器会塌陷）；
+   带子控件的顶层容器（TPanel/TGroupBox 等）另生成两条兜底规则
+   （`overflow:hidden` 裁剪 + 内部控件 `max-width:calc(100% - 16px)` 收宽，
+   避免容器被模板改窄后内部绝对定位控件溢出，坑 155）；
+4. 把两份文件拷到**运行根目录**的 `tpl\`（或工程目录就是运行根目录时
+   生成完即生效），刷新浏览器即见模板接管；之后按 16.2/16.3 精修。
+
+解析范围：窗体**顶层可视控件**（按 Top/Left 排成视觉顺序）；数据源、
+对话框、菜单、图片列表等非可视控件与状态栏自动跳过。解析是行级近似，
+多行字符串里恰有独立 `end` 行的 lfm 不支持（遇到即生成结果异常，手工
+修一下生成的模板即可）。
+
+### 16.1 文件与路由
+
+- 模板路径：`<root>\tpl\<窗体名>.m.html`（移动）/ `<root>\tpl\<窗体名>.html`
+  （桌面）（`--root` 指定目录，缺省 exe 目录；在仓库根目录跑 demo 时即
+  `<仓库根>\tpl\`，mobile_demo 就是这样）；
+- 下发：`GET /lw/tpl/<窗体名>`（自动带对应后缀），响应带
+  `Cache-Control: no-store` —— **改模板刷新页面即生效，不用重编译**；
+- 安全：文件名挡路径穿越（越界回 403）；模板不存在回 404，客户端
+  静默回退设计期布局，页面不报错。
+
+### 16.2 模板写法与搬迁语义
+
+模板 = 一段普通 HTML + 一段 `<style>`，占位符 `{%控件名%}` 引用窗体上
+控件的 **Name**（设计期名字，区分大小写）。浏览器端按当前布局模式
+fetch 对应端的模板，把每个占位符替换成该控件的**既有 DOM 节点**：
+
+- 是**搬迁不是重建**：控件节点原样搬进占位符，事件 id、Alpine 指令、
+  增量补丁全部照旧；切到另一端（或回退）再按建树原序搬回原位，
+  状态不丢；
+- 只写**窗体顶层控件**：模板 v1 只重排窗体顶层；容器（TPanel/
+  TGroupBox/TPageControl）内部仍是绝对定位，适配要在模板 CSS 里对
+  容器内控件单独贴边/定高（16.3 有现成写法）；
+- 模板没引用到的顶层控件仍按桌面坐标渲染（谁被引用谁进流式）；
+- **回退语义**：模板缺失、fetch 失败或占位符引用了不存在的控件名 →
+  整体回退设计期所见即所得（不会半套），不影响其他窗体。
+
+`MobileMainForm.m.html` 骨架（完整文件见 `tpl/`）：
+
+```html
+<style>
+  /* 模板自带样式，建议包一层自定义类避免与其他窗体的模板互相影响 */
+  .tpl-mdemo .row { display: flex; gap: 8px; align-items: center; }
+  .tpl-mdemo [data-lw-ph="edName"] > .lw-n { width: 100% !important; }
+  .tpl-mdemo [data-lw-ph="memLog"]  > .lw-n { width: 100% !important;
+                                              height: 220px !important; }
+</style>
+<div class="tpl-mdemo">
+  {%lblTitle%}
+  <div class="row">{%lblName%}{%edName%}{%btnHello%}</div>
+  {%pnlInfo%}
+  {%memLog%}
+  <div class="row">{%btnClear%}</div>
+</div>
+```
+
+业务侧的全部工作量就是这一份 HTML；`.pas`/`.lfm` 与桌面版完全共用
+（对照 `demos/mobile_demo/uMobileMain.pas`，与普通窗体无异）。
+
+### 16.3 常用 CSS 钩子
+
+| 钩子 | 说明 |
+|---|---|
+| `.lw-ph` / `[data-lw-ph="控件名"]` | 占位符容器（搬迁后控件 DOM 的父级） |
+| `.lw-ph > .lw-n` | 控件包装层：**桌面的定宽定高都挂在这一层**，流式布局里通常要 `width:100% !important`、需要时改 `height` |
+| `.lw-ph > .lw-n > .lw-body` | Panel/GroupBox/页签的内容层，随包装层一起撑满 |
+| `html[data-lw-layout="mobile"]` | 移动布局根标记（框架自动维护），模板/业务 CSS 可据此做精细适配 |
+| `html[data-lw-input="touch"]` | 触屏标记（与宽度无关），触控细节用它区分 |
+
+**层级注意**：占位符 > 面板 `.lw-n` > `.lw-body` > 子控件 `.lw-n`
+中间隔了包装层，选中面板**内部**控件要用后代选择器（空格），不能
+`>` 直连 —— 这是模板 CSS 最常见的跑版原因。
+
+### 16.4 断点、硬覆盖与回退（无模板窗体）
+
+- 断点：视口 ≤834px 进入移动布局，≥1100px 退出，835~1099 回滞区保持；
+  首次落点在回滞区时按触屏能力决定；
+- 硬覆盖：URL `?layout=mobile|desktop|auto` > `sessionStorage['lw-layout']`
+  > 自动判定；运行期 `LW.layout.set()/get()`；
+- **没有模板的窗体（两端一致：设计期所见即所得）**：桌面端绝对定位
+  原样（与历来行为完全相同）；移动端保持设计尺寸（字号原大），固定
+  贴左、禁标题栏拖动，超出视口由 `#lw-root` 滚动平移
+  （`html[data-lw-pan]`）；**不做整体等比缩放**（缩到 390 屏字号只剩
+  0.3 倍不可读，实测后否决）。
+
+### 16.5 测试
+
+统一跑法见第 14 节；模板相关 CDP 探针（需无头 Edge，调试端口 9239）：
+
+```
+python tests/cdp_desktop_tpl.py    # 桌面模板：套用/几何不变/三态切换/无模板回退 7 项
+python tests/cdp_mobile_demo.py    # 模板窗体：桌面/390/切回/硬覆盖/路由 19 项
+python tests/cdp_fit_scale.py      # 无模板回退平移模式 23 项
+python tests/cdp_device_probe.py   # 判定信号 8 场景
+python tests/cdp_updown.py         # TUpDown 两端形态与联动 7 项
+```
+
+生成器解析/内容另有控制台测试（不依赖 IDE，直接 fpc 编译运行）：
+
+```
+fpc -FE. -FU. -Fu../src/design tests/tplgen_test.lpr
+tests/tplgen_test.exe demos/gallery/ugallery.lfm tests/out_tpl
+```
+
+注意：CDP 模拟改视口用 `Emulation.setDeviceMetricsOverride` **直接叠加
+新尺寸**，不要先 clear —— clear 会瞬间回到真实窗宽（1200，命中退出
+断点），回滞区把误判锁死（MOBILE.md §8.8）。
+
+## 17. 仓库注意
 
 - 根目录 `src - 副本 (N)`、`src稳定版20261111`、`src高吞吐量` 等是历史
   快照，**唯一权威源码是 `src/`**；`demos/gallery - 副本` 同理；

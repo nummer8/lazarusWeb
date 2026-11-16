@@ -1,8 +1,14 @@
 # 控件 / 属性映射表
 
-与服务端 `src/core/lwwriter.pas`、客户端 `src/client/lw.js` 的实际能力对齐。
+与服务端 `src/core/lwwriter.pas`、默认渲染层 `src/client/lw-alpine.js` 和
+可选 Ext 渲染层 `src/client/lw.js` 的实际能力对齐。
 `tools/lwconvert.exe` 的报告依据的正是这张表；实测覆盖率见
 [`docs/CONTROL_MATRIX.md`](CONTROL_MATRIX.md)（`tools\build_audit.bat` 自动生成）。
+
+> **两层说明**：默认层是 Alpine.js，把下表 `kind` 渲染成原生 HTML/CSS
+> （复杂控件如 grid/tree/chart 由 `lw-alpine.js` 自建 DOM/SVG）；表中出现的
+> `Ext.*` 名称指**可选 Ext 层**的对应组件（`--client=ext` + `ext-<版本>/` 才启用）。
+> `kind`、回写属性与事件在两层一致；窗体模板与移动端适配仅默认 Alpine 层具备。
 
 ## 图例
 
@@ -15,12 +21,12 @@
 
 | LCL | kind | 浏览器端 | 事件 |
 |---|---|---|---|
-| TForm / TLWForm | form | Ext.window.Window | OnClose（右上角×= mrCancel） |
+| TForm / TLWForm | form | 原生 form 容器（Alpine 默认）/ Ext.window.Window（可选） | OnClose（右上角×= mrCancel） |
 | TPanel | panel | absolute 面板（bevel/border 保留） | — |
-| TGroupBox | groupbox | Ext.form.FieldSet | — |
+| TGroupBox | groupbox | fieldset（Alpine 默认）/ Ext.form.FieldSet（可选） | — |
 | TScrollBox | scrollbox | autoScroll 面板 | — |
 | TFrame | frame | absolute 面板 | — |
-| TPageControl | tabs | Ext.tab.Panel | 页签切换（active 下发） |
+| TPageControl | tabs | 原生 tabs（Alpine 默认）/ Ext.tab.Panel（可选） | 页签切换（active 下发） |
 | TTabSheet | tabsheet | tab 内面板 | — |
 
 > 注意：`TTabSheet.Visible` 在 LCL 里恒为 False，页签显隐由 PageControl 的
@@ -64,10 +70,10 @@
 |---|---|---|
 | TStringGrid | grid | 表头/列宽/行高/固定行、整树下发；OnEditingDone 回写 Cells；OnClick 前先回写 Row/Col（浏览器送数据行号，服务端加回 FixedRows） |
 | TDrawGrid | drawgrid | 只读展示（TDrawGrid 无 Cells/Objects 字符串存储）。2026-11-13 起支持**自绘单元格**：`LWSetDrawCellText(G, c, r, '@bar(72,#dc2626)')`（lwui）写标记，writer 从挂靠仓库下发，浏览器端 `$lwDrawCell` 渲染成进度条/徽章/迷你图/星级。标记：`@bar(0-100[,#色])`、`@chip(文本[,#色])`、`@spark(v1,v2,…[,#色])`、`@stars(0-5)`。表头取固定行 0（`LWSetDrawCellText(G, c, 0, …)` + FixedRows≥1）。nogui 是无头 widgetset，LCL 级 OnDrawCell 画不出像素，浏览器端 DSL 是唯一自绘路径；纯文本格直接可用（TStringGrid 的 grid 渲染不受影响） |
-| TTreeView | tree | Ext.tree.Panel，nodes 下发 |
+| TTreeView | tree | 原生 tree（Alpine 默认）/ Ext.tree.Panel（可选），nodes 下发 |
 | TListView | listview | 复用表格渲染（`buildGrid`）：`cols` 来自 `Columns[].Caption`，行 = `Caption` + `SubItems`；**设计期至少加一列**，否则列数为 0、看起来是空表 |
 | TProgressBar | progress | pos/min/max/orientation，单向（服务端 → 浏览器） |
-| TTrackBar | trackbar | Ext.slider.Single，pos/min/max/frequency，单向 |
+| TTrackBar | trackbar | range input（Alpine 默认）/ Ext.slider.Single（可选），pos/min/max/frequency，单向 |
 | TUpDown | updown | 上下箭头的数字框，value/min/max，单向（`TUpDown.Position` 下发） |
 | TImage | image | 占位图（不传输二进制图片内容） |
 | TBevel | bevel | 纯 CSS 边框/留白（`.lw-bevel`） |
@@ -216,7 +222,7 @@ SQLite + SQLdb 的三条硬规则（TEXT→ftMemo、sqoAutoApplyUpdates、编辑
 
 | LCL | 说明 |
 |---|---|
-| TMainMenu / TMenuItem | 独立于控件树序列化进 form.menu，浏览器端 Ext.menu.Menu；支持 Caption、Shortcut（ShortCutToText）、Checked、Enabled、分隔线、OnClick |
+| TMainMenu / TMenuItem | 独立于控件树序列化进 form.menu，浏览器端原生菜单（Alpine 默认）/ Ext.menu.Menu（可选）；支持 Caption、Shortcut（ShortCutToText）、Checked、Enabled、分隔线、OnClick |
 | TPopupMenu | 同上（右键上下文按 kind 预留） |
 | TToolBar | 绝对定位容器 + 按钮项 |
 | TStatusBar | 文本走 form.status 面板数组；外观走 form.sb（高度 / 每格 Width、Alignment、Bevel / SimplePanel+SimpleText）。前端按 LCL 规则画：最后一格延到右边缘，高度按 DesignTimePPI 折算。服务端改 Panels[i].Text 后随下次响应同步 |
@@ -295,7 +301,7 @@ ExtCtrls / Grids / DBCtrls 的日常控件基本都在 ✅ 一栏。
 | LCL/框架 | kind / 指令 | 前端 |
 |---|---|---|
 | `TLWLoginForm`（lwlogin.pas） | form（带 RequireAuth 会话语义） | 登录窗体渲染 + TryLogin → `S.Authenticated` |
-| `TLWChart`（lwchart.pas） | `chart`（charttype/title/categories/series） | Ext.chart.CartesianChart（line/bar）/ PolarChart（pie），`__lwChartSig` 指纹增量 |
+| `TLWChart`（lwchart.pas） | `chart`（charttype/title/categories/series） | Alpine 内置 SVG（line/bar/pie，默认）/ 可选 Ext.chart.CartesianChart（line/bar）/ PolarChart（pie），`__lwChartSig` 指纹增量 |
 | `TLWDBGrid`（lwdbgrid.pas） | `dbgrid`（pagesize/page/pages/total/filtertext/showfilter/summary + hg） | tbar 过滤条 + bbar 页码条/汇总条；`hg=[{t,a,n}]` 两级表头（Alpine 两行 thead：分组格 colspan、未分组列 rowspan=2 贯通；Ext 嵌套 columns 分组列）；OnPageChange/OnFilter 框架级事件 |
 
 TLWDBGrid 多表头：LCL 的 `TColumnTitle` 只有 Caption/Alignment/MultiLine，
@@ -307,9 +313,9 @@ lfm 里必须写 `TLWDBGrid`（FPC 的 GetClass 只认精确类名，同 TLWDBNa
 演示：`demos/db`（基本信息/价格与库存 + 统计页混排）、`demos/gallery`（数据感知
 页 grdDb 三组 + 末列贯通、大表分页页 grdBig 两组）；验收
 `tests/cdp_dbgrid_headergroups.py`（29 项）、`tests/cdp_gallery_dbgrid_hg.py`（24 项）。
-| `TDateEdit`（EditBtn） | `dateedit`（text + iso） | Ext.form.field.Date，format Y-m-d，ISO 回传 |
-| `TTimeEdit`（EditBtn） | `timeedit`（text + iso） | Ext.form.field.Time，format H:i:s，ISO 回传 |
-| `TLWForm.ShowToast` | cmd `{type:'toast',title,text}` | Ext.window.Toast（align:'t'） |
+| `TDateEdit`（EditBtn） | `dateedit`（text + iso） | `<input type=date>`（Alpine 默认）/ 可选 Ext.form.field.Date，format Y-m-d，ISO 回传 |
+| `TTimeEdit`（EditBtn） | `timeedit`（text + iso） | `<input type=time>`（Alpine 默认）/ 可选 Ext.form.field.Time，format H:i:s，ISO 回传 |
+| `TLWForm.ShowToast` | cmd `{type:'toast',title,text}` | Alpine store.toasts + 原生 DOM（默认）/ 可选 Ext.window.Toast（align:'t'） |
 
 注意：本机 Lazarus 的 `TCustomEditButton = class(TCustomAbstractGroupedEdit)`
 （TCustomControl 系），**不是** TCustomEdit —— dateedit/timeedit 的

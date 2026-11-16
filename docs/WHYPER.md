@@ -56,7 +56,7 @@ curl --noproxy '*' http://127.0.0.1:8080/lw/hyper/status
 | `--workers=N` | 2 | worker 进程数 |
 | `--exe=路径` | （必填） | 业务可执行文件；Linux/macOS 无扩展名 |
 | `--base-port=N` | port+1 | 第一个 worker 的端口，之后顺次 +1 |
-| `--root=路径` | — | 转发为 worker 的 `--root=`（项目根，含 ext-<版本>/） |
+| `--root=路径` | — | 转发为 worker 的 `--root=`（项目根，含 `src/client/alpine.min.js` 等默认渲染资源；`ext-<版本>/` 仅可选 Ext 层需要） |
 | `--theme=名字` | — | 转发为 worker 的 `--theme=` |
 | `--worker-args="..."` | — | **原样追加**到 worker 命令行，空格分隔多个参数 |
 | `--logdir=目录` | `<TEMP>\lwhyper` | worker 日志目录（worker1.log…） |
@@ -92,9 +92,9 @@ worker 还会自动带上 `--nogui`（不弹服务端面板）与 `--log=<logdir
 | 参数 | 说明 | 典型场景 |
 |---|---|---|
 | `--config=path` | 指定业务 ini；缺省自动找 exe 同目录 `<exe名>.ini` | 多套配置切换 |
-| `--root=路径` | 项目根目录（含 ext-<版本>/）；也可用 lwhyper 的 `--root=` 转发 | 部署目录不在缺省位置 |
+| `--root=路径` | 项目根目录（默认 Alpine 资源在 `src/client/`；可选 Ext 才需 `ext-<版本>/`）；也可用 lwhyper 的 `--root=` 转发 | 部署目录不在缺省位置 |
 | `--form=Name` | 默认窗体名（打开首页呈现的窗体） | 一 exe 多入口 |
-| `--client=ext\|alpine` | 浏览器渲染层；不指定时自动探测 | 调试渲染层差异 |
+| `--client=alpine\|ext` | 浏览器渲染层：`alpine` 默认（内置）；`ext` 可选，需自备 ext 目录；不指定时自动探测优先 alpine | 调试渲染层差异 |
 | `--ext=x.x.x` / `--extdir=目录` | Ext 版本 / ext-js 目录 | 多版本 Ext 共存 |
 | `--theme=crisp` | classic/crisp/gray/material/neptune/graphite，URL `?theme=` 可覆盖 | 也可用 lwhyper 的 `--theme=` 转发 |
 | `--title=标题` | 浏览器标签页标题 | 品牌定制 |

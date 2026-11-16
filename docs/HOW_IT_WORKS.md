@@ -1,11 +1,11 @@
 # lazarusWeb 工作原理详解
 
 > 面向第一次读这套代码的人：把"LCL 控件 + 服务端 + 浏览器渲染"这三件事讲成一条线。
-> 编写日期 2026-11-11 · 依据当时代码快照（`src/core` 27 个单元 13226 行，`src/client/lw.js` 2834 行；行数仅为快照，不在文档里持续更新）
-> 配套文档：`ARCHITECTURE.md`（模块清单）、`NOTES.md`（146 个坑的踩坑实录）、`MAPPING.md`（控件映射表）
-> 注意：本文以 Ext 层（lw.js）为例讲解，机制在两层完全一致；**当前默认渲染层是
-> Alpine.js**（`--client` 不指定时自动探测优先 alpine，见 `MANUAL.md` §5），
-> Ext 层需 `--client=ext` 显式启用。
+> 编写日期 2026-11-11 · 依据当时代码快照（`src/core` 27 个单元 13226 行；行数仅为快照，不在文档里持续更新）
+> 配套文档：`ARCHITECTURE.md`（模块清单，默认 Alpine 层 + 可选 Ext 层，含 2.14 移动端自适应）、`NOTES.md`（159 个坑的踩坑实录）、`MAPPING.md`（控件映射表）
+> **本文以默认 Alpine.js 层（`src/client/lw-alpine.js`）为主线讲解**。
+> 可选 Ext 层（`lw.js`）走完全相同的 JSON 协议、reconcile 与事件/推送通道，
+> 仅在 DOM 构建和样式体系上不同：`--client=ext` 显式启用，不指定时优先 Alpine。
 
 ---
 
@@ -20,15 +20,16 @@
 所以不存在"两套渲染并存"。真实的动作是**一次序列化 + 一次对账**：
 
 ```
-服务端 LCL 控件树  ──序列化──►  JSON 快照  ──渲染──►  浏览器 Ext 组件树
+服务端 LCL 控件树  ──序列化──►  JSON 快照  ──渲染──►  浏览器原生 DOM 组件树（Alpine，默认）
       ▲                        {id,kind,      ▲                  │
-      │                         props,       │                  │
+      │                         props,       │                  │  （可选 Ext 层：Ext 组件树）
       │                         children}    │                  │
       └──────────── 事件 {id, ev, val} ◄─────┴──────────────────┘
 ```
 
 - `lwwriter.pas` 负责向右（树 → JSON）
-- `lw.js` 负责再向右（JSON → Ext 组件）和向左（事件 → JSON）
+- `lw-alpine.js`（默认）负责再向右（JSON → 原生 DOM/Alpine 组件）和向左（事件 → JSON）；
+  可选 Ext 层由 `lw.js` 完成同一职责，协议不变
 - `lwdispatch.pas` 负责最左（JSON → 真实的 LCL 事件调用）
 
 理解了这一点，剩下的全是细节。而细节之所以复杂，都源于一个决定：**用真的 LCL 控件，而不是影子控件**。
@@ -128,7 +129,7 @@ LWInvokeEvent(c, ev, row, col);                     // ③ RTTI 找方法指针�
 
 ### 2.1 为什么需要 ①（一个真实存在的 bug）
 
-`lw.js` 只在控件**挂了 `OnChange`** 时才回传值。所以一个没挂 `OnChange` 的编辑框，在服务端永远停留在构建时的初始 `Text`——
+默认渲染层（`lw-alpine.js`，可选 Ext 层同）只在控件**挂了 `OnChange`** 时才回传值。所以一个没挂 `OnChange` 的编辑框，在服务端永远停留在构建时的初始 `Text`——
 
 于是登录窗体上：用户输了密码 → 点"登录" → 服务端校验的是**空/旧的密码** → 输错也能过。
 
@@ -229,7 +230,7 @@ end;
 
 ### 4.1 reconcile
 
-新树到达后 `applyPayload`（`lw.js:2322`）→ `syncChildren`（`lw.js:1802`）按 `id` 对账，三路分支：
+新树到达后 `applyPayload` → `syncChildren`（默认层在 `lw-alpine.js`，可选 Ext 层在 `lw.js`）按 `id` 对账，三路分支：
 
 ```js
 list.forEach(function (n) {
@@ -247,11 +248,17 @@ old.forEach(function (id) { if (!keep[id]) destroyNode(id); });  // 消失 → �
 
 窗体级别也走同一套：`p.forms` 里没出现的窗体直接 `close + destroy`（服务端删了窗体，浏览器跟着消失）。
 
-### 4.2 布局：绝对定位，不是 CSS 流
+### 4.2 布局：设计期坐标是基准，默认层在其上做自适应
 
-LCL 是**绝对坐标 + `Align`/`Anchors`**，没有 CSS 的流式排版。所以 Ext 组件全部按 `x/y/w/h` 绝对定位，`runLayout`（`lw.js:1831`）自己算一遍 `Align`，并在容器 `resize` 时重算——**不交给浏览器去弹性排版**。
+LCL 是**绝对坐标 + `Align`/`Anchors`**，没有 CSS 的流式排版。所以前端先按
+`x/y/w/h` 绝对定位，`runLayout` 自己算一遍 `Align`，并在容器 `resize` 时重算
+——**不交给浏览器去弹性排版**（`Anchors` 不做前端吸附计算，见 `AUDIT_LFM.md`）。
+这是"像素级还原设计器"的代价。
 
-这是"像素级还原设计器"的代价，也意味着：**这套框架天生不适合做响应式/移动端**。要自适应，得在业务层自己写 `OnResize` 里重排控件。
+与可选 Ext 层不同，**默认 Alpine 层在此之上提供前端自适应**：按视口宽/触屏
+能力判定布局模式，配合窗体级 HTML 模板做 DOM 搬迁，零 Pascal 改动即可得到
+手机单列排布；未配模板时保持设计期所见即所得（移动端为平移模式）。
+机制见 `ARCHITECTURE.md` 2.14，使用见 `MOBILE.md`。
 
 ### 4.3 推送通道
 
@@ -357,8 +364,9 @@ fphttpserver（每请求一线程）
 | 3 | `src/core/lwsession.pas` | 会话、窗体清单、出站队列、模态 | `BuildPayload` L527、`ShowModalInSession` L587 |
 | 4 | `src/core/lwwriter.pas` | 树 → JSON：白名单、内部控件、特判 | `KindOf` L97、`MakeBase` L241、`WriteControl` L1461、`WriteForm` L1507 |
 | 5 | `src/core/lwdispatch.pas` | 事件 → RTTI：回填、派发、按钮特判 | `LWInvokeEvent` L662、`LWHandleEvent` L769 |
-| 6 | `src/client/lw.js` | 对账、布局、事件捕获、推送 | `fire` L257、`createNode` L582、`syncChildren` L1802、`runLayout` L1831、`applyPayload` L2322 |
+| 6 | `src/client/lw-alpine.js`（默认） | 对账、布局、事件捕获、推送、模板与移动端适配 | `syncChildren` / `runLayout` / `applyPayload` / `lwFetchTpl` |
 | 7 | `src/core/lwhttp.pas` | 路由表、静态资源、上传下载 | 路由分发 |
+| 8 | `src/client/lw.js`（可选 Ext 层） | 与第 6 项同职责，协议一致 | `createNode` / `syncChildren` / `runLayout` |
 
 **最快的验证方式**不是读代码，是跑一个 demo 把 JSON 打出来看：
 
@@ -373,12 +381,12 @@ demos\hello\hello.exe --port=8090 --verbose
 
 ## 10. 一句话总结
 
-> 它不渲染两遍。它把 **LCL 控件树**当作唯一数据源，把 **Ext JS** 当作一块可以远程刷新的"显示器"，把 **HTTP 请求线程**当作可以阻塞的消息循环。三件事凑齐，桌面程序的执行模型就在浏览器里被完整复现了。
+> 它不渲染两遍。它把 **LCL 控件树**当作唯一数据源，把**默认 Alpine.js 层的原生 DOM**（可选 Ext 组件层）当作一块可以远程刷新的"显示器"，把 **HTTP 请求线程**当作可以阻塞的消息循环。三件事凑齐，桌面程序的执行模型就在浏览器里被完整复现了。
 
 ---
 
 ## 附：容易踩的三个理解误区
 
-1. **"浏览器在跑 LCL"** —— 不。浏览器一行 Pascal 都没有，它跑的是 Ext JS。LCL 只在服务端进程里跑。
+1. **"浏览器在跑 LCL"** —— 不。浏览器一行 Pascal 都没有，默认跑的是 Alpine.js 驱动的原生 DOM（可选 Ext 层则是 Ext JS）。LCL 只在服务端进程里跑。
 2. **"每次事件都重建整棵树"** —— 服务端确实重新序列化整棵树（`BuildPayload`），但浏览器端按 `id` 对账，只有差异节点被 patch，焦点和输入态都保留。
 3. **"`ShowModal` 是浏览器端的弹窗"** —— 不。服务端线程真的在等，浏览器只是它等待的对象。浏览器刷新/关标签页会让它等到 180 秒超时。

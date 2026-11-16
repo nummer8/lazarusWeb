@@ -1,9 +1,9 @@
 # lazarusWeb 技术文档 —— 技术路径 · 实现方法 · 使用说明
 
-> 版本 0.9.0 · 更新日期 2026-11-09
+> 版本 0.9.6 · 更新日期 2026-11-16
 > 配套文档：`README.md`（快速上手）、`docs/COMPARISON_unigui.md`（与 uniGUI 对照）、
 > `docs/CONTROL_MATRIX.md` / `docs/DB_AWARE_MATRIX.md`（控件支持度实测矩阵）、
-> `docs/NOTES.md`（146 个坑的踩坑实录，坑 23/66/108 等旧结论已被后续坑修订）、`deploy/README.md`（HTTPS/反向代理/集群）。
+> `docs/NOTES.md`（159 个坑的踩坑实录，坑 23/66/108 等旧结论已被后续坑修订）、`deploy/README.md`（HTTPS/反向代理/集群）。
 
 ---
 
@@ -12,8 +12,10 @@
 ### 1.1 定位
 
 lazarusWeb 是 **Lazarus 桌面程序的 Web 化运行时**：把真实运行的 LCL 控件树
-直接序列化成 Ext JS 界面。业务程序只改一行基类（`TForm` → `TLWForm`），
-事件、属性、`.lfm` 全部原样保留，就能以服务程序的形式跑在浏览器里。
+序列化成浏览器界面——**默认 Alpine.js 渲染层**（内置依赖，零额外部署），
+**Ext JS 为可选渲染层**（自备 `ext-<版本>/` 并 `--client=ext` 显式启用）。
+业务程序只改一行基类（`TForm` → `TLWForm`），事件、属性、`.lfm` 全部原样保留，
+就能以服务程序的形式跑在浏览器里。
 
 ### 1.2 选型思路（为什么走这条路）
 
@@ -31,23 +33,75 @@ lazarusWeb 是 **Lazarus 桌面程序的 Web 化运行时**：把真实运行的
 2. **nogui widgetset 当"虚拟显示器"**。服务端编译为 `--ws=nogui`，控件真实创建、
    真实维护属性与事件，只是没有屏幕。缺的 GDI 设施由 `lwws.pas` 补丁提供。
 3. **服务端权威，浏览器只做渲染**。控件树、状态、事件路由全在服务端；
-   浏览器端 `lw.js` 只负责把 JSON 树渲染成 Ext JS 并做增量协调（reconcile）。
+   浏览器端默认由 `lw-alpine.js`（配 `alpine.min.js`）把 JSON 树渲染成原生
+   DOM/CSS 并做增量协调（reconcile）；可选 Ext 层由 `lw.js` 渲染成 Ext 组件，
+   两层共用同一套 JSON 协议与事件/推送通道。
 
 ### 1.3 总体架构
 
 ```
-浏览器 (Alpine.js 3.14.9 默认 / Ext JS x.x.x 可选)   服务端 (FPC 3.3.1 + Lazarus, nogui)
+浏览器（Alpine.js 3.14.9 默认 / Ext JS 可选）  服务端 (FPC 3.3.1 + Lazarus, nogui)
 ┌────────────────────────────┐  WS/长轮询 ┌──────────────────────────────┐
-│ lw.js 或 lw-alpine.js       │  JSON     │ lwhttp   fphttpserver 多线程   │
-│  Ext.window/panel/grid/... │ ←────────→ │ lwsession 每标签页一棵 LCL 树  │
-│  reconcile 增量协调         │  HTTP      │ lwwriter  LCL树 → JSON        │
-│  WS 只传事件请求/响应       │            │ lwdispatch 事件 → RTTI 调业务  │
-│  长轮询游标统一下发推送      │            │ lwws     nogui 补丁(虚拟显示器)│
+│ lw-alpine.js（默认）        │  JSON     │ lwhttp   fphttpserver 多线程   │
+│  原生 DOM/CSS + Alpine 指令│ ←────────→ │ lwsession 每标签页一棵 LCL 树  │
+│  可选：lw.js → Ext 组件    │  HTTP      │ lwwriter  LCL树 → JSON        │
+│  reconcile 增量协调         │            │ lwdispatch 事件 → RTTI 调业务  │
+│  WS 只传事件请求/响应       │            │ lwws     nogui 补丁(虚拟显示器)│
+│  长轮询游标统一下发推送      │            │                              │
 └────────────────────────────┘            └──────────────────────────────┘
 ```
 
-服务端核心单元与浏览器端 lw.js 的行数为早期快照（lw.js 现约 2800+ 行，
-另有第二渲染层 lw-alpine.js，见 2.11 节），精确行数不在此维护。
+服务端核心单元与浏览器端渲染脚本的行数为早期快照（默认层 lw-alpine.js 与
+可选层 lw.js 均持续演进），精确行数不在此维护；两层职责见 2.3。
+
+### 1.4 移动端技术路径（自适应 + 窗体模板，服务端零改动）
+
+手机/窄窗口适配沿用同一世界观：**服务端权威、浏览器只管呈现**——设备
+识别、模板、布局全部在渲染层完成，业务 Pascal 代码一行不改，服务端
+单元零改动（实现细节见 2.14，指南见 `MOBILE.md` / `MANUAL.md` 第二篇 16）。
+
+| 候选路线 | 结论 |
+|---|---|
+| 服务端 UA 探测 + 双树下发 | 判定进服务端就要开维护口子，且 UA 不可靠、桌面窗口缩小照样误判 |
+| 整体等比缩放（transform scale） | 390 屏上字号只剩约 0.3 倍不可读（实测后否决，坑 150） |
+| 流式重排（自研布局引擎） | 工程量大、与设计期锚定布局冲突，长期维护成本高 |
+| **前端自适应 + 窗体级 HTML 模板（本方案）** | 判定/模板/回退全在客户端；业务可选配模板，不配也能用 |
+
+关键决策四条：
+
+1. **判定三量分离，只在前端做**：`layout`（视口宽 + 回滞：≤834 进 /
+   ≥1100 出）、`input`（触屏能力）、`capability`（兜底）各判各的，
+   根标记挂 `html`；服务端从头到尾不知道设备是什么；
+2. **模板借鉴"占位符"思想自研**：移动模板 `<root>\tpl\<窗体名>.m.html`、
+   桌面模板 `<窗体名>.html`，同用 `{%控件名%}` 占位，客户端 fetch 后把
+   **已构建的 DOM 节点搬迁**进占位符（不重建、不重挂事件）；服务端只做
+   静态文件下发，不解析模板内容；
+3. **搬迁不改逻辑父级**：占位符只是视觉容器，`S.P[id]` 不变，增量补丁
+   机制完全不受影响（坑 149）；占位符对不上控件名就整体回退，绝不半套；
+4. **无模板也是一等公民**：没配模板的窗体两端都保持设计期所见即所得
+   （桌面=绝对定位原样；移动=平移模式，设计尺寸原样、`#lw-root` 滚动、
+   字号不缩），保证任何老程序开箱可用、行为与历来完全一致。
+
+**怎样实现桌面端 ↔ 移动端的自适应（机制一览）**：
+
+1. **判定**：三量分离、只在前端。`layout` 按视口宽 + 回滞判定
+   （≤834px 进移动 / ≥1100px 出 / 之间保持，防拖动抖动）；`input` 用
+   `any-pointer:coarse` + `hover:none` 判触屏；`capability` 只兜底不参与。
+   结果挂根标记 `html[data-lw-layout]` / `html[data-lw-input]`，
+   `matchMedia` 现读 + rAF 去重；硬覆盖 `?layout=` →
+   `sessionStorage['lw-layout']` → `LW.layout.set()`，优先级最高；
+2. **配了模板 → 流式重排（DOM 搬迁）**：客户端按当前模式 fetch 对应端
+   模板，把控件**已构建的 DOM 节点整体搬迁**进 `{%控件名%}` 占位符——
+   不重建、事件 id 与增量补丁照旧；移动端窗体贴满视口，桌面端**窗体
+   几何保持设计期**（只有客户区内容变流式，超高滚动）；切到另一端
+   按建树原序搬回再套另一份模板；
+3. **没配模板 → 设计期所见即所得**：桌面绝对定位原样；移动平移模式
+   （设计尺寸原样、贴左、禁拖动、`#lw-root` 滚动，`html[data-lw-pan]`）；
+4. **个别控件换形态**：CSS 按 `data-lw-layout`/`data-lw-input` 切换，
+   如 TUpDown 桌面上下箭头 / 移动端 −/+ 大触控区（坑 152）。
+
+业务代码全程零改动；想给某窗体做手机单列版，只需新增一个模板文件
+（改完刷新即生效），范例 `demos/mobile_demo`。端到端细节见 2.14。
 
 ---
 
@@ -73,11 +127,14 @@ nogui widgetset 缺显示器、缺画布，直接 `TForm.Create` 就 AV（坑 1�
 - 特殊控件有专门序列化分支：`TRadioGroup/TCheckGroup/TValueListEditor` 的
   Items/Rows 结构（坑 25）、`TTreeView` 的节点树、`TStringGrid` 的行列等。
 
-### 2.3 lw.js —— 浏览器端渲染与协调（Ext 渲染层）
+### 2.3 lw-alpine.js —— 默认浏览器端渲染与协调（Alpine.js 层）
 
-- 把 `kind` 映射到 Ext JS 组件（39 个可视控件有真实渲染分支）；
-- **reconcile**：新树到达后按 id 对账，未变的 DOM/Ext 实例不动（保留输入焦点）；
-- 事件捕获：Ext 组件事件带上 `id/ev/val`（连着 WS 时走 WS 帧，否则 `POST /lw/api/event`）；
+- 把 `kind` 映射到**原生 HTML/CSS + Alpine 指令**（默认层覆盖全部常用可视控件，
+  含 grid/tree/chart 的 SVG 渲染）；`alpine.min.js` 随包内置下发，不走 CDN；
+- **reconcile**：新树到达后按 id 对账，未变的 DOM 实例不动（保留输入焦点）；
+- 事件捕获：DOM 事件带上 `id/ev/val`（连着 WS 时走 WS 帧，否则 `POST /lw/api/event`）；
+- **窗体模板与移动端适配只在本层实现**（见 2.14）：模板 DOM 搬迁、视口/触屏判定、
+  单列流式排布均在客户端完成；未配模板时仍保持设计期所见即所得；
 - **长轮询 `/lw/api/poll` 是唯一推送通道**：推送统一入会话队列带序号（模态/消息框/遮罩/下载指令），各页签带 `after` 游标各取各的；
 - **WebSocket `/lw/ws` 只传事件请求/响应**：连上后事件走 WS 帧（长轮询不停），断了自动退回 HTTP `/lw/api/event`；
 - 会话归属：sid 存 **sessionStorage**（页签级）。刷新留在同一会话；
@@ -85,6 +142,11 @@ nogui widgetset 缺显示器、缺画布，直接 `TForm.Create` 就 AV（坑 1�
   `/lw/api/attach` 仍在：显式带同一个 sid 打开（刷新、或业务自己把
   sid 传给新页签）就挂到已有会话上，按游标各取各的推送。
   `localStorage['lw.persist']='1'` 可改成跨页签/跨重启保持。
+
+**可选 Ext 渲染层**：`lw.js` + `ext-<版本>/` 把同一份 JSON 映射到 Ext 组件树，
+需 `--client=ext`（或 `?client=ext`）显式启用并自备 Ext 分发包。两层共用上面的
+reconcile、事件、推送与会话协议；差别只在 DOM 构建方式与样式体系，以及
+Alpine 层独有的窗体模板/移动端适配（Ext 层回退设计期布局）。
 
 ### 2.4 lwsession.pas —— 会话与同步模态（976 行）
 
@@ -125,14 +187,18 @@ fphttpserver 多线程服务器，路由表：
 | `GET /lw/download?t=` | 一次性令牌下载（URL 不出现服务端路径） |
 | `GET /lw/ajax/<名字>` | 自定义 AJAX 端点（lwajax 注册） |
 | `GET /lw/healthz` | 健康探针 `{"ok":true,"sessions":..,"uptime":..}` |
-| `GET /ext/<版本>/...` | Ext JS 静态资源（任意版本目录，见下） |
+| `GET /lw/tpl/<名称>.m.html、<名称>.html` | 窗体布局模板（方案 B，移动 `.m.html` / 桌面 `.html`）：`<root>\tpl\` → `<exe目录>\tpl\` 两级回退，挡路径穿越（403），响应 no-store（改模板刷新即生效）；占位符对不上时客户端整体回退设计期布局（坑 149） |
+| `GET /lw/lw-alpine.js、/lw/alpine.min.js…` | 默认 Alpine 层脚本/样式（lw-alpine.js / lw-alpine.css / alpine.min.js） |
+| `GET /lw/lw.js、/lw/lw.css` | 可选 Ext 层脚本/样式（`--client=ext` 时才加载） |
+| `GET /ext/<版本>/...` | 可选 Ext JS 静态资源（任意版本目录，见下；未部署 Ext 时不请求） |
 | `GET /lw/ws` | WebSocket 升级（fphttpserver trunk，坑 26） |
 
 静态资源/根目录定位有多级回退（坑 30）：当前工作目录 → exe 向上 5 层 →
 `--root=` 显式指定。`--trust-proxy` 时客户端 IP 取 `X-Forwarded-For`。
 
-**Ext 目录解析与版本无关**（坑 40）：URL 里的版本段只是一个"目录名"，不再
-和 7.0.0 / x.x.x 这些具体版本号绑定。
+**Ext 目录解析与版本无关**（坑 40，仅可选 Ext 层需要）：URL 里的版本段只是
+一个"目录名"，不再和 7.0.0 / x.x.x 这些具体版本号绑定。默认 Alpine 部署
+没有 `ext-*` 目录，也不请求 `/ext/` 路由。
 
 ```
 ExtRootFor(ver):
@@ -163,6 +229,20 @@ CSS 三件套是否存在回落 crisp → classic → neptune，都不再写死�
 
 - `TLWFileUpload`（TButton 后代）：浏览器弹系统选框，XHR 带进度，
   按钮文字实时显示百分比；`Filter/Multiple/MaxSizeKB/TargetFolder` 全参与校验；
+- `TLWCamera`（`TLWFileUpload` 的专用后代，lwcamera.pas）：拍照控件，按环境
+  自动选路。移动端动态建 `<input type=file accept=image/* capture=environment|
+  user>` 唤起**系统相机 App**（`Facing` 控制前后置）；capture 方案不要求安全
+  上下文，手机走局域网 http 也能用。桌面端（鼠标/触控板 + HTTPS/localhost）
+  改用 getUserMedia 弹页面内取景框，「拍摄」把当前帧画进 canvas 压到长边
+  1600px 转 JPEG —— 桌面浏览器本来就忽略 capture，而 http 局域网下
+  getUserMedia 又被禁止，两条路都不通时退化选图片文件；失败过一次会置
+  `_camFail` 直接降级（getUserMedia 的 catch 已脱离用户手势，不能再弹文件框）。
+  上传/落盘/洗白/大小上限全部复用 TLWFileUpload 链路（lwupload 按
+  `C is TLWFileUpload` 找控件，后代天然命中），落盘后 `AddUploadedFile`
+  触发 `OnCapture`。预览是**浏览器本地**的：`PreviewImage` 指定目标 TImage
+  的名字，writer 解析成节点 id 下发，客户端拍完用 ObjectURL 直接塞 img
+  （`data-lw-photo` 标记 + `!important` 压过 TImage 的 visibility:hidden
+  绑定）—— 手机照片几 MB，不进组件树补丁；
 - multipart 自解析（坑 13.1），文件名**强制洗白**：去路径、去 `..`、去非法字符，
   不信 `Content-Disposition`（坑 13.2）；
 - 下载走**一次性令牌**：`SendFile` 登记 30 分钟令牌，浏览器拿到的只有
@@ -200,7 +280,7 @@ CSS 三件套是否存在回落 crisp → classic → neptune，都不再写死�
 | `lwhyper.pas` | 专用负载均衡器（对标 uniGUI Hyper Server）：单进程拉起 N 个 worker（同 exe 多开）、崩溃自动重启、HTTP 反向代理 + sid 会话粘性、WebSocket TCP 级透传、healthz 巡检；`tools/lwhyper.exe` 是入口，自身端点 `/lw/healthz`（汇总）与 `/lw/hyper/status`（worker 明细） |
 | `lwpanel.pas` + `lwrlog.pas` | GUI 服务端面板（对标 uniGUI 独立服务器窗口）与统一日志（见下） |
 | `lwconfig.pas` | 服务端配置文件（INI）：`Port` / `Theme` / `ExtDir` 三项，命令行优先级最高（见 3.2.1） |
-| `lwnewproject.pas` + `src/design/lwdesign.lpk` | IDE 向导（New Project 两个模板：默认 widgetset 与 nogui，差别只在 .lpi 的 `LCLWidgetType`）/ New Form / 组件面板，与 `tools/lwnew.exe` 命令行共用同一模板；lwdesign 把全部自定义控件注册进 IDE，带它们的窗体才能在设计器里打开 |
+| `lwnewproject.pas` + `src/design/lwdesign.lpk` | IDE 向导（New Project 两个模板：默认 widgetset 与 nogui，差别只在 .lpi 的 `LCLWidgetType`）/ New Form / 组件面板，与 `tools/lwnew.exe` 命令行共用同一模板；lwdesign 把全部自定义控件注册进 IDE，带它们的窗体才能在设计器里打开；另在 Tools 菜单注册「生成 lazarusWeb 窗体模板」（`lwdsgntplcore` 解析 .lfm + `lwdsgntplgen` 写盘，一次生成桌面/移动两份模板骨架，见 2.14 与坑 154） |
 | `lwconvert.exe` | **LCL → Web 转换器**：`.pas` 基类与 uses 改写、`.lpr` 启动代码改写、`.lpi` 重新生成为 nogui 工程，附支持度报告 |
 
 ### 2.12 GUI 服务端面板（lwpanel + lwrlog，对标 uniGUI 独立服务器）
@@ -230,6 +310,47 @@ fphttpserver（每请求一线程）
 
 同一会话的模态期间其它请求在事件队列上排队——与桌面程序模态语义一致。
 
+### 2.14 自适应与窗体模板（lw-alpine.js 内置，服务端零改动）
+
+手机/窄窗口适配与两端窗体模板全部在 Alpine 渲染层完成，服务端 Pascal
+不参与设备识别：
+
+- **判定三量分离**（判「布局模式」不判「设备」，全部现读 + rAF 去重 +
+  回滞，见 `MOBILE.md` §8）：`layout`（≤834px 进 / ≥1100px 出 / 回滞区
+  保持）、`input`（`any-pointer:coarse` + `hover:none`，触控细节）、
+  `capability`（visualViewport / orientation，兜底不参与判定）；
+  硬覆盖 `?layout=` / `sessionStorage['lw-layout']` / `LW.layout.set()`。
+  根标记：`html[data-lw-layout]`、`html[data-lw-input]`；
+- **窗体模板（两端同机制）**：窗体级 HTML 模板 `<root>\tpl\<窗体名>.m.html`
+  （移动）/ `<窗体名>.html`（桌面）由 `lwhttp.pas` 静态路由 `/lw/tpl/<名称>`
+  下发（挡路径穿越 403、缺失 404、`no-store` 改动即生效），服务端不解析
+  内容；客户端 `lwFetchTpl`/`lwApplyFormTpl` fetch 后把 `{%控件名%}`
+  占位符替换成该控件的既有 DOM 节点（**搬迁不重建**：事件 id、Alpine
+  指令、增量补丁照旧；换端按建树原序搬回再套另一份）。关键不变式：
+  搬迁**不改 `S.P[id]`**（逻辑父级不变，`syncChildren` 才能继续走
+  patch 而不是整棵重建，坑 149）；占位符对不上控件名 → `tplFallback`
+  整体回退。窗体级门控判 `fm.tplApplied || fm.tplPending`（等待模板
+  回包期间顶层也暂走流式路径，回包按序号丢弃过期响应）——移动端
+  接管窗体几何（贴满视口），桌面端**保持设计期位置尺寸**、客户区
+  内容流式（超高 `lw-kids-tpl` 滚动）；
+- **模板骨架一键生成（设计期包，坑 154）**：`lwdesign.lpk` 在 IDE **Tools
+  菜单**注册「生成 lazarusWeb 窗体模板（当前单元 LFM）」——`lwdsgntplgen`
+  挂菜单/写盘，`lwdsgntplcore` 行级解析 .lfm 顶层可视控件（非可视控件
+  跳过、按 Top/Left 视觉排序），一次生成桌面 + 移动两份模板骨架到
+  `<工程目录>\tpl\`：每控件 `{%控件名%}` 占位符 + **按设计期逐控件
+  `height` 定高的基础 CSS**（搬迁清内联宽高，不定高容器会塌陷，如
+  PageControl 塌到只剩页签），桌面按设计期宽度百分比给流式宽。生成件
+  可直接用，再按 16.2/16.3 精修；
+- **无模板回退 = 设计期所见即所得**：桌面绝对定位原样（历来行为）；
+  移动端窗体保持设计尺寸（字号原大）、固定贴左、禁拖动，超出视口由
+  `#lw-root` 滚动（`html[data-lw-pan]`）；不做整体等比缩放（390 屏
+  字号只剩 0.3 倍，实测不可读后否决，坑 150）；
+- **端侧形态适配**：个别控件按 `data-lw-layout`/`data-lw-input` 换形态，
+  如 TUpDown 桌面上下箭头 / 移动端 −/+ 大触控区（坑 152）。
+
+使用与开发指南见 `MANUAL.md`（使用篇「移动端」节 + 第二篇 16），
+可跑范例 `demos/mobile_demo`。
+
 ---
 
 ## 三、使用说明
@@ -237,7 +358,8 @@ fphttpserver（每请求一线程）
 ### 3.1 环境与构建
 
 - FPC 3.3.1 + Lazarus（本机 `c:\111\fpc`、`c:\111\lazarus`）；
-- Ext JS 7.0.0 / x.x.x（仓库根目录已带）。
+- Alpine.js（`src/client/alpine.min.js`，随仓库内置，默认渲染层，必须保留）；
+- Ext JS 7.0.0 / x.x.x（**可选**：自备 `ext-<版本>/` 且用 `--client=ext` 启用）。
 
 ```bat
 cd c:\lazarusWeb
@@ -266,9 +388,9 @@ Linux/macOS 用 `./build.sh`，`LAZBUILD` 环境变量可覆盖 lazbuild 路径�
 [lazarusWeb]
 Port=8090
 Theme=crisp
-ExtDir=ext-x.x.x
+ExtDir=ext-x.x.x          ; 可选：仅 Ext 渲染层需要
 ;Patch=0
-;Client=ext
+;Client=alpine            ; 默认；要用可选 Ext 层时改成 ext
 ```
 
 - 文件定位：`--config=` 显式指定；否则 `<exe目录>\<exe名>.ini` →
@@ -313,17 +435,26 @@ TMainForm = class(TLWForm)   // 原来是 class(TForm)
 | 同步模态 | `f.ShowModal = mrOk` 原样写，浏览器里真的等用户点 |
 | 消息框/输入框 | `ShowMessage / MessageDlg / InputQuery / QuestionDlg / MessageBox` 原样写 |
 | 文件上传 | 设计期摆 `TLWFileUpload`，写 `OnUpload(Sender, AFileName)` |
+| 拍照 | 设计期摆 `TLWCamera`，`PreviewImage='imgPhoto'`（本地回显），写 `OnCapture(Sender, AFileName)`；手机走系统相机（http 可用），桌面在 HTTPS/localhost 下走页面内取景 |
 | 文件下载 | `SendFile('报表.xlsx')` 或 `SendText(csv.Text, '清单.csv', True)` |
 | 报表导出 | `TLWReport`：`SaveHTML / SaveCSV / SaveXLSX` 三出口 |
 | 图表 | `TLWChart`：ctLine / ctBar / ctPie，运行时可切 |
 | 自定义 AJAX | `TLWApp.AddAjax('items/price', handler)`，前端 `fetch('/lw/ajax/items/price')` |
 | Toast | `Self.ShowToast('已保存')` |
 | DB 网格分页 | `TLWDBGrid.PageSize := 20; ShowFilter := True; SummaryType := gsSum;` |
+| 确认/切换渲染层 | 默认 Alpine.js（内置，无需配置）；可选 Ext 需自备 `ext-<版本>/` 并 `--client=ext`；启动横幅 `Client:` 行显示实际生效层 |
+| 手机/窄窗口单列排布 | 写移动模板 `<root>\tpl\<窗体名>.m.html`（`{%控件名%}` 占位符），零 Pascal 改动；见 `MANUAL.md` 第二篇 16 |
+| 桌面窗体自定义排布（卡片/双栏等） | 写桌面模板 `<root>\tpl\<窗体名>.html`，机制同上，窗体几何保持设计期；见 `MANUAL.md` 第二篇 16 |
+| 从既有窗体快速得到模板骨架 | IDE Tools 菜单「生成 lazarusWeb 窗体模板（当前单元 LFM）」（lwdesign 设计期包），按 .lfm 一次生成桌面 + 移动两份，生成完按 16.2/16.3 精修；见 `MANUAL.md` 16.0 |
 
 ### 3.5 部署
 
-- **自包含部署**：exe + `ext-x.x.x/`（约 75MB）+ `src/client/lw.js`(86KB) + `lw.css`。
-  缺 lw.js 会白屏（Ext 加载完等不到渲染脚本），启动横幅会警告；
+- **自包含部署（默认 Alpine 层）**：exe + `src/client/alpine.min.js`（约 44KB）
+  + `lw-alpine.js`（约 177KB）+ `lw-alpine.css`（约 41KB）；不需要 `ext-*` 目录。
+  三个 Alpine 文件缺一不可（缺 js 会回退探测 Ext，缺 css 页面无样式），
+  启动横幅会打印实际采用的 `Client`；
+  **可选 Ext 层**：另加 `ext-x.x.x/`（约 75MB）+ `lw.js` + `lw.css`，
+  并用 `--client=ext` 显式启用；
 - **HTTPS**：fphttpserver 无 TLS，由 nginx/Caddy 反代终结
   （现成配置 `deploy/nginx.conf`、`deploy/Caddyfile`）。反代后加 `--trust-proxy`；
   nginx 的 `/lw/ws` location 必须带 `Upgrade/Connection` 头，否则 WS 静默退化成长轮询；
@@ -363,7 +494,7 @@ TMainForm = class(TLWForm)   // 原来是 class(TForm)
 
 ### 3.8 踩坑实录
 
-截至 2026-11-15 共 146 个坑全部沉淀在 `docs/NOTES.md`
+截至 2026-11-16 共 159 个坑全部沉淀在 `docs/NOTES.md`
 （nogui 基础设施 → fpjson/编码 → SQLite/WAL → 设计期包 → multipart 安全 →
 对话框钩子 → WebSocket → 多页签游标 → GUI 面板 → lfm 化改造 → 性能剖析 →
 压测排障），是这份框架最贵的资产——每个坑都带根因分析和验证手段。
