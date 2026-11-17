@@ -32,7 +32,7 @@ uses
   Classes, SysUtils, Variants, Graphics, Controls, Forms, StdCtrls, ExtCtrls, ComCtrls,
   Grids, Menus, Buttons, MaskEdit, Spin, CheckLst, ValEdit, TypInfo, LCLProc, fpjson,
   EditBtn, GroupedEdit, DB, DBCtrls, DBGrids, lwbase, lwform, lwfileupload, lwdbnav, lwweb,
-  lwchart, lwdbgrid, lwui, lwrlog, lwsidemenu, lwcaptcha;
+  lwchart, lwdbgrid, lwui, lwrlog, lwsidemenu, lwcaptcha, lwcamera;
 
 type
   TLWWriter = class
@@ -200,6 +200,9 @@ begin
     但保持这个顺序可以避免以后换实现时踩坑 }
   if C is TDBGrid then Result := 'dbgrid'
   else if C is TDBNavigator then Result := 'dbnav'
+  { TLWCamera 是 TLWFileUpload 的后代：必须排在它前面，
+    否则相机会被当成普通上传按钮（丢 capture，移动端点开是文件管理器） }
+  else if C is TLWCamera then Result := 'camera'
   else if C is TLWFileUpload then Result := 'fileupload'
   else if C is TDBEdit then Result := 'dbedit'
   else if C is TDBMemo then Result := 'dbmemo'
@@ -312,9 +315,17 @@ begin
     s := GetStrProp(C, 'Caption')
   else
     Exit;
-  { 设计器里 TPanel/TToolBar 的 Caption 默认等于控件名，别渲染出来 }
-  if s = C.Name then Exit;
-  if SameText(s, 'pnl' + C.Name) then Exit;
+  { Caption 只是"设计期占位标题"的容器才吞掉：TPanel/TScrollBox/TFrame 在 lfm
+    里常见的 Caption 就是控件名，渲染出来会在面板顶上多出一行莫名其妙的名字。
+    这条**只对容器成立**。早先不分控件类型一律吞 `Caption = Name`，于是新建
+    窗体上默认的 Button1 / CheckBox1 / RadioButton1 / Label1（LCL 建出来时
+    Caption 就等于控件名）在浏览器里全是空白 —— 客户端的 panel/scrollbox/
+    frame 分支本来就有同样的 name 过滤，服务端这里对齐即可（坑 173）。 }
+  if (C is TPanel) or (C is TScrollBox) or (C is TFrame) then
+  begin
+    if s = C.Name then Exit;
+    if SameText(s, 'pnl' + C.Name) then Exit;
+  end;
   Result := s;
 end;
 
@@ -365,10 +376,29 @@ begin
     KindProfAdd('~events', LWNowUS - evT0);
 end;
 
+{ C 所在的根窗体（沿 Parent 走到顶；nogui 下 Owner 一般也是窗体）。
+  取不到返回 nil —— 调用方必须容错。 }
+function RootFormOf(C: TControl): TCustomForm;
+var
+  p: TWinControl;
+begin
+  Result := nil;
+  p := C.Parent;
+  while p <> nil do
+  begin
+    if p is TCustomForm then
+      Exit(TCustomForm(p));
+    p := p.Parent;
+  end;
+  if (C.Owner <> nil) and (C.Owner is TCustomForm) then
+    Result := TCustomForm(C.Owner);
+end;
+
 function TLWWriter.MakeBase(C: TControl; const AKind: string): TJSONObject;
 var
   o: TJSONObject;
   force: Boolean;
+  fm: TCustomForm;
 begin
   o := TJSONObject.Create;
   o.Add('id', NodeId(C));
@@ -379,6 +409,26 @@ begin
   o.Add('y', C.Top);
   o.Add('w', C.Width);
   o.Add('h', C.Height);
+  { AutoSize 标签的宽高要按窗体自己的 PPI 比例折算（坑 155）。
+    LCL 加载 LFM 的 PPI 缩放对 AutoSize=True 的 TLabel 不生效
+    （ShouldAutoAdjustLayout 返回 False，与状态栏高度同类，见
+    StatusInfo 的注释），而 nogui 的 AutoSize 重算又量不准 —— 尺寸就
+    留在 144PPI 设计值上，旁边的容器/兄弟控件却是折算后的 96PPI 值：
+    移动模板演示里 pnlInfo 下发 515x64，其内的 lblInfo 却是 748x76，
+    内联宽直接溢出容器一半以上（文字被顶出面板、裁出窗外）。
+    这里按 DesignTimePPI -> PixelsPerInch 折算，与其它已缩放控件对齐。
+    只折 AutoSize 标签：非 AutoSize 控件 LCL 已折过，再折会双倍缩。
+    浏览器端对 AutoSize 且不换行的标签本来就不使用 w/h，折算无副作用。 }
+  if (C is TLabel) and TLabel(C).AutoSize then
+  begin
+    fm := RootFormOf(C);
+    if (fm <> nil) and (fm.DesignTimePPI > 0) and (fm.PixelsPerInch > 0) and
+       (fm.DesignTimePPI <> fm.PixelsPerInch) then
+    begin
+      o.Integers['w'] := Round(C.Width * fm.PixelsPerInch / fm.DesignTimePPI);
+      o.Integers['h'] := Round(C.Height * fm.PixelsPerInch / fm.DesignTimePPI);
+    end;
+  end;
   o.Add('align', AlignToStr(C.Align));
   o.Add('caption', CaptionOf(C));
   { LCL 的加速键解析是"控件级"的：只有 ShowAccelChar=True（Label/StaticText/
@@ -1315,6 +1365,7 @@ var
   le: TCustomLabeledEdit;
   lx, ly, sp: Integer;
   i, j: Integer;
+  pvComp: TComponent;
 begin
   { TStaticText 与 TLabel 在浏览器端都渲染成一块文字（前端 kind 分别是
     static / label），共用这里输出的 text。之前这里只判 'label'，
@@ -1349,7 +1400,7 @@ begin
     else if C is TStaticText then
     begin
       { TStaticText 不是 TLabel：没有 WordWrap / Layout，Alignment 与
-        TLabel.Alignment 同为 TAlignment（taLeft/taCenter/taRight = 0/1/2），
+        TLabel.Alignment 同为 TAlignment（LCL 序数：0=左/1=右/2=中），
         BorderStyle 是 TStaticBorderStyle（sbsNone/sbsSingle/sbsSunken = 0/1/2），
         Transparent 缺省 True（不画底色）。这三个都决定外观，必须下发，
         否则 sbsSunken 的静态文本在浏览器里会少一圈边框。 }
@@ -1644,6 +1695,8 @@ begin
     O.Add('value', TUpDown(C).Position);
     O.Add('min', Integer(TUpDown(C).Min));
     O.Add('max', Integer(TUpDown(C).Max));
+    { 步进量（坑 152）：浏览器端箭头按 Increment 步进，缺省 1 }
+    O.Add('inc', TUpDown(C).Increment);
     { TUpDown 挂了 Associate 之后，LCL 会在 Associate 的 ChangeBounds 里
       用 UpdateAlignButtonPos 自己挪位置。lfm 里的 DesignTimePPI（IDE 保存
       窗体时按显示器 DPI 写成 144）和服务端 nogui 的 96 PPI 不一致时，
@@ -1774,6 +1827,29 @@ begin
     items := TJSONArray.Create;
     for i := 0 to TLWFileUpload(C).UploadedFiles.Count - 1 do
       JArrAddStr(items, TLWFileUpload(C).UploadedFiles[i]);
+    O.Add('files', items);
+  end
+  else if AKind = 'camera' then
+  begin
+    { 相机按钮：filter/multiple 不用（系统相机只交回一张图，前端固定
+      accept=image/*）；capture 决定唤起前置还是后置摄像头 }
+    O.Add('capture', LWCameraFacingAttr(TLWCamera(C).Facing));
+    { 预览目标：PreviewImage 里填的控件名 -> 节点 id（0 = 不回显）。
+      下发 id 而不是名字：模板模式有 data-lw-ph 可查，无模板模式没有，
+      前端统一按 id 从元素表里取更可靠 }
+    i := 0;
+    if (TLWCamera(C).PreviewImage <> '') and (C.Owner <> nil) then
+    begin
+      pvComp := C.Owner.FindComponent(TLWCamera(C).PreviewImage);
+      if pvComp is TControl then
+        i := NodeId(TControl(pvComp));
+    end;
+    O.Add('preview', i);
+    O.Add('maxsize', TLWCamera(C).MaxSizeKB);
+    O.Add('lastfile', ExtractFileName(TLWCamera(C).LastFileName));
+    items := TJSONArray.Create;
+    for i := 0 to TLWCamera(C).UploadedFiles.Count - 1 do
+      JArrAddStr(items, TLWCamera(C).UploadedFiles[i]);
     O.Add('files', items);
   end
   else if AKind = 'htmlframe' then

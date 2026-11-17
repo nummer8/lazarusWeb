@@ -20,7 +20,7 @@ uses
   Classes, SysUtils, Graphics, Controls, Forms, TypInfo, fpjson;
 
 const
-  LW_VERSION = '0.9.2';
+  LW_VERSION = '0.9.6';
   { Alpine.js 客户端外壳引用的 alpine.min.js 版本（src\client\alpine.min.js）。
     换文件时同步改这里，横幅显示用 }
   ALPINE_VERSION = '3.14.9';
@@ -107,6 +107,13 @@ function BoolToInt(B: Boolean): Integer;
   一份码表，两个 FPC 版本给出完全一致的状态行文本，也省掉 lwcore 对
   fcl-web 的依赖。客户端只认数字码，文本仅用于日志/调试可读性。 }
 function LWHTTPStatusText(ACode: Integer): string;
+{ 把路径解析成绝对路径：绝对路径原样规范化，相对路径一律以 exe 目录为基准。
+  TLS 证书/私钥、上传目录这类"随 exe 部署"的文件都用它，避免服务方式启动时
+  cwd 是 System32 导致 cert\server.crt 找不到。 }
+function LWResolveExeRelativePath(const APath: string): string;
+{ HTTPS 证书参数校验：证书和私钥必须同时给或同时不给；给了就必须存在。
+  AErr 返回可直接打印的中文错误。调用前建议先 LWResolveExeRelativePath。 }
+function LWValidateTLSFiles(const ACert, AKey: string; out AErr: string): Boolean;
 { 上传/浏览器选文件等服务端落地文件的根目录：默认 <exe目录>/uploads/，
   与"配置文件保存到 exe 目录"的部署约定一致；exe 旁不可写时自动退回
   <临时目录>/uploads/。部署/业务可在启动早期赋 LWUploadRoot 覆盖。 }
@@ -298,6 +305,52 @@ end;
 function BorderStyleToStr(A: TBorderStyle): string;
 begin
   if A = bsSingle then Result := 'single' else Result := 'none';
+end;
+
+function LWResolveExeRelativePath(const APath: string): string;
+var
+  v, exeDir: string;
+  isAbs: Boolean;
+begin
+  v := Trim(APath);
+  if v = '' then Exit('');
+  {$IFDEF WINDOWS}
+  isAbs := (Length(v) >= 2) and (v[2] = ':') or (v[1] = '\') or (v[1] = '/');
+  {$ELSE}
+  isAbs := v[1] = '/';
+  {$ENDIF}
+  if isAbs then
+    Result := ExpandFileName(v)
+  else
+  begin
+    exeDir := ExtractFilePath(ExpandFileName(ParamStr(0)));
+    Result := ExpandFileName(IncludeTrailingPathDelimiter(exeDir) + v);
+  end;
+end;
+
+function LWValidateTLSFiles(const ACert, AKey: string; out AErr: string): Boolean;
+begin
+  AErr := '';
+  Result := False;
+  if (ACert = '') <> (AKey = '') then
+  begin
+    AErr := '启用 HTTPS 时 PEM 证书与私钥必须同时指定，或都留空使用自签证书';
+    Exit;
+  end;
+  if ACert <> '' then
+  begin
+    if not FileExists(ACert) then
+    begin
+      AErr := 'PEM 证书不存在: ' + ACert;
+      Exit;
+    end;
+    if not FileExists(AKey) then
+    begin
+      AErr := 'PEM 私钥不存在: ' + AKey;
+      Exit;
+    end;
+  end;
+  Result := True;
 end;
 
 function LWUploadRootDir: string;

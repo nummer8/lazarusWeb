@@ -239,7 +239,7 @@ end;
 class procedure TLWApp.Run;
 var
   i: Integer;
-  arg, val: string;
+  arg, val, err: string;
   cfgPath: string;
   ini: TLWConfig;
   portVal: Integer;
@@ -303,8 +303,8 @@ var
     Result := False;
   end;
 
-  { 应用配置文件里的三项（命令行随后会再覆盖一遍）。
-    只认这三个键：真有别的需求，命令行参数更直接，也避免两处配置打架。 }
+  { 应用配置文件里的键（命令行随后会再覆盖一遍）：port/theme/extdir/patch/
+    ssl/sslhost/sslcert/sslkey/client。命令行永远优先，避免两处配置打架。 }
   procedure ApplyConfigFile;
   var
     k: Integer;
@@ -345,6 +345,19 @@ var
     { 增量补丁（阶段 2）：1/0。灰度期间默认 0，出事直接改回 0 重启 }
     if ini.Has(['patch']) then
       LWServerPatchMode := ini.Int(['patch'], 0) <> 0;
+
+    { TLS（纯 FPC）：ssl=1 开 HTTPS；没给证书就自动生成自签证书 }
+    if ini.Has(['ssl']) then
+    begin
+      val := LowerCase(Trim(ini.Str(['ssl'], '0')));
+      GCfg.UseSSL := (val = '1') or (val = 'true') or (val = 'yes');
+    end;
+    if ini.Has(['sslhost']) then
+      GCfg.SSLHost := Trim(ini.Str(['sslhost'], ''));
+    if ini.Has(['sslcert']) then
+      GCfg.SSLCertFile := Trim(ini.Str(['sslcert'], ''));
+    if ini.Has(['sslkey']) then
+      GCfg.SSLKeyFile := Trim(ini.Str(['sslkey'], ''));
 
     { 浏览器渲染层：ext（Ext JS，需要 ext-<版本> 目录）| alpine（Alpine.js，
       内置 src\client\alpine.min.js，不需要 ext 目录）。协议两者完全一致 }
@@ -427,6 +440,10 @@ begin
   GCfg.TrustProxy := False;
   GCfg.NoUI := False;
   GCfg.LogFile := '';
+  GCfg.UseSSL := False;
+  GCfg.SSLHost := '';
+  GCfg.SSLCertFile := '';
+  GCfg.SSLKeyFile := '';
   GCfg.Root := LWDefaultRoot(GCfg.DefaultExt);
   GCfg.ExtDir := '';
   if GOrder.Count > 0 then
@@ -494,6 +511,14 @@ begin
       GCfg.AjaxCORS := True
     else if arg = '--trust-proxy' then
       GCfg.TrustProxy := True
+    else if arg = '--ssl' then
+      GCfg.UseSSL := True
+    else if ValueOf('--ssl-host=', val) then
+      GCfg.SSLHost := val
+    else if ValueOf('--ssl-cert=', val) then
+      GCfg.SSLCertFile := val
+    else if ValueOf('--ssl-key=', val) then
+      GCfg.SSLKeyFile := val
     else if arg = '--nogui' then
       GCfg.NoUI := True
     else if ValueOf('--patch=', val) then
@@ -518,11 +543,30 @@ begin
       WriteLn('  --verbose             打印每个请求');
       WriteLn('  --ajax-cors           /lw/ajax/* 回 CORS 头（第三方站点直接调）');
       WriteLn('  --trust-proxy         在 nginx/Caddy 反代后面：取 X-Forwarded-For 作客户端 IP');
+      WriteLn('  --ssl                 开 HTTPS（纯 FPC；自签证书零配置即可用）');
+      WriteLn('  --ssl-host=名         证书主机名/SAN 域名或 IP；留空用自签证书');
+      WriteLn('  --ssl-cert=文件       指定 PEM 证书（配 --ssl-key=）');
+      WriteLn('  --ssl-key=文件        指定 PEM 私钥');
+      WriteLn('  提示: 需随包带 libssl-3-x64.dll + libcrypto-3-x64.dll');
       WriteLn('  --nogui               GUI 构建下也不弹服务端面板（服务化部署）');
       WriteLn('  --patch=1             增量补丁（事件只回变化的 ops，默认关；老前端自动退回全量）');
       WriteLn('  --log=path            把服务端日志追加写入文件');
       WriteLn('已注册窗体: ' + FormNames);
       Halt(0);
+    end;
+  end;
+
+  { TLS 证书路径：相对路径以 exe 目录为基准（服务方式启动时 cwd 常是
+    System32）；参数不成对或文件不存在时直接退出，不等握手期才报错。 }
+  if GCfg.UseSSL then
+  begin
+    GCfg.SSLCertFile := LWResolveExeRelativePath(GCfg.SSLCertFile);
+    GCfg.SSLKeyFile := LWResolveExeRelativePath(GCfg.SSLKeyFile);
+    if not LWValidateTLSFiles(GCfg.SSLCertFile, GCfg.SSLKeyFile, err) then
+    begin
+      WriteLn('错误: ', err);
+      LWLog('错误: ' + err);
+      Halt(1);
     end;
   end;
 
@@ -595,7 +639,19 @@ finalization
   LWStopTrace('lwapp ③ 单元收尾开始');
   GServer.Free;
   if GRegistry <> nil then GRegistry.Free;
+  { GOrder 是 EnsureRegistry 里和 GRegistry 一起建的，早期收尾漏了它
+    （-gh 构建下退出会报一个 TStringList + 两段字符串扩容块，见坑 162） }
+  if GOrder <> nil then GOrder.Free;
   if GProvider <> nil then GProvider.Free;
+  { 异常处理器挂在 Application.OnException 上。Forms 单元在 lwapp 之后
+    才收尾，此刻 Application 还活着，先摘钩子再释放，避免 Application
+    析构时回调到已释放对象。 }
+  if GExcHandler <> nil then
+  begin
+    if Application <> nil then
+      Application.OnException := nil;
+    FreeAndNil(GExcHandler);
+  end;
   LWStopTrace('lwapp ④ 单元收尾完毕（接下来是 RTL/GTK 收尾）');
 
 end.

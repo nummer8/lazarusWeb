@@ -179,7 +179,11 @@ end;
   此刻没有任何必须保住的东西：监听已关、连接已 shutdown、会话仓库
   已释放。所以给它一个硬时限：正常收尾几十毫秒就把进程结束掉，这个
   线程根本醒不过来；真卡住了就由它结束进程。用 fpExit 而不是 Halt，
-  是为了跳过卡住的那段 finalization（Halt 恰恰会去跑它）。 }
+  是为了跳过卡住的那段 finalization（Halt 恰恰会去跑它）。
+
+  这个看门狗**只在 Unix 上装**（LWStartExitWatchdog 里按平台条件编译）：
+  Windows 收尾不会卡，装了反而会在慢机器上抢跑，把正常 finalization
+  截断，表现为退出时弹泄漏报告或残留未释放块。 }
 type
   TLWExitWatchdog = class(TThread)
   protected
@@ -202,11 +206,18 @@ end;
 
 procedure LWStartExitWatchdog;
 begin
+  { 只在 Unix 上装：卡死的是 LCL/GTK 收尾（mips64el 实测），Windows 的
+    收尾是确定的、毫秒级。反过来，在 Windows 上让它跑反而有害 —— 线程里
+    调 Halt(0) 会在主线程还没走完 Forms/Interfaces 的 finalization 时
+    抢着结束进程，轻则泄漏检测报一堆"未释放块"，重则半截收尾
+    （见坑 162）。 }
+  {$IFDEF unix}
   with TLWExitWatchdog.Create(True) do
   begin
     FreeOnTerminate := True;
     Start;
   end;
+  {$ENDIF}
 end;
 
 procedure LWRunPanel(AServer: TLWServer; const ACfg: TLWServerConfig);

@@ -7,6 +7,8 @@
   路由：
     GET  /                       界面外壳（HTML，加载 Ext JS + lw.js）
     GET  /lw/lw.js, /lw/lw.css   浏览器端运行时
+    GET  /lw/tpl/<名称>.m.html   移动端布局模板（静态资源，<root>\tpl\ 或 <exe目录>\tpl\；
+                                 客户端在其中做 {%控件名%} 占位符的 DOM 搬迁）
     GET  /ext/<版本>/<路径>       Ext JS 静态资源（<版本> 对应 <root>/ext-<版本>，
                                  任意版本号都行，见 ExtRootFor）
     GET  /lw/api/forms           已注册窗体清单
@@ -43,7 +45,7 @@ interface
 uses
   Classes, SysUtils, DateUtils, fphttpserver, httpdefs, httpprotocol, fpjson, jsonparser,
   ssockets, Sockets, Forms, Controls, lwbase, lwsession, lwdispatch, lwform, lwupload, lwdownload,
-  lwajax, lwwebsocket, lwrlog, lwcaptcha;
+  lwajax, lwwebsocket, lwrlog, lwcaptcha, opensslsockets;
 
 type
   TLWServerConfig = record
@@ -80,6 +82,15 @@ type
     NoUI: Boolean;
     { --log=path：服务端日志追加写入文件（GUI 面板只显示到窗口） }
     LogFile: string;
+    { TLS：用 FPC 自带 TFPHttpServer.UseSSL + opensslsockets（纯 FPC，无第三方依赖）。
+      False = 常规 HTTP（默认，行为与以前完全一致）。True = 同一端口走 HTTPS。
+      SSLHost = 证书主机名；空则自动生成自签证书（不指定 HostName 时 OpenSSL
+      handler 会自己造一张）。SSLCertFile/SSLKeyFile 非空则改用指定 PEM 文件。
+      须随包带 libssl-3-x64.dll + libcrypto-3-x64.dll（或 1.1 版），见坑 160 }
+    UseSSL: Boolean;
+    SSLHost: string;
+    SSLCertFile: string;
+    SSLKeyFile: string;
   end;
 
   { 由 lwapp 提供：按名字创建窗体实例 }
@@ -786,11 +797,41 @@ begin
   Result := LWValidTheme(ATheme);
 end;
 
+{ 本机对外的 IPv4 —— 手机/平板该填的那个地址。
+  用 UDP connect 探路：UDP 的 connect 不发任何包，只让内核按路由选出口网卡，
+  随后 getSockName 读回本端地址。比 gethostbyname 靠谱（多网卡 + 虚拟网卡
+  的机器上后者经常只回 127.0.0.1 或回一个错网段的地址）。 }
+function LWOutboundIPv4: string;
+var
+  s: TSocket;
+  sa: TInetSockAddr;
+  len: TSockLen;
+begin
+  Result := '';
+  s := fpSocket(AF_INET, SOCK_DGRAM, 0);
+  if s = -1 then Exit;
+  try
+    FillChar(sa, SizeOf(sa), 0);
+    sa.sin_family := AF_INET;
+    sa.sin_port := htons(53);
+    sa.sin_addr.s_addr := StrToNetAddr('8.8.8.8').s_addr;
+    if fpConnect(s, @sa, SizeOf(sa)) = 0 then
+    begin
+      len := SizeOf(sa);
+      if fpGetSockName(s, @sa, @len) = 0 then
+        Result := NetAddrToStr(sa.sin_addr);
+    end;
+  finally
+    CloseSocket(s);
+  end;
+end;
+
 procedure TLWServer.PrintBanner;
 var
-  s: string;
+  s, lanip, scheme: string;
   sr: TSearchRec;
 begin
+  if FCfg.UseSSL then scheme := 'https' else scheme := 'http';
   LWLogRaw('');
   LWLogRaw('  lazarusWeb ' + LW_VERSION);
   LWLogRaw('  --------------------------------------------------');
@@ -805,7 +846,21 @@ begin
       LWLogRaw('  Client    : alpine（Alpine.js ' + ALPINE_VERSION +
         '，自动探测优先）   (切换: /?client=ext)');
     LWLogRaw('  Form      : ' + FCfg.DefaultForm);
-    LWLogRaw('  Listen    : http://127.0.0.1:' + IntToStr(FCfg.Port) + '/');
+    LWLogRaw('  Listen    : ' + scheme + '://127.0.0.1:' + IntToStr(FCfg.Port) + '/');
+    { 手机/平板访问要用局域网地址，横幅里直接给出来 —— 只写 127.0.0.1 时
+      很容易照着输，结果手机永远打不开（本机回环地址） }
+    lanip := LWOutboundIPv4;
+    if (lanip <> '') and (lanip <> '127.0.0.1') then
+      LWLogRaw('  LAN       : ' + scheme + '://' + lanip + ':' + IntToStr(FCfg.Port) +
+        '/   <- 手机/平板用这个地址');
+      { 全设备同时打不开的头号原因不是代码：Windows 防火墙规则只落在另一种
+        网络配置文件上（这台电脑从“公用网络”变成“专用网络”后，原有放行失效，
+        而 127.0.0.1 走回环不受影响，于是“本机能开、手机全打不开”）。 }
+      LWLogRaw('              仍打不开？管理员运行 tools\allow-firewall.bat' +
+        '（放行 专用+公用 两种配置文件）');
+    if FCfg.UseSSL then
+      LWLogRaw('  TLS       : 开（自签证书时浏览器会告警，点“继续访问”即可；' +
+        '相机取景需 https 或 localhost）');
   end
   else
   begin
@@ -829,7 +884,16 @@ begin
       LWLogRaw('  警告      : ' + ExtRootFor(FCfg.DefaultExt) +
         PathDelim + 'build' + PathDelim + 'ext-all.js 不存在，页面会白屏');
     LWLogRaw('  Form      : ' + FCfg.DefaultForm);
-    LWLogRaw('  Listen    : http://127.0.0.1:' + IntToStr(FCfg.Port) + '/');
+    LWLogRaw('  Listen    : ' + scheme + '://127.0.0.1:' + IntToStr(FCfg.Port) + '/');
+    lanip := LWOutboundIPv4;
+    if (lanip <> '') and (lanip <> '127.0.0.1') then
+      LWLogRaw('  LAN       : ' + scheme + '://' + lanip + ':' + IntToStr(FCfg.Port) +
+        '/   <- 手机/平板用这个地址');
+      { 全设备同时打不开的头号原因不是代码：Windows 防火墙规则只落在另一种
+        网络配置文件上（这台电脑从“公用网络”变成“专用网络”后，原有放行失效，
+        而 127.0.0.1 走回环不受影响，于是“本机能开、手机全打不开”）。 }
+      LWLogRaw('              仍打不开？管理员运行 tools\allow-firewall.bat' +
+        '（放行 专用+公用 两种配置文件）');
     { 根目录里有多个 ext-* 时列出来：?ext=<版本> 可以逐个切（默认走 DefaultExt）}
     if FCfg.ExtDir = '' then
     begin
@@ -865,6 +929,20 @@ begin
   FStopping := False;
   FHTTP := TLWHttpServer.Create(nil);
   FHTTP.Port := FCfg.Port;
+  { TLS（纯 FPC）：UseSSL 打开后，fcl-web 的 socket handler 在 accept 时做
+    SSL 握手，HTTP/WS/上传的 OnRequest 管线一行都不用改。证书不指定就用
+    handler 自带的自签生成器（opensslsockets.InitContext -> CreateSelfSignedCertificate），
+    所以零配置文件也能立刻起 HTTPS；正式用再给 SSLCertFile/SSLKeyFile。 }
+  if FCfg.UseSSL then
+  begin
+    FHTTP.UseSSL := True;
+    if FCfg.SSLHost <> '' then
+      FHTTP.CertificateData.HostName := FCfg.SSLHost;
+    if FCfg.SSLCertFile <> '' then
+      FHTTP.CertificateData.Certificate.FileName := FCfg.SSLCertFile;
+    if FCfg.SSLKeyFile <> '' then
+      FHTTP.CertificateData.PrivateKey.FileName := FCfg.SSLKeyFile;
+  end;
   { 每连接一个线程。3.3.1 用枚举 ThreadMode，3.2.2 只有一个布尔开关 }
   {$IF FPC_FULLVERSION >= 30301}
   FHTTP.ThreadMode := tmThread;
@@ -1937,7 +2015,7 @@ end;
 procedure TLWServer.Route(var ARequest: TFPHTTPConnectionRequest;
   var AResponse: TFPHTTPConnectionResponse);
 var
-  p, method, lf: string;
+  p, method, lf, tname, tfull: string;
   q: Integer;
 begin
   method := UpperCase(ARequest.Method);
@@ -2019,6 +2097,32 @@ begin
         '（部署目录需含 src/client/ 或 lw/' + ExtractFileName(p) +
         '，或把该文件拷到 exe 同目录）',
         'text/plain; charset=utf-8', 404, AResponse);
+    Exit;
+  end;
+
+  { 窗体布局模板（方案 B，自研）：/lw/tpl/<名称>.m.html（移动）、
+    /lw/tpl/<名称>.html（桌面）。
+    纯静态资源：不建会话、不碰会话锁。名称只放行文件名字符，
+    挡掉路径穿越；查找顺序 <root>\tpl\ -> <exe目录>\tpl\（与 favicon
+    的部署惯例一致）。模板由客户端 fetch 后在浏览器里对 {%控件名%}
+    占位符做 DOM 搬迁，服务端不解析模板内容。 }
+  if Copy(p, 1, 8) = '/lw/tpl/' then
+  begin
+    tname := Copy(p, 9, MaxInt);
+    if (tname = '') or (Pos('..', tname) > 0) or (Pos(':', tname) > 0) or
+       (Pos('/', tname) > 0) or (Pos('\', tname) > 0) then
+      Reply('403 forbidden', 'text/plain; charset=utf-8', 403, AResponse)
+    else
+    begin
+      tfull := IncludeTrailingPathDelimiter(FCfg.Root) + 'tpl' + PathDelim + tname;
+      if not FileExists(tfull) then
+        tfull := ExtractFilePath(ParamStr(0)) + 'tpl' + PathDelim + tname;
+      if FileExists(tfull) then
+        ServeFile(tfull, AResponse)
+      else
+        Reply('404 no template: ' + tname,
+          'text/plain; charset=utf-8', 404, AResponse);
+    end;
     Exit;
   end;
 

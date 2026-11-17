@@ -25,9 +25,14 @@ uses
   Classes, SysUtils, Forms, Controls, fpjson, lwbase, lwdownload;
 
 type
-  { 浏览器端配色模式（Alpine 渲染层）：跟随系统 / 亮色 / 深色。
-    序列化给前端的名字见 LWThemeToStr（'auto' / 'light' / 'dark'）。 }
-  TLWThemeMode = (twAuto, twLight, twDark);
+  { 浏览器端配色（Alpine 渲染层），7 套固定配色 + 跟随系统：
+      twAuto     跟随系统（缺省）
+      浅色系：twLight 亮色 / twPaper 米黄纸张 / twMint 护眼绿 / twContrast 高对比
+      深色系：twDark 深色 / twMidnight 深蓝夜色 / twForest 墨绿夜色
+    序列化给前端的名字见 LWThemeToStr。新值只能**追加在末尾**：
+    .lfm 里存的是枚举序数，插在中间会把老窗体存的值解释成别的配色。 }
+  TLWThemeMode = (twAuto, twLight, twDark, twPaper, twMint, twMidnight,
+    twForest, twContrast);
 
   TLWForm = class(TForm)
   private
@@ -68,9 +73,11 @@ type
     procedure ShowToast(const AMsg: string; const ATitle: string = '');
   published
     { 浏览器端默认配色（Alpine 渲染层）。
-      twAuto（缺省）= 跟随系统；twLight / twDark = 强制亮色 / 深色。
+      twAuto（缺省）= 跟随系统；twLight / twPaper / twMint / twContrast
+      是浅色系；twDark / twMidnight / twForest 是深色系。
       用户在前端标题栏点过配色按钮后，以其本机保存的选择为准 ——
-      这里只是"没选过时的默认值"。Ext 渲染层不看这个属性。 }
+      这里只是"没选过时的默认值"。Ext 渲染层不看这个属性（它用
+      --theme=crisp 那套 Ext 皮肤）。 }
     property LWTheme: TLWThemeMode read FLWTheme write FLWTheme default twAuto;
   end;
 
@@ -84,6 +91,11 @@ begin
   case AMode of
     twLight: Result := 'light';
     twDark: Result := 'dark';
+    twPaper: Result := 'paper';
+    twMint: Result := 'mint';
+    twMidnight: Result := 'midnight';
+    twForest: Result := 'forest';
+    twContrast: Result := 'contrast';
   else
     Result := 'auto';
   end;

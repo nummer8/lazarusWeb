@@ -57,12 +57,52 @@ function LWDefaultProject(const AName: string): TLWNewProject;
 
 function LWProjectSource(const O: TLWNewProject): string;
 function LWProjectInfo(const O: TLWNewProject): string;
+
+{ .lpi 里体现 widgetset 档位的那几段 XML —— 两个档位的差别只在这里判断
+  一次，`LWProjectInfo`（写字面意义上的 .lpi）和 IDE 侧的补丁（IDE 自己写完
+  .lpi 之后按同样的内容补进去，见设计期包 lwdsgnregister）共用这一份生成代码。
+
+  历史上这段判断被抄了两遍、还各自改错一遍：IDE 侧只补 MacroValues 没补
+  SharedMatrixOptions，nogui 于是从来没生效（docs/NOTES.md 坑 170）。
+
+  返回的分段与插入位置（indent 是 .lpi 里的原样缩进）：
+    LWProjectMacroValuesXml      -> 放在 <BuildModes> 之前，GUI 档返回 ''
+    LWProjectBuildModeItemXml    -> <BuildModes> 的默认项
+    LWProjectSharedMatrixXml     -> 放在 </BuildModes> 之前，GUI 档返回 '' }
+function LWProjectMacroValuesXml(const O: TLWNewProject): string;
+function LWProjectBuildModeItemXml(const O: TLWNewProject): string;
+function LWProjectSharedMatrixXml(const O: TLWNewProject): string;
+
+{ 由框架里任一源文件 / 包文件 / 目录 / 可执行文件的位置反推 src/client
+  （不写死任何盘符）。从该位置起向上找四层，每层试 client 与 src/client：
+
+    <框架>/src/core/lwapp.pas   -> 同层 ../client
+    <框架>/src/lwcore.lpk       -> 同层 client
+    <框架>/tools/lwnew.exe      -> 上层 src/client
+    <框架>/src/core（目录）      -> 同上
+
+  找到的目录里必须有 lw.js（避免把同名目录当成客户端资源），否则返回 ''。 }
+function LWClientAssetsDirNear(const APath: string): string;
+
 function LWFormUnitSource(const O: TLWNewProject): string;
 function LWFormResourceSource(const O: TLWNewProject): string;
 
 { 把四个文件写进 ADir（不存在则创建） }
 function LWGenerateProject(const O: TLWNewProject; const ADir: string;
   out AErr: string): Boolean;
+
+const
+  { 客户端静态资源在工程目录里的落地目录名：运行期 lwhttp 在
+    <exe 目录>/lw/<文件名> 里找 lw.js / lw.css / alpine.min.js ……
+    （扁平部署），目录名与 URL 前缀 /lw/ 一致 }
+  sLWClientSubDir = 'lw';
+
+{ 把框架的 src/client 整个拷到 ADestParent/lw。
+  只补缺失的文件，目标已存在的不覆盖（用户可能改过样式 / JS）。
+  返回本次实际拷贝的文件数；AErr 非空表示出错。
+  路径全部用 PathDelim 拼，不出现任何盘符 / 分隔符常量。 }
+function LWCopyClientAssets(const ASourceDir, ADestParent: string;
+  out AErr: string): Integer;
 
 { 工程自带的 build.bat 内容（纯 ASCII + CRLF，Windows/cmd 用） }
 function LWBuildBatch(const O: TLWNewProject): string;
@@ -73,6 +113,14 @@ function LWBuildShell(const O: TLWNewProject): string;
 
 { 'My Web App' -> 'MyWebApp'；'2app' -> 'app2'；保证是合法标识符 }
 function LWSanitizeIdent(const S: string): string;
+
+{ 工程名与框架单元（或主窗体单元）同名会让 FPC 报
+  "Duplicate identifier"：.lpr 里的 program X 与 uses 里的 X 撞车
+  （Windows 的文件名还不分大小写，LWApp.lpr 与 lwapp.pas 天然冲突）。
+
+  返回撞车的那个单元名；'' = 没有冲突。
+  AUnitName 传主窗体单元名（默认 umain），传空串则只查框架单元。 }
+function LWProjectNameConflict(const AName, AUnitName: string): string;
 
 implementation
 
@@ -89,9 +137,37 @@ begin
       Result := Result + c;
   end;
   if Result = '' then
-    Result := 'LWApp';
+    { 兜底名不能是 'LWApp'：那正是框架单元 lwapp 的名字，
+      program LWApp + uses lwapp 会撞成 Duplicate identifier }
+    Result := 'LWApp1';
   if Result[1] in ['0'..'9'] then
     Result := 'LW' + Result;
+end;
+
+const
+  { 框架单元名（全小写）。工程名命中任意一个都会让 FPC 报
+    Duplicate identifier —— .lpr 的 program X 与 uses 里的 X 同名。
+    增删单元时这份清单要跟着改（src 下所有 lw*.pas 都列在这里）。 }
+  LWReservedUnitNames: array[0..37] of string = (
+    'lwabout', 'lwajax', 'lwapp', 'lwbase', 'lwcamera', 'lwcaptcha',
+    'lwchart', 'lwconfig', 'lwcore', 'lwdbgrid', 'lwdbnav', 'lwdesign',
+    'lwdiff', 'lwdispatch', 'lwdlg', 'lwdownload', 'lwdsgnregister',
+    'lwdsgntplcore', 'lwdsgntplgen', 'lwfileupload', 'lwform', 'lwhttp',
+    'lwhyper', 'lwlogin', 'lwnewproject', 'lwpanel', 'lwproxyws', 'lwreport',
+    'lwrlog', 'lwserver', 'lwsession', 'lwsidemenu', 'lwui', 'lwupload',
+    'lwweb', 'lwwebsocket', 'lwwriter', 'lwws');
+
+function LWProjectNameConflict(const AName, AUnitName: string): string;
+var
+  i: Integer;
+begin
+  Result := '';
+  if AName = '' then Exit;
+  for i := Low(LWReservedUnitNames) to High(LWReservedUnitNames) do
+    if SameText(AName, LWReservedUnitNames[i]) then
+      Exit(LWReservedUnitNames[i]);
+  if (AUnitName <> '') and SameText(AName, AUnitName) then
+    Exit(LowerCase(AUnitName));
 end;
 
 function XmlEsc(const S: string): string;
@@ -157,6 +233,42 @@ begin
     'end.' + LineEnding;
 end;
 
+function LWProjectMacroValuesXml(const O: TLWNewProject): string;
+begin
+  if not O.Headless then
+  begin
+    { GUI 档：不写宏 = 用 IDE 的默认 widgetset }
+    Result := '';
+    Exit;
+  end;
+  Result :=
+    '    <MacroValues Count="1">' + LineEnding +
+    '      <Macro1 Name="LCLWidgetType" Value="nogui"/>' + LineEnding +
+    '    </MacroValues>' + LineEnding;
+end;
+
+function LWProjectBuildModeItemXml(const O: TLWNewProject): string;
+begin
+  { IDE 里"默认构建模式"这一项，两个档位一样，名字必须叫 Default }
+  Result := '      <Item Name="Default" Default="True"/>' + LineEnding;
+end;
+
+function LWProjectSharedMatrixXml(const O: TLWNewProject): string;
+begin
+  if not O.Headless then
+  begin
+    Result := '';
+    Exit;
+  end;
+  { 这一段才是"启用"宏的地方（lazbuild / IDE 都在这里查 Type="IDEMacro"）。
+    只写 MacroValues 不写它 → 日志里 LCL=False，仍用全局 win32 widgetset。 }
+  Result :=
+    '      <SharedMatrixOptions Count="1">' + LineEnding +
+    '        <Item1 Modes="Default" Type="IDEMacro"' +
+    ' MacroName="LCLWidgetType" Value="nogui"/>' + LineEnding +
+    '      </SharedMatrixOptions>' + LineEnding;
+end;
+
 function LWProjectInfo(const O: TLWNewProject): string;
 var
   s: string;
@@ -175,25 +287,14 @@ begin
     '      <Title Value="' + XmlEsc(O.Name) + '"/>' + LineEnding +
     '      <UseAppBundle Value="False"/>' + LineEnding +
     '    </General>' + LineEnding;
-  { 两个模板在 .lpi 上的全部差别就在这里：
-    - nogui 档：覆盖 LCLWidgetType=nogui（纯控制台服务，只能 lazbuild --ws=nogui）；
-    - GUI 档：不覆盖 widgetset（用 IDE 的默认 widgetset），IDE 里直接 F9，
-      启动后出服务端面板窗口。 }
-  if O.Headless then
-    s := s +
-    '    <MacroValues Count="1">' + LineEnding +
-    '      <Macro1 Name="LCLWidgetType" Value="nogui"/>' + LineEnding +
-    '    </MacroValues>' + LineEnding +
+  { 两个模板在 .lpi 上的全部差别就在下面这三段里（见 LWProjectMacroValuesXml
+    / LWProjectSharedMatrixXml）：nogui 档覆盖 LCLWidgetType=nogui，GUI 档
+    完全不写宏、用 IDE 的默认 widgetset。 }
+  s := s + LWProjectMacroValuesXml(O);
+  s := s +
     '    <BuildModes>' + LineEnding +
-    '      <Item Name="Default" Default="True"/>' + LineEnding +
-    '      <SharedMatrixOptions Count="1">' + LineEnding +
-    '        <Item1 ID="131280374502" Modes="Default" Type="IDEMacro" MacroName="LCLWidgetType" Value="nogui"/>' + LineEnding +
-    '      </SharedMatrixOptions>' + LineEnding +
-    '    </BuildModes>' + LineEnding
-  else
-    s := s +
-    '    <BuildModes>' + LineEnding +
-    '      <Item Name="Default" Default="True"/>' + LineEnding +
+    LWProjectBuildModeItemXml(O) +
+    LWProjectSharedMatrixXml(O) +
     '    </BuildModes>' + LineEnding;
   s := s +
     '    <PublishOptions>' + LineEnding +
@@ -283,16 +384,16 @@ begin
     LineEnding +
     'type' + LineEnding +
     '  T' + O.FormName + ' = class(TLWForm)' + LineEnding +
-    '    lblTitle: TLabel;' + LineEnding +
-    '    lblName: TLabel;' + LineEnding +
-    '    edtName: TEdit;' + LineEnding +
-    '    btnSay: TButton;' + LineEnding +
-    '    lblResult: TLabel;' + LineEnding +
-    '    mmoLog: TMemo;' + LineEnding +
-    '    procedure FormCreate(Sender: TObject);' + LineEnding +
-    '    procedure btnSayClick(Sender: TObject);' + LineEnding +
+    //'    lblTitle: TLabel;' + LineEnding +
+    //'    lblName: TLabel;' + LineEnding +
+    //'    edtName: TEdit;' + LineEnding +
+    //'    btnSay: TButton;' + LineEnding +
+    //'    lblResult: TLabel;' + LineEnding +
+    //'    mmoLog: TMemo;' + LineEnding +
+    //'    procedure FormCreate(Sender: TObject);' + LineEnding +
+    //'    procedure btnSayClick(Sender: TObject);' + LineEnding +
     '  private' + LineEnding +
-    '    FCount: Integer;' + LineEnding +
+    //'    FCount: Integer;' + LineEnding +
     '  public' + LineEnding +
     '  end;' + LineEnding +
     LineEnding +
@@ -303,24 +404,24 @@ begin
     LineEnding +
     '{$R *.lfm}' + LineEnding +
     LineEnding +
-    'procedure T' + O.FormName + '.FormCreate(Sender: TObject);' + LineEnding +
-    'begin' + LineEnding +
-    '  FCount := 0;' + LineEnding +
-    '  mmoLog.Lines.Add(''窗体在服务端创建完毕，端口来自命令行 --port（默认 8090）。'');' + LineEnding +
-    '  mmoLog.Lines.Add(''试试修改这个窗体：改动 *.pas / *.lfm 后重新编译即可。'');' + LineEnding +
-    'end;' + LineEnding +
-    LineEnding +
-    'procedure T' + O.FormName + '.btnSayClick(Sender: TObject);' + LineEnding +
-    'var' + LineEnding +
-    '  s: string;' + LineEnding +
-    'begin' + LineEnding +
-    '  Inc(FCount);' + LineEnding +
-    '  s := Trim(edtName.Text);' + LineEnding +
-    '  if s = '''' then' + LineEnding +
-    '    s := ''世界'';' + LineEnding +
-    '  lblResult.Caption := ''你好，'' + s + ''！第 '' + IntToStr(FCount) + '' 次点击'';' + LineEnding +
-    '  mmoLog.Lines.Add(FormatDateTime(''hh:nn:ss'', Now) + ''  服务端处理：'' + lblResult.Caption);' + LineEnding +
-    'end;' + LineEnding +
+    //'procedure T' + O.FormName + '.FormCreate(Sender: TObject);' + LineEnding +
+    //'begin' + LineEnding +
+    //'  FCount := 0;' + LineEnding +
+    //'  mmoLog.Lines.Add(''窗体在服务端创建完毕，端口来自命令行 --port（默认 8090）。'');' + LineEnding +
+    //'  mmoLog.Lines.Add(''试试修改这个窗体：改动 *.pas / *.lfm 后重新编译即可。'');' + LineEnding +
+    //'end;' + LineEnding +
+    //LineEnding +
+    //'procedure T' + O.FormName + '.btnSayClick(Sender: TObject);' + LineEnding +
+    //'var' + LineEnding +
+    //'  s: string;' + LineEnding +
+    //'begin' + LineEnding +
+    //'  Inc(FCount);' + LineEnding +
+    //'  s := Trim(edtName.Text);' + LineEnding +
+    //'  if s = '''' then' + LineEnding +
+    //'    s := ''世界'';' + LineEnding +
+    //'  lblResult.Caption := ''你好，'' + s + ''！第 '' + IntToStr(FCount) + '' 次点击'';' + LineEnding +
+    //'  mmoLog.Lines.Add(FormatDateTime(''hh:nn:ss'', Now) + ''  服务端处理：'' + lblResult.Caption);' + LineEnding +
+    //'end;' + LineEnding +
     LineEnding +
     'end.' + LineEnding;
 end;
@@ -342,63 +443,63 @@ begin
     '  Font.Height = -13' + LineEnding +
     '  Font.Name = ''Microsoft YaHei''' + LineEnding +
     '  Font.Style = []' + LineEnding +
-    '  OnCreate = FormCreate' + LineEnding +
+    //'  OnCreate = FormCreate' + LineEnding +
     '  ExplicitWidth = 716' + LineEnding +
     '  ExplicitHeight = 479' + LineEnding +
-    '  object lblTitle: TLabel' + LineEnding +
-    '    Left = 24' + LineEnding +
-    '    Top = 16' + LineEnding +
-    '    Width = 400' + LineEnding +
-    '    Height = 25' + LineEnding +
-    '    Caption = ''Lazarus 窗体，直接跑在浏览器里''' + LineEnding +
-    '    Font.Height = -19' + LineEnding +
-    '    Font.Style = [fsBold]' + LineEnding +
-    '    ParentFont = False' + LineEnding +
-    '  end' + LineEnding +
-    '  object lblName: TLabel' + LineEnding +
-    '    Left = 24' + LineEnding +
-    '    Top = 64' + LineEnding +
-    '    Width = 60' + LineEnding +
-    '    Height = 17' + LineEnding +
-    '    Caption = ''你的名字''' + LineEnding +
-    '  end' + LineEnding +
-    '  object edtName: TEdit' + LineEnding +
-    '    Left = 96' + LineEnding +
-    '    Top = 60' + LineEnding +
-    '    Width = 220' + LineEnding +
-    '    Height = 27' + LineEnding +
-    '    TabOrder = 0' + LineEnding +
-    '    Text = ''Lazarus''' + LineEnding +
-    '  end' + LineEnding +
-    '  object btnSay: TButton' + LineEnding +
-    '    Left = 328' + LineEnding +
-    '    Top = 60' + LineEnding +
-    '    Width = 110' + LineEnding +
-    '    Height = 27' + LineEnding +
-    '    Caption = ''打招呼''' + LineEnding +
-    '    TabOrder = 1' + LineEnding +
-    '    OnClick = btnSayClick' + LineEnding +
-    '  end' + LineEnding +
-    '  object lblResult: TLabel' + LineEnding +
-    '    Left = 24' + LineEnding +
-    '    Top = 104' + LineEnding +
-    '    Width = 400' + LineEnding +
-    '    Height = 21' + LineEnding +
-    '    Caption = ''（等待点击）''' + LineEnding +
-    '    Font.Height = -16' + LineEnding +
-    '    Font.Color = clNavy' + LineEnding +
-    '    ParentFont = False' + LineEnding +
-    '  end' + LineEnding +
-    '  object mmoLog: TMemo' + LineEnding +
-    '    Left = 24' + LineEnding +
-    '    Top = 144' + LineEnding +
-    '    Width = 650' + LineEnding +
-    '    Height = 270' + LineEnding +
-    '    Lines.Strings = (' + LineEnding +
-    '      ''服务端日志：'')' + LineEnding +
-    '    ScrollBars = ssVertical' + LineEnding +
-    '    TabOrder = 2' + LineEnding +
-    '  end' + LineEnding +
+    //'  object lblTitle: TLabel' + LineEnding +
+    //'    Left = 24' + LineEnding +
+    //'    Top = 16' + LineEnding +
+    //'    Width = 400' + LineEnding +
+    //'    Height = 25' + LineEnding +
+    //'    Caption = ''Lazarus 窗体，直接跑在浏览器里''' + LineEnding +
+    //'    Font.Height = -19' + LineEnding +
+    //'    Font.Style = [fsBold]' + LineEnding +
+    //'    ParentFont = False' + LineEnding +
+    //'  end' + LineEnding +
+    //'  object lblName: TLabel' + LineEnding +
+    //'    Left = 24' + LineEnding +
+    //'    Top = 64' + LineEnding +
+    //'    Width = 60' + LineEnding +
+    //'    Height = 17' + LineEnding +
+    //'    Caption = ''你的名字''' + LineEnding +
+    //'  end' + LineEnding +
+    //'  object edtName: TEdit' + LineEnding +
+    //'    Left = 96' + LineEnding +
+    //'    Top = 60' + LineEnding +
+    //'    Width = 220' + LineEnding +
+    //'    Height = 27' + LineEnding +
+    //'    TabOrder = 0' + LineEnding +
+    //'    Text = ''Lazarus''' + LineEnding +
+    //'  end' + LineEnding +
+    //'  object btnSay: TButton' + LineEnding +
+    //'    Left = 328' + LineEnding +
+    //'    Top = 60' + LineEnding +
+    //'    Width = 110' + LineEnding +
+    //'    Height = 27' + LineEnding +
+    //'    Caption = ''打招呼''' + LineEnding +
+    //'    TabOrder = 1' + LineEnding +
+    //'    OnClick = btnSayClick' + LineEnding +
+    //'  end' + LineEnding +
+    //'  object lblResult: TLabel' + LineEnding +
+    //'    Left = 24' + LineEnding +
+    //'    Top = 104' + LineEnding +
+    //'    Width = 400' + LineEnding +
+    //'    Height = 21' + LineEnding +
+    //'    Caption = ''（等待点击）''' + LineEnding +
+    //'    Font.Height = -16' + LineEnding +
+    //'    Font.Color = clNavy' + LineEnding +
+    //'    ParentFont = False' + LineEnding +
+    //'  end' + LineEnding +
+    //'  object mmoLog: TMemo' + LineEnding +
+    //'    Left = 24' + LineEnding +
+    //'    Top = 144' + LineEnding +
+    //'    Width = 650' + LineEnding +
+    //'    Height = 270' + LineEnding +
+    //'    Lines.Strings = (' + LineEnding +
+    //'      ''服务端日志：'')' + LineEnding +
+    //'    ScrollBars = ssVertical' + LineEnding +
+    //'    TabOrder = 2' + LineEnding +
+    //'  end' + LineEnding +
     'end' + LineEnding;
 end;
 
@@ -421,6 +522,118 @@ begin
   except
     on E: Exception do
       AErr := APath + ': ' + E.Message;
+  end;
+end;
+
+{ 单文件按字节拷贝（TFileStream，跨平台，不用 Windows API） }
+function LWCopyFileBytes(const Src, Dest: string): Boolean;
+var
+  fi, fo: TFileStream;
+begin
+  Result := False;
+  fi := TFileStream.Create(Src, fmOpenRead or fmShareDenyWrite);
+  try
+    fo := TFileStream.Create(Dest, fmCreate);
+    try
+      fo.CopyFrom(fi, 0);
+      Result := True;
+    finally
+      fo.Free;
+    end;
+  finally
+    fi.Free;
+  end;
+end;
+
+{ 递归拷目录：目标已有的文件不覆盖（用户可能改过样式/JS） }
+function LWCopyTree(const SrcDir, DestDir: string; out AErr: string): Integer;
+var
+  sr: TSearchRec;
+  d, f: string;
+begin
+  Result := 0;
+  if not ForceDirectories(DestDir) then
+  begin
+    AErr := '无法创建目录：' + DestDir;
+    Exit;
+  end;
+  if FindFirst(IncludeTrailingPathDelimiter(SrcDir) + '*', faAnyFile, sr) <> 0 then
+    Exit;
+  try
+    repeat
+      if (sr.Name = '.') or (sr.Name = '..') then Continue;
+      d := IncludeTrailingPathDelimiter(SrcDir) + sr.Name;
+      f := IncludeTrailingPathDelimiter(DestDir) + sr.Name;
+      if (sr.Attr and faDirectory) <> 0 then
+        Inc(Result, LWCopyTree(d, f, AErr))
+      else if not FileExists(f) then
+      begin
+        try
+          if LWCopyFileBytes(d, f) then
+            Inc(Result)
+          else
+            AErr := '拷贝失败：' + d;
+        except
+          on E: Exception do
+            AErr := d + ': ' + E.Message;
+        end;
+      end;
+    until FindNext(sr) <> 0;
+  finally
+    FindClose(sr);
+  end;
+end;
+
+function LWCopyClientAssets(const ASourceDir, ADestParent: string;
+  out AErr: string): Integer;
+begin
+  AErr := '';
+  if not DirectoryExists(ASourceDir) then
+  begin
+    AErr := '找不到客户端资源目录：' + ASourceDir;
+    Exit(0);
+  end;
+  Result := LWCopyTree(ExcludeTrailingPathDelimiter(ASourceDir),
+    IncludeTrailingPathDelimiter(ADestParent) + sLWClientSubDir, AErr);
+end;
+
+function LWClientAssetsDirNear(const APath: string): string;
+var
+  d: string;
+  depth: Integer;
+
+  function TryClient(const ADir: string): string;
+  var
+    c: string;
+  begin
+    Result := '';
+    if ADir = '' then Exit;
+    c := IncludeTrailingPathDelimiter(ADir) + 'client';
+    if not DirectoryExists(c) then Exit;
+    { 认一下特征文件，别把别的同名目录当成客户端资源 }
+    if not FileExists(IncludeTrailingPathDelimiter(c) + 'lw.js') then Exit;
+    Result := c;
+  end;
+
+begin
+  Result := '';
+  if APath = '' then Exit;
+  { APath 可以是文件（lwapp.pas / lwcore.lpk）也可以是目录（src/core / src） }
+  if DirectoryExists(APath) then
+    d := ExcludeTrailingPathDelimiter(APath)
+  else
+    d := ExtractFileDir(APath);
+  if d = '' then Exit;
+  { 逐层向上：本层 client、本层 src/client，再上一层…… 覆盖三种落点：
+    <框架>/src/core/lwapp.pas、<框架>/src/lwcore.lpk、<框架>/tools/lwnew.exe }
+  for depth := 0 to 3 do
+  begin
+    Result := TryClient(d);
+    if Result = '' then
+      Result := TryClient(IncludeTrailingPathDelimiter(d) + 'src');
+    if Result <> '' then Exit;
+    d := ExtractFileDir(d);
+    if d = '' then Exit;
   end;
 end;
 
@@ -508,30 +721,20 @@ function LWGenerateProject(const O: TLWNewProject; const ADir: string;
   out AErr: string): Boolean;
 var
   d: string;
-  Reserved: array[0..26] of string;
-  i: Integer;
+  clash: string;
 begin
   Result := False;
   AErr := '';
-  { program 名不能与框架单元重名（FPC: Duplicate identifier），历史上
-    有用户把工程命名为 LWApp 而踩坑。这里直接把已知核心单元列为保留字。 }
-  Reserved[0] := 'lwabout';  Reserved[1] := 'lwajax';   Reserved[2] := 'lwapp';
-  Reserved[3] := 'lwbase';   Reserved[4] := 'lwchart';  Reserved[5] := 'lwconfig';
-  Reserved[6] := 'lwdbgrid'; Reserved[7] := 'lwdbnav';  Reserved[8] := 'lwdispatch';
-  Reserved[9] := 'lwdlg';    Reserved[10] := 'lwdownload'; Reserved[11] := 'lwfileupload';
-  Reserved[12] := 'lwform';  Reserved[13] := 'lwhttp';  Reserved[14] := 'lwhyper';
-  Reserved[15] := 'lwlogin'; Reserved[16] := 'lwnewproject'; Reserved[17] := 'lwpanel';
-  Reserved[18] := 'lwreport'; Reserved[19] := 'lwrlog'; Reserved[20] := 'lwsession';
-  Reserved[21] := 'lwui';    Reserved[22] := 'lwupload'; Reserved[23] := 'lwweb';
-  Reserved[24] := 'lwwebsocket'; Reserved[25] := 'lwwriter'; Reserved[26] := 'lwws';
-  for i := Low(Reserved) to High(Reserved) do
-    if SameText(O.Name, Reserved[i]) then
-    begin
-      AErr := '工程名 "' + O.Name + '" 与框架单元 ' + Reserved[i] +
-        ' 重名（FPC 会报 Duplicate identifier），请换个名字，例如 ' +
-        O.Name + 'App';
-      Exit;
-    end;
+  { program 名不能与框架单元（或主窗体单元）重名，否则 FPC 报
+    "Duplicate identifier"。清单与判据见 LWProjectNameConflict。 }
+  clash := LWProjectNameConflict(O.Name, O.UnitName);
+  if clash <> '' then
+  begin
+    AErr := '工程名 "' + O.Name + '" 与单元 ' + clash +
+      ' 重名（FPC 会报 Duplicate identifier），请换个名字，例如 ' +
+      O.Name + 'App';
+    Exit;
+  end;
   d := IncludeTrailingPathDelimiter(ADir);
   if not ForceDirectories(ExcludeTrailingPathDelimiter(d)) then
   begin

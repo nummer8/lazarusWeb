@@ -45,8 +45,9 @@ type
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
 
-    { 由服务端在收到文件后调用 }
-    procedure AddUploadedFile(const APath: string);
+    { 由服务端在收到文件后调用。virtual：TLWCamera 在这里追加触发 OnCapture
+      （相机与上传共用落盘链路，只是对外事件语义不同） }
+    procedure AddUploadedFile(const APath: string); virtual;
     procedure ClearUploaded;
 
     { 最近一次上传成功的文件全路径 }
@@ -86,6 +87,7 @@ end;
 
 procedure TLWFileUpload.AddUploadedFile(const APath: string);
 begin
+  { 见接口注释：子类（TLWCamera）override 本方法追加自己的事件 }
   FLastFileName := APath;
   if FFiles.IndexOf(APath) < 0 then
     FFiles.Add(APath);

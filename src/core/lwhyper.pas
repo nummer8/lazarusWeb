@@ -16,8 +16,11 @@
 
   典型用法（HTTP 场景不再需要 nginx）：
     lwhyper --port=8080 --workers=3 --exe=demos/dbaware/dbaware(.exe)
-  公网 HTTPS 场景仍建议前置一层反代做 TLS 终结（fphttpserver 无 TLS），
-  但反代配置里不再需要 ip_hash / worker 清单 —— 粘性由 lwhyper 管。
+  HTTPS 场景直接在 lwhyper 终结即可，无需前置反代：
+    lwhyper --port=8443 --ssl --workers=3 --exe=demos/dbaware/dbaware(.exe)
+  （纯 FPC：TFPHttpServer.UseSSL + opensslsockets；worker 之间仍走 HTTP，
+   只有对外这一层是 TLS，粘性由 lwhyper 管，反代不需要 ip_hash）
+  需随包带 libssl-3-x64.dll + libcrypto-3-x64.dll（或 1.1 版）。
 
   会话恢复：lwhyper 重启会丢 sid->worker 表；带未知 sid 的请求轮询转发，
   worker 回 410 + gone，浏览器自动重建会话回登录页（框架既有兜底链路）。
@@ -47,7 +50,8 @@ interface
 
 uses
   Classes, SysUtils, DateUtils, SyncObjs, fphttpserver, httpdefs, httpprotocol,
-  fpjson, jsonparser, ssockets, fphttpclient, Process, lwrlog, lwwebsocket, lwbase;
+  fpjson, jsonparser, ssockets, fphttpclient, Process, lwrlog, lwwebsocket, lwbase,
+  opensslsockets;
 
 type
   TLWHyperConfig = record
@@ -60,6 +64,11 @@ type
     ExtraArgs: string;     { --worker-args="..." 原样追加到 worker 命令行 }
     LogDir: string;        { worker 日志目录（缺省 <TEMP>/lwhyper，PathDelim 无关） }
     Verbose: Boolean;
+    { TLS（纯 FPC）：只在外层监听终结，worker 间仍明文转发 }
+    UseSSL: Boolean;
+    SSLHost: string;
+    SSLCertFile: string;
+    SSLKeyFile: string;
   end;
 
   TLWHyperServer = class;
@@ -562,6 +571,18 @@ begin
   FMonitor.Start;
   FHTTP := TFPHttpServer.Create(nil);
   FHTTP.Port := FCfg.Port;
+  { TLS 只加在外层：浏览器 -> lwhyper 走 HTTPS，lwhyper -> worker 仍走 HTTP。
+    自签证书零配置可用；正式环境给 --ssl-cert/--ssl-key。 }
+  if FCfg.UseSSL then
+  begin
+    FHTTP.UseSSL := True;
+    if FCfg.SSLHost <> '' then
+      FHTTP.CertificateData.HostName := FCfg.SSLHost;
+    if FCfg.SSLCertFile <> '' then
+      FHTTP.CertificateData.Certificate.FileName := FCfg.SSLCertFile;
+    if FCfg.SSLKeyFile <> '' then
+      FHTTP.CertificateData.PrivateKey.FileName := FCfg.SSLKeyFile;
+  end;
   { 每连接一个线程：3.3.1 用枚举 ThreadMode，3.2.2 只有一个布尔开关 }
   {$IF FPC_FULLVERSION >= 30301}
   FHTTP.ThreadMode := tmThread;
@@ -1239,18 +1260,22 @@ end;
 procedure LWHyperBanner(const ACfg: TLWHyperConfig);
 var
   i: Integer;
+  scheme: string;
 begin
+  if ACfg.UseSSL then scheme := 'https' else scheme := 'http';
   LWLogRaw('');
   LWLogRaw('  lazarusWeb Hyper Server ' + LW_VERSION);
   LWLogRaw('  --------------------------------------------------');
-  LWLogRaw('  Listen    : http://127.0.0.1:' + IntToStr(ACfg.Port) + '/');
+  LWLogRaw('  Listen    : ' + scheme + '://127.0.0.1:' + IntToStr(ACfg.Port) + '/');
   LWLogRaw('  Workers   : ' + IntToStr(ACfg.WorkerCount) + ' x ' + ACfg.WorkerExe);
   for i := 0 to ACfg.WorkerCount - 1 do
     LWLogRaw('              #' + IntToStr(i + 1) + ' -> :' + IntToStr(ACfg.BasePort + i));
   if ACfg.Root <> '' then
     LWLogRaw('  Root      : ' + ACfg.Root);
-  LWLogRaw('  Status    : http://127.0.0.1:' + IntToStr(ACfg.Port) + '/lw/hyper/status');
-  LWLogRaw('  Health    : http://127.0.0.1:' + IntToStr(ACfg.Port) + '/lw/healthz');
+  LWLogRaw('  Status    : ' + scheme + '://127.0.0.1:' + IntToStr(ACfg.Port) + '/lw/hyper/status');
+  LWLogRaw('  Health    : ' + scheme + '://127.0.0.1:' + IntToStr(ACfg.Port) + '/lw/healthz');
+  if ACfg.UseSSL then
+    LWLogRaw('  TLS       : 开（自签证书浏览器会告警，点“继续访问”；相机取景需 https）');
   LWLogRaw('  --------------------------------------------------');
   LWLogRaw('  Ctrl+C 退出（worker 一并停止）');
   LWLogRaw('');
@@ -1259,7 +1284,7 @@ end;
 function LWHyperParseArgs(var ACfg: TLWHyperConfig): Boolean;
 var
   i: Integer;
-  arg, key, val: string;
+  arg, key, val, err: string;
 begin
   Result := True;
   for i := 1 to ParamCount do
@@ -1283,9 +1308,26 @@ begin
     else if key = '--logdir' then ACfg.LogDir := val
     else if key = '--worker-args' then ACfg.ExtraArgs := val
     else if key = '--verbose' then ACfg.Verbose := True
+    else if key = '--ssl' then ACfg.UseSSL := True
+    else if key = '--ssl-host' then ACfg.SSLHost := val
+    else if key = '--ssl-cert' then ACfg.SSLCertFile := val
+    else if key = '--ssl-key' then ACfg.SSLKeyFile := val
     else
     begin
       WriteLn('未知参数: ', arg);
+      Result := False;
+    end;
+  end;
+
+  { 证书相对路径以 exe 目录为基准；参数不成对或文件不存在时立即失败，
+    不等浏览器握手时才报 SSL library 错。 }
+  if Result and ACfg.UseSSL then
+  begin
+    ACfg.SSLCertFile := LWResolveExeRelativePath(ACfg.SSLCertFile);
+    ACfg.SSLKeyFile := LWResolveExeRelativePath(ACfg.SSLKeyFile);
+    if not LWValidateTLSFiles(ACfg.SSLCertFile, ACfg.SSLKeyFile, err) then
+    begin
+      WriteLn('错误: ', err);
       Result := False;
     end;
   end;
