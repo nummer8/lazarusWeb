@@ -104,6 +104,15 @@ const
 function LWCopyClientAssets(const ASourceDir, ADestParent: string;
   out AErr: string): Integer;
 
+{ 站点图标：把 favicon.ico 拷到工程根目录 ADestDir（**不是** lw/）。
+  运行期 lwhttp 按 <root>/favicon.ico → <exe 目录>/favicon.ico 找，而 exe
+  就在工程目录里，所以图标要落在根目录；缺了它浏览器标签页是空白图标
+  （/favicon.ico 直接 404）。
+  源文件先找 ASrcClientDir/favicon.ico，再找它的上一级（框架根目录，
+  早期这份图标就放在那儿）；目标已存在则原样保留（用户可能换过自己的图标）。
+  返回 True = 目标位置已有图标（本次拷的或本来就在）。 }
+function LWCopyFavicon(const ASrcClientDir, ADestDir: string): Boolean;
+
 { 工程自带的 build.bat 内容（纯 ASCII + CRLF，Windows/cmd 用） }
 function LWBuildBatch(const O: TLWNewProject): string;
 
@@ -595,6 +604,37 @@ begin
   end;
   Result := LWCopyTree(ExcludeTrailingPathDelimiter(ASourceDir),
     IncludeTrailingPathDelimiter(ADestParent) + sLWClientSubDir, AErr);
+end;
+
+function LWCopyFavicon(const ASrcClientDir, ADestDir: string): Boolean;
+var
+  dst, src, up: string;
+begin
+  Result := False;
+  if ADestDir = '' then Exit;
+  dst := IncludeTrailingPathDelimiter(ADestDir) + 'favicon.ico';
+  { 已经有图标就一个字节都不动：可能是用户自己换的 }
+  if FileExists(dst) then Exit(True);
+  src := '';
+  if ASrcClientDir <> '' then
+  begin
+    src := IncludeTrailingPathDelimiter(ASrcClientDir) + 'favicon.ico';
+    if not FileExists(src) then
+    begin
+      { 早期版本把这份图标放在框架根目录，顺着 client 往上找一层兜住 }
+      src := '';
+      up := ExtractFileDir(ExcludeTrailingPathDelimiter(ASrcClientDir));
+      if (up <> '') and FileExists(IncludeTrailingPathDelimiter(up) + 'favicon.ico') then
+        src := IncludeTrailingPathDelimiter(up) + 'favicon.ico';
+    end;
+  end;
+  if src = '' then Exit;
+  try
+    Result := LWCopyFileBytes(src, dst);
+  except
+    { 图标拷不过去不该影响工程落盘（lwhttp 会退到 exe 目录，再不行 404） }
+    Result := False;
+  end;
 end;
 
 function LWClientAssetsDirNear(const APath: string): string;

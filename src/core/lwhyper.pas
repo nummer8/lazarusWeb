@@ -64,6 +64,14 @@ type
     ExtraArgs: string;     { --worker-args="..." 原样追加到 worker 命令行 }
     LogDir: string;        { worker 日志目录（缺省 <TEMP>/lwhyper，PathDelim 无关） }
     Verbose: Boolean;
+    { 热更新：监听业务 exe 的新版本文件，原子换壳后逐个滚动重启 worker。
+      没有新版本文件时什么都不做，所以缺省开启不改变既有行为。 }
+    HotUpdate: Boolean;
+    UpdateDir: string;     { 新版本投放目录（空 = 看 <WorkerExe>.new） }
+    { worker 优雅退出令牌：启动时随机生成，用 --shutdown-token= 注入每个
+      worker 的命令行，热更新前 POST /lw/shutdown 让它自己收尾。
+      不对外暴露参数（运维不需要知道，也不该手工指定） }
+    ShutdownToken: string;
     { TLS（纯 FPC）：只在外层监听终结，worker 间仍明文转发 }
     UseSSL: Boolean;
     SSLHost: string;
@@ -72,6 +80,7 @@ type
   end;
 
   TLWHyperServer = class;
+  TLWHyperUpdater = class;
 
   { FPC 3.2.2 专用控制流信号：HandleRequest 里已经手工完成 WebSocket 透传，
     用它跳出 fcl-web 的"继续发响应"流程（不产生任何输出）。3.3.1 下不会用到。 }
@@ -83,6 +92,7 @@ type
     Alive: Boolean;       { 最近一次 healthz 是否通过 }
     Sessions: Integer;    { 最近一次 healthz 报告的会话数 }
     Restarts: Integer;    { 崩溃重启次数（不含首轮启动） }
+    Updates: Integer;     { 热更新导致的重启次数 }
     { 热身闸门：重启后要连续通过 N 次探针才重新对外（重启初期
       healthz 可能已通但页面初始化没完，直接放行会出现秒级慢请求）。
       只在重启时置位，首轮启动不受影响 }
@@ -99,6 +109,39 @@ type
   protected
     FHyper: TLWHyperServer;
     procedure Execute; override;
+  end;
+
+  { worker 热更新线程：轮询新版本 exe -> 原子换壳 -> 逐个滚动重启 worker。
+
+    换壳为什么不先停 worker：Windows 不允许覆盖写正在运行的 exe，但**允许
+    改名**（已实测），所以先把当前 exe 改成备份名，各 worker 进程仍跑着各自
+    已映射的旧镜像；再把新文件改名成正式名。这一步零停机，之后才逐个重启
+    让 worker 加载新镜像——任一时刻至少 N-1 个 worker 在对外服务。
+
+    失败回滚：某个 worker 起不来就整体退回旧版本（坏 exe 留存为 .bad-<时间>），
+    并把已经切到新版本的 worker 全部重启回旧版，避免集群长期瘫着。 }
+  TLWHyperUpdater = class(TThread)
+  private
+    FHyper: TLWHyperServer;
+    FWatch: string;
+    FDisabled: Boolean;
+    FStampSize: Int64;
+    FStampTime: LongInt;
+    FStampHits: Integer;
+    { 换壳失败过的那一份文件（大小+时间）：同一份不再反复重试，
+      否则 exe 被别的进程长期占用时每 4 秒刷一次错误日志 }
+    FFailSize: Int64;
+    FFailTime: LongInt;
+    procedure ResetStamp;
+    function CandidateReady: Boolean;
+    function SwapIn(const ANewFile: string; out AOldFile: string): Boolean;
+    function RestartWorker(AIndex: Integer): Boolean;
+    procedure Rollback(const AOldFile: string; AProgress: Integer);
+    function RunUpdate(const ANewFile: string): Boolean;
+  protected
+    procedure Execute; override;
+  public
+    constructor Create(AHyper: TLWHyperServer);
   end;
 
   { WebSocket 双向透传线程（一个方向） }
@@ -141,8 +184,14 @@ type
     FMap: TStringList;             { sid -> worker 下标 }
     FMapLock: TRTLCriticalSection;
     FLock: TRTLCriticalSection;
+    { worker 进程起停锁：巡检线程与热更新线程都会 Kill/Launch 同一个 Proc，
+      没有这把锁就可能一方刚 Free、另一方正在读 Proc.Running（AV） }
+    FWorkerLock: TRTLCriticalSection;
     FRR: Integer;                  { 轮询游标 }
     FMonitor: TLWHyperMonitor;
+    FUpdater: TLWHyperUpdater;
+    FUpdating: Boolean;            { 滚动更新进行中：巡检线程不插手 worker 起停 }
+    FUpdateCount: Integer;         { 累计成功的热更新次数 }
     FStartedAt: TDateTime;
     { WS 隧道计数：wsopen = 当前正在透传的条数（收尾正确时必然回 0），
       wsdone = 累计正常收尾的条数。排查"每连接漏一个对象"用它们最快：
@@ -152,6 +201,12 @@ type
     function AliveCount: Integer;
     function SessionsTotal: Integer;
     function DoHealthProbe(APort: Word; out ASessions: Integer): Boolean;
+    { Proc 起停的两个加锁入口：巡检线程与热更新线程共用，避免并发 Kill/Launch }
+    function WorkerRunning(AIndex: Integer): Boolean;
+    procedure RelaunchWorker(AIndex: Integer; AHotUpdate: Boolean = False);
+    { 请 worker 自己优雅退出（POST /lw/shutdown），并等进程真的结束。
+      返回 True = 优雅退出成功；False = 没应答/超时，由调用方强杀兜底 }
+    function ShutdownWorker(AIndex: Integer; ATimeoutMs: Integer): Boolean;
     function PickWorker(const ASid: string): Integer;
     procedure BindSid(const ASid: string; AIndex: Integer);
     procedure ClearWorkerSids(AIndex: Integer);
@@ -198,11 +253,16 @@ type
 { 解析命令行填 TLWHyperConfig；参数非法（缺 --exe 等）返回 False }
 function LWHyperParseArgs(var ACfg: TLWHyperConfig): Boolean;
 procedure LWHyperBanner(const ACfg: TLWHyperConfig);
+{ 热更新监听的新版本文件路径。横幅与 updater 共用同一个函数，
+  免得"横幅说看 A、实际盯 B" }
+function LWHyperUpdateTarget(const ACfg: TLWHyperConfig): string;
 
 implementation
 
 const
   POLL_MS = 2000;   { healthz 巡检间隔 }
+  HU_POLL_MS = 2000;   { 新版本文件轮询间隔 }
+  HU_READY_MS = 30000; { 单个 worker 换上新品后等待就绪的上限 }
 
 { hop-by-hop 头：代理必须剥掉（RFC 7230 6.1）+ 由两端各自生成的头 }
 function IsHopByHop(const AName: string): Boolean;
@@ -230,6 +290,90 @@ begin
   if B then Result := 'yes' else Result := 'no';
 end;
 
+{ ---------------- 热更新的文件/端口工具 ---------------- }
+
+{ 改名优先；跨卷（MoveFile 报 ERROR_NOT_SAME_DEVICE）或目标被占用时退回复制。
+  热更新用它做"换壳"，两步都必须是原子的，所以失败要能被调用方看见 }
+function LWMoveFile(const ASrc, ADst: string): Boolean;
+var
+  src, dst: TFileStream;
+begin
+  Result := SysUtils.RenameFile(ASrc, ADst);
+  if Result then Exit;
+  Result := False;
+  src := nil;
+  dst := nil;
+  try
+    try
+      src := TFileStream.Create(ASrc, fmOpenRead or fmShareDenyNone);
+      dst := TFileStream.Create(ADst, fmCreate);
+      dst.CopyFrom(src, 0);
+      Result := True;
+    except
+      Result := False;
+    end;
+  finally
+    dst.Free;
+    src.Free;
+  end;
+  if Result and (not SysUtils.DeleteFile(ASrc)) then
+    LWLog('[hyper] 警告: 复制完成后未能删除源文件 ' + ASrc);
+end;
+
+{ 文件大小。FPC 的 SysUtils 没有"按文件名取大小"的重载（同名的是
+  system.FileSize(var File) 和 TFileStream 版本），这里包一层 }
+function LWFileSize64(const APath: string): Int64;
+var
+  fs: TFileStream;
+begin
+  Result := 0;
+  try
+    fs := TFileStream.Create(APath, fmOpenRead or fmShareDenyNone);
+    try
+      Result := fs.Size;
+    finally
+      fs.Free;
+    end;
+  except
+    Result := 0;
+  end;
+end;
+
+{ 端口上还有没有人在 listen。连得上 = 旧进程还没完全退出。
+  TInetSocket.Create 在连接失败时抛异常，本机 refused 是立即返回的 }
+function LWPortFree(APort: Word): Boolean;
+var
+  s: TInetSocket;
+begin
+  Result := True;
+  s := nil;
+  try
+    try
+      s := TInetSocket.Create('127.0.0.1', APort);
+      Result := False;
+    except
+      Result := True;
+    end;
+  finally
+    s.Free;
+  end;
+end;
+
+{ 热更新重启前等旧进程把端口放掉：否则新进程 bind 失败直接退出，
+  只能靠下一轮巡检再兜一次，白白多花两秒 }
+function LWWaitPortFree(APort: Word; ATimeoutMs: Integer): Boolean;
+var
+  t0: TDateTime;
+begin
+  t0 := Now;
+  while MilliSecondsBetween(Now, t0) < ATimeoutMs do
+  begin
+    if LWPortFree(APort) then Exit(True);
+    Sleep(100);
+  end;
+  Result := LWPortFree(APort);
+end;
+
 { ---------------- TLWWorker ---------------- }
 
 constructor TLWWorker.Create(APort: Word);
@@ -239,6 +383,7 @@ begin
   Alive := False;
   Sessions := 0;
   Restarts := 0;
+  Updates := 0;
   BootGuard := 0;
 end;
 
@@ -261,6 +406,10 @@ begin
     args.Add('--nogui');
     if ACfg.Root <> '' then args.Add('--root=' + ACfg.Root);
     if ACfg.Theme <> '' then args.Add('--theme=' + ACfg.Theme);
+    { 优雅退出令牌：worker 收到 POST /lw/shutdown（带该令牌头）后走正常
+      停服流程退出，热更新就不必强杀。空则不加，worker 上也就没有该端点 }
+    if ACfg.ShutdownToken <> '' then
+      args.Add('--shutdown-token=' + ACfg.ShutdownToken);
     { 注意：不能直接 args.DelimitedText := ExtraArgs —— 给 DelimitedText 赋值
       会先 Clear 整个列表，把上面刚加的 --port/--nogui 全部抹掉（坑 106：
       worker 因此拿默认端口 8090 起来，撞上 lwhyper 自己的监听口，无限重启。
@@ -304,6 +453,17 @@ begin
     Proc.Free;
     Proc := nil;
   end;
+end;
+
+{ 随机令牌（32 个十六进制字符）。只用 Random 不用时间戳：时间戳在容器/
+  同机多实例下容易撞，而这里唯一的用途是"同一个 worker 只认自家负载器" }
+function LWMakeShutdownToken: string;
+var
+  i: Integer;
+begin
+  Result := '';
+  for i := 1 to 4 do
+    Result := Result + IntToHex(Random(MaxInt), 8);
 end;
 
 { ---------------- healthz 探测 ---------------- }
@@ -379,14 +539,18 @@ begin
         w.Alive := ok and (w.BootGuard <= 0);
         if ok and (w.BootGuard <= 0) then
           w.Sessions := sess;
-        if (w.Proc = nil) or (not w.Proc.Running) then
+        { 热更新进行中：worker 的起停由 updater 独占，这里只管探针。
+          否则两边同时 Kill/Launch 会互相踩（重复起进程、端口抢占） }
+        if FHyper.FUpdating then Continue;
+        if not FHyper.WorkerRunning(i) then
         begin
           { worker 崩了：清掉粘在它上面的 sid，重启 }
           FHyper.ClearWorkerSids(i);
           LWLogFmt('[hyper] worker #%d (:%d) 异常退出，重启中 (第 %d 次)',
             [i + 1, w.Port, w.Restarts + 1]);
-          w.Launch(FHyper.Cfg, i);
-          w.BootGuard := 2;   { 重启初期别急着放流量，连续两轮探针过了再说 }
+          { RelaunchWorker 内部会置 BootGuard=2：重启初期别急着放流量，
+            连续两轮探针过了再说 }
+          FHyper.RelaunchWorker(i, False);
           Inc(w.Restarts);
         end;
       end;
@@ -400,7 +564,268 @@ begin
   end;
 end;
 
+{ ---------------- TLWHyperUpdater ---------------- }
+
+constructor TLWHyperUpdater.Create(AHyper: TLWHyperServer);
+begin
+  FHyper := AHyper;
+  FDisabled := False;
+  FFailSize := -1;
+  FFailTime := -1;
+  ResetStamp;
+  FWatch := LWHyperUpdateTarget(AHyper.Cfg);
+  { 监听对象正好是 exe 本身时停手：否则会把正在跑的镜像当成新版换掉 }
+  if SameFileName(ExpandFileName(FWatch), ExpandFileName(AHyper.Cfg.WorkerExe)) then
+  begin
+    FDisabled := True;
+    LWLog('[hyper] hot-update 关闭：监听路径与业务 exe 相同');
+  end;
+  FreeOnTerminate := False;
+  inherited Create(True);   { 挂起创建，由 TLWHyperServer.Start 显式启动 }
+end;
+
+procedure TLWHyperUpdater.ResetStamp;
+begin
+  FStampSize := -1;
+  FStampTime := -1;
+  FStampHits := 0;
+end;
+
+{ 新版本文件是否已经"落定"：连续两轮探针大小与修改时间都不变，且能被
+  独占打开（正在复制的文件拿不到独占句柄）。两个条件都满足才动手，
+  否则半截文件会被换进去 }
+function TLWHyperUpdater.CandidateReady: Boolean;
+var
+  sz: Int64;
+  tm: LongInt;
+  fs: TFileStream;
+begin
+  Result := False;
+  if not FileExists(FWatch) then
+  begin
+    ResetStamp;
+    Exit;
+  end;
+  sz := LWFileSize64(FWatch);
+  tm := FileAge(FWatch);
+  { 同一份文件上次换壳就失败了（exe 被占用之类）：等它变了再试，
+    免得每 4 秒往日志里刷一遍同样的错误 }
+  if (FFailSize >= 0) and (sz = FFailSize) and (tm = FFailTime) then Exit;
+  if (sz = FStampSize) and (tm = FStampTime) then
+    Inc(FStampHits)
+  else
+  begin
+    FStampSize := sz;
+    FStampTime := tm;
+    FStampHits := 1;
+  end;
+  if (sz <= 0) or (FStampHits < 2) then Exit;
+  fs := nil;
+  try
+    try
+      fs := TFileStream.Create(FWatch, fmOpenRead or fmShareExclusive);
+      Result := True;
+    except
+      FStampHits := 0;   { 还在写，下一轮重新攒计数 }
+    end;
+  finally
+    fs.Free;
+  end;
+end;
+
+{ 换壳：exe -> 备份名，新文件 -> exe。两步都是改名，不做逐字节拷贝。
+  运行中的 exe 在 Windows 上不能覆盖写但可以改名，所以第一步对正在跑的
+  worker 无害——它们继续跑已映射的旧镜像，直到被重启 }
+function TLWHyperUpdater.SwapIn(const ANewFile: string; out AOldFile: string): Boolean;
+var
+  exe: string;
+begin
+  Result := False;
+  exe := FHyper.Cfg.WorkerExe;
+  AOldFile := exe + '.old-' + FormatDateTime('yyyymmdd-hhnnss', Now);
+  if not LWMoveFile(exe, AOldFile) then
+  begin
+    LWLog('[hyper] hot-update 失败：无法移走当前 exe（被占用？）');
+    Exit;
+  end;
+  if not LWMoveFile(ANewFile, exe) then
+  begin
+    LWLog('[hyper] hot-update 失败：无法换入新 exe，恢复原状');
+    LWMoveFile(AOldFile, exe);
+    Exit;
+  end;
+  Result := True;
+end;
+
+{ 停掉 worker #AIndex，用（已换入的）新 exe 重新拉起，等到它重新对外。
+  Alive 由巡检线程按热身闸门置位，这里只等结果——不另开一套探针 }
+function TLWHyperUpdater.RestartWorker(AIndex: Integer): Boolean;
+var
+  w: TLWWorker;
+  t0: TDateTime;
+  dead: Integer;
+begin
+  w := FHyper.FWorkers[AIndex];
+  FHyper.ClearWorkerSids(AIndex);
+  w.Alive := False;   { 立刻从路由池摘掉，别让新请求落进来 }
+  LWLogFmt('[hyper] hot-update 重启 worker #%d (:%d)', [AIndex + 1, w.Port]);
+  FHyper.RelaunchWorker(AIndex, True);
+  t0 := Now;
+  dead := 0;
+  while MilliSecondsBetween(Now, t0) < HU_READY_MS do
+  begin
+    if Terminated then Exit(False);
+    if w.Alive then Exit(True);
+    { 进程起来就退（缺 DLL、初始化即崩）不用等满 30 秒：连续 6 秒没进程
+      就判失败去回滚。慢启动的应用进程一直在跑，不会被误判 }
+    if FHyper.WorkerRunning(AIndex) then
+      dead := 0
+    else
+    begin
+      Inc(dead);
+      if dead >= 30 then
+      begin
+        LWLogFmt('[hyper] hot-update worker #%d 启动后立即退出', [AIndex + 1]);
+        Exit(False);
+      end;
+    end;
+    Sleep(200);
+  end;
+  Result := False;
+end;
+
+{ 回滚：坏 exe 改名留存（便于事后看），旧 exe 复位，已经把新版本跑起来的
+  worker（0..AProgress）全部重启回旧版 }
+procedure TLWHyperUpdater.Rollback(const AOldFile: string; AProgress: Integer);
+var
+  exe, bad: string;
+  i: Integer;
+begin
+  exe := FHyper.Cfg.WorkerExe;
+  bad := exe + '.bad-' + FormatDateTime('yyyymmdd-hhnnss', Now);
+  if not LWMoveFile(exe, bad) then
+  begin
+    LWLog('[hyper] hot-update 回滚失败：无法移走新 exe');
+    Exit;
+  end;
+  if not LWMoveFile(AOldFile, exe) then
+  begin
+    LWLog('[hyper] hot-update 回滚失败：无法恢复旧 exe，请手工处理');
+    Exit;
+  end;
+  LWLogFmt('[hyper] hot-update 已回滚到旧版本，坏版本留存为 %s',
+    [ExtractFileName(bad)]);
+  for i := 0 to AProgress do
+  begin
+    { 回滚时的重启也可能失败（旧 exe 万一也被占）：单条失败不能让
+      整个回滚流程半途而废，剩下的交给巡检线程兜底 }
+    try
+      FHyper.ClearWorkerSids(i);
+      FHyper.RelaunchWorker(i, True);
+    except
+      on E: Exception do
+        LWLogFmt('[hyper] hot-update 回滚重启 worker #%d 失败: %s',
+          [i + 1, E.Message]);
+    end;
+  end;
+end;
+
+function TLWHyperUpdater.RunUpdate(const ANewFile: string): Boolean;
+var
+  oldFile: string;
+  i, done: Integer;
+begin
+  Result := False;   { False = 连换壳都没成（文件没动过），调用方别再重试 }
+  done := 0;
+  i := -1;   { 当前处理到第几个 worker；异常回滚时要用它定位进度 }
+  LWLogFmt('[hyper] hot-update 发现新版本: %s (%d 字节)',
+    [ExtractFileName(ANewFile), LWFileSize64(ANewFile)]);
+  if not SwapIn(ANewFile, oldFile) then Exit;
+  Result := True;
+  LWLogFmt('[hyper] hot-update 已换入新 exe（旧版留存 %s），开始逐个滚动重启',
+    [ExtractFileName(oldFile)]);
+  { 新 exe 可能根本不是有效的可执行文件 —— 那种情况下 TProcess.Execute 会
+    直接抛异常（不是"起不来"，而是压根没起来）。异常必须也走回滚，否则
+    集群会停在"exe 已被换成坏的、worker 全死"的状态 }
+  try
+    for i := 0 to High(FHyper.FWorkers) do
+    begin
+      if Terminated then
+      begin
+        LWLogFmt('[hyper] hot-update 被中断（服务正在停止），已完成 %d/%d',
+          [done, Length(FHyper.FWorkers)]);
+        Exit;
+      end;
+      if not RestartWorker(i) then
+      begin
+        LWLogFmt('[hyper] hot-update worker #%d 在 %d 秒内未就绪，回滚',
+          [i + 1, HU_READY_MS div 1000]);
+        Rollback(oldFile, i);
+        Exit;
+      end;
+      Inc(done);
+      LWLogFmt('[hyper] hot-update worker #%d 已运行新版本', [i + 1]);
+    end;
+  except
+    on E: Exception do
+    begin
+      LWLogFmt('[hyper] hot-update 启动新版本失败: %s: %s，回滚',
+        [E.ClassName, E.Message]);
+      Rollback(oldFile, i);
+      Exit;
+    end;
+  end;
+  Inc(FHyper.FUpdateCount);
+  if not SysUtils.DeleteFile(oldFile) then
+    LWLogFmt('[hyper] hot-update 旧版本备份保留: %s（仍有进程映射，可稍后手工删）',
+      [ExtractFileName(oldFile)]);
+  LWLogFmt('[hyper] hot-update 完成：%d 个 worker 全部换到新版本', [done]);
+end;
+
+procedure TLWHyperUpdater.Execute;
+var
+  i: Integer;
+  ok: Boolean;
+begin
+  if FDisabled then Exit;
+  LWLogFmt('[hyper] hot-update 监听: %s（每 %d ms 检查，换版不中断服务）',
+    [FWatch, HU_POLL_MS]);
+  while not Terminated do
+  begin
+    try
+      if CandidateReady then
+      begin
+        FHyper.FUpdating := True;
+        try
+          ok := RunUpdate(FWatch);
+        finally
+          FHyper.FUpdating := False;
+        end;
+        if not ok then
+        begin
+          { 换壳没成：记住这份文件，等它变了再试（避免日志被同一错误刷屏） }
+          FFailSize := LWFileSize64(FWatch);
+          FFailTime := FileAge(FWatch);
+        end;
+        ResetStamp;
+      end;
+    except
+      on E: Exception do
+      begin
+        FHyper.FUpdating := False;
+        LWLog('[hyper] hot-update 异常: ' + E.ClassName + ': ' + E.Message);
+      end;
+    end;
+    for i := 1 to (HU_POLL_MS div 200) do
+    begin
+      if Terminated then Exit;
+      Sleep(200);
+    end;
+  end;
+end;
+
 { ---------------- TLWWSTunnel / TLWWSPump ---------------- }
+
 
 procedure TLWWSPump.Execute;
 begin
@@ -521,6 +946,13 @@ var
 begin
   inherited Create;
   FCfg := ACfg;
+  { 优雅退出令牌：每次启动随机重新生成，只存在于本进程内存与 worker 的
+    命令行里（不落盘），作用是让 worker 认得出"停我是自家负载器" }
+  if FCfg.ShutdownToken = '' then
+  begin
+    Randomize;
+    FCfg.ShutdownToken := LWMakeShutdownToken;
+  end;
   if FCfg.BasePort = 0 then
     FCfg.BasePort := FCfg.Port + 1;
   FMap := TStringList.Create;
@@ -528,7 +960,10 @@ begin
   FMap.Duplicates := dupError;
   InitCriticalSection(FMapLock);
   InitCriticalSection(FLock);
+  InitCriticalSection(FWorkerLock);
   FRR := 0;
+  FUpdating := False;
+  FUpdateCount := 0;
   FStartedAt := Now;
   SetLength(FWorkers, FCfg.WorkerCount);
   for i := 0 to FCfg.WorkerCount - 1 do
@@ -543,6 +978,13 @@ destructor TLWHyperServer.Destroy;
 var
   i: Integer;
 begin
+  { 热更新线程可能正在 Kill/Launch worker —— 必须先在它停稳后再收 worker }
+  if FUpdater <> nil then
+  begin
+    FUpdater.Terminate;
+    FUpdater.WaitFor;
+    FreeAndNil(FUpdater);
+  end;
   { FHTTP 在这里收：Stop 只负责唤醒 accept 循环，
     调用方必须先 WaitFor 启动线程再 Free 本对象 }
   FreeAndNil(FHTTP);
@@ -552,6 +994,7 @@ begin
   FMap.Free;
   DoneCriticalSection(FMapLock);
   DoneCriticalSection(FLock);
+  DoneCriticalSection(FWorkerLock);
   inherited Destroy;
 end;
 
@@ -569,6 +1012,13 @@ begin
   FMonitor := TLWHyperMonitor.Create(True);
   FMonitor.FHyper := Self;
   FMonitor.Start;
+  { 热更新线程同样要在 accept 循环之前起来（理由同上）。
+    监听开关在配置里，关掉时不建线程 }
+  if FCfg.HotUpdate then
+  begin
+    FUpdater := TLWHyperUpdater.Create(Self);
+    FUpdater.Start;
+  end;
   FHTTP := TFPHttpServer.Create(nil);
   FHTTP.Port := FCfg.Port;
   { TLS 只加在外层：浏览器 -> lwhyper 走 HTTPS，lwhyper -> worker 仍走 HTTP。
@@ -607,6 +1057,13 @@ procedure TLWHyperServer.Stop;
 var
   i: Integer;
 begin
+  { 先停热更新线程：它可能正在重启 worker，晚停会和下面的 Kill 抢同一个进程 }
+  if FUpdater <> nil then
+  begin
+    FUpdater.Terminate;
+    FUpdater.WaitFor;
+    FreeAndNil(FUpdater);
+  end;
   if FMonitor <> nil then
   begin
     FMonitor.Terminate;
@@ -628,6 +1085,98 @@ end;
 function TLWHyperServer.DoHealthProbe(APort: Word; out ASessions: Integer): Boolean;
 begin
   Result := ProbeWorkerHealth(APort, ASessions);
+end;
+
+function TLWHyperServer.WorkerRunning(AIndex: Integer): Boolean;
+begin
+  { Proc 可能被另一个线程 Free：读它必须在锁里 }
+  EnterCriticalSection(FWorkerLock);
+  try
+    Result := (FWorkers[AIndex].Proc <> nil) and FWorkers[AIndex].Proc.Running;
+  finally
+    LeaveCriticalSection(FWorkerLock);
+  end;
+end;
+
+{ 让 worker 自己走正常停服流程退出：POST /lw/shutdown（带令牌头），
+  再等进程真的结束。这样在途请求能答完、日志能刷盘、框架自己的收尾
+  清理都能跑；强杀只在它不应答（进程挂死）时兜底。 }
+function TLWHyperServer.ShutdownWorker(AIndex: Integer; ATimeoutMs: Integer): Boolean;
+var
+  clt: TFPHTTPClient;
+  ms: TMemoryStream;
+  t0: TDateTime;
+  port: Word;
+begin
+  Result := False;
+  if FCfg.ShutdownToken = '' then Exit;
+  port := FWorkers[AIndex].Port;
+  clt := TFPHTTPClient.Create(nil);
+  ms := TMemoryStream.Create;
+  try
+    try
+      clt.AllowRedirect := False;
+      clt.ConnectTimeout := 1000;
+      clt.IOTimeout := 3000;
+      clt.RequestHeaders.Add('X-LW-Shutdown: ' + FCfg.ShutdownToken);
+      clt.HTTPMethod('POST', 'http://127.0.0.1:' + IntToStr(port) + '/lw/shutdown',
+        ms, []);
+      Result := clt.ResponseStatusCode = 200;
+      if not Result then
+        LWLogFmt('[hyper] worker :%d 拒绝优雅退出（HTTP %d），改强杀',
+          [port, clt.ResponseStatusCode]);
+    except
+      on E: Exception do
+      begin
+        LWLogFmt('[hyper] worker :%d 优雅退出请求失败: %s，改强杀', [port, E.Message]);
+        Result := False;
+      end;
+    end;
+  finally
+    ms.Free;
+    clt.Free;
+  end;
+  if not Result then Exit;
+  { 等它自己退：worker 的 Stop 最长会等 3 秒让连接线程收工，这里给足余量 }
+  t0 := Now;
+  while MilliSecondsBetween(Now, t0) < ATimeoutMs do
+  begin
+    if not WorkerRunning(AIndex) then Exit(True);
+    Sleep(100);
+  end;
+  LWLogFmt('[hyper] worker :%d 在 %d ms 内未退出，改强杀', [port, ATimeoutMs]);
+  Result := False;
+end;
+
+{ Kill + Launch 一步到位（巡检线程与热更新线程共用）。
+  AHotUpdate=True 先请 worker 自己优雅退出（在途请求能答完），不应答才强杀；
+  并在重启前等端口释放。等端口放在锁外做，免得把巡检线程按在这里 } 
+procedure TLWHyperServer.RelaunchWorker(AIndex: Integer; AHotUpdate: Boolean);
+begin
+  if AHotUpdate then
+  begin
+    { 10 秒上限：worker 正常收尾通常几百毫秒，挂死才会走满 }
+    if not ShutdownWorker(AIndex, 10000) then
+      LWLogFmt('[hyper] worker :%d 未能优雅退出，强杀', [FWorkers[AIndex].Port]);
+  end;
+  EnterCriticalSection(FWorkerLock);
+  try
+    { 已经优雅退出的，Kill 里 Proc.Running 为 False，只释放对象 }
+    FWorkers[AIndex].Kill;
+  finally
+    LeaveCriticalSection(FWorkerLock);
+  end;
+  if AHotUpdate then
+    LWWaitPortFree(FWorkers[AIndex].Port, 5000);
+  EnterCriticalSection(FWorkerLock);
+  try
+    FWorkers[AIndex].Launch(FCfg, AIndex);
+    FWorkers[AIndex].BootGuard := 2;
+    if AHotUpdate then
+      Inc(FWorkers[AIndex].Updates);
+  finally
+    LeaveCriticalSection(FWorkerLock);
+  end;
 end;
 
 function TLWHyperServer.AliveCount: Integer;
@@ -1070,6 +1619,10 @@ begin
     j.Add('ok', True);
     j.Add('listen', FCfg.Port);
     j.Add('exe', FCfg.WorkerExe);
+    { 热更新可观测性：updating 表示正在滚动换版，updates 是累计成功次数 }
+    j.Add('hotupdate', FCfg.HotUpdate);
+    j.Add('updating', FUpdating);
+    j.Add('updates', FUpdateCount);
     arr := TJSONArray.Create;
     for i := 0 to High(FWorkers) do
     begin
@@ -1083,6 +1636,7 @@ begin
       w.Add('alive', FWorkers[i].Alive);
       w.Add('sessions', FWorkers[i].Sessions);
       w.Add('restarts', FWorkers[i].Restarts);
+      w.Add('updates', FWorkers[i].Updates);
       arr.Add(w);
     end;
     j.Add('workers', arr);
@@ -1272,6 +1826,10 @@ begin
     LWLogRaw('              #' + IntToStr(i + 1) + ' -> :' + IntToStr(ACfg.BasePort + i));
   if ACfg.Root <> '' then
     LWLogRaw('  Root      : ' + ACfg.Root);
+  if ACfg.HotUpdate then
+    LWLogRaw('  HotUpdate : 开（监听 ' + LWHyperUpdateTarget(ACfg) + '，换版逐个重启 worker）')
+  else
+    LWLogRaw('  HotUpdate : 关');
   LWLogRaw('  Status    : ' + scheme + '://127.0.0.1:' + IntToStr(ACfg.Port) + '/lw/hyper/status');
   LWLogRaw('  Health    : ' + scheme + '://127.0.0.1:' + IntToStr(ACfg.Port) + '/lw/healthz');
   if ACfg.UseSSL then
@@ -1279,6 +1837,15 @@ begin
   LWLogRaw('  --------------------------------------------------');
   LWLogRaw('  Ctrl+C 退出（worker 一并停止）');
   LWLogRaw('');
+end;
+
+function LWHyperUpdateTarget(const ACfg: TLWHyperConfig): string;
+begin
+  if ACfg.UpdateDir <> '' then
+    Result := IncludeTrailingPathDelimiter(ACfg.UpdateDir) +
+      ExtractFileName(ACfg.WorkerExe)
+  else
+    Result := ACfg.WorkerExe + '.new';
 end;
 
 function LWHyperParseArgs(var ACfg: TLWHyperConfig): Boolean;
@@ -1308,6 +1875,9 @@ begin
     else if key = '--logdir' then ACfg.LogDir := val
     else if key = '--worker-args' then ACfg.ExtraArgs := val
     else if key = '--verbose' then ACfg.Verbose := True
+    else if key = '--hot-update' then ACfg.HotUpdate := True
+    else if key = '--no-hot-update' then ACfg.HotUpdate := False
+    else if key = '--update-dir' then ACfg.UpdateDir := val
     else if key = '--ssl' then ACfg.UseSSL := True
     else if key = '--ssl-host' then ACfg.SSLHost := val
     else if key = '--ssl-cert' then ACfg.SSLCertFile := val
@@ -1331,6 +1901,10 @@ begin
       Result := False;
     end;
   end;
+
+  { 投放目录同样按 exe 目录解析（服务方式启动时 cwd 常是 System32） }
+  if Result and (ACfg.UpdateDir <> '') then
+    ACfg.UpdateDir := LWResolveExeRelativePath(ACfg.UpdateDir);
 end;
 
 end.
