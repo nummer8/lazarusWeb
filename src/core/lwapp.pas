@@ -446,6 +446,9 @@ begin
   GCfg.SSLKeyFile := '';
   GCfg.Root := LWDefaultRoot(GCfg.DefaultExt);
   GCfg.ExtDir := '';
+  { 空 = 不开放 /lw/shutdown。lwhyper 作为负载均衡器拉起 worker 时会生成
+    随机令牌并用 --shutdown-token= 注入，换版时才走优雅退出 }
+  GCfg.ShutdownToken := '';
   if GOrder.Count > 0 then
     GCfg.DefaultForm := GOrder[0];
 
@@ -515,12 +518,25 @@ begin
       GCfg.UseSSL := True
     else if ValueOf('--ssl-host=', val) then
       GCfg.SSLHost := val
-    else if ValueOf('--ssl-cert=', val) then
-      GCfg.SSLCertFile := val
-    else if ValueOf('--ssl-key=', val) then
-      GCfg.SSLKeyFile := val
+    { --tls-cert / --tls-key 是 --ssl-cert / --ssl-key 的别名（很多 Web 服务器
+      用 tls 前缀）。给了证书/私钥就自动开 HTTPS —— 都把证书交出来了还要
+      再记一个 --ssl 才生效，纯属坑人。这条也是"少了 --ssl 就刷
+      Invalid control character in request"的根因：参数被静默忽略，
+      服务以纯 HTTP 起来，浏览器却用 https 握手（NOTES 坑 178）。 }
+    else if ValueOf('--ssl-cert=', val) or ValueOf('--tls-cert=', val) then
+    begin
+      GCfg.SSLCertFile := val;
+      GCfg.UseSSL := True;
+    end
+    else if ValueOf('--ssl-key=', val) or ValueOf('--tls-key=', val) then
+    begin
+      GCfg.SSLKeyFile := val;
+      GCfg.UseSSL := True;
+    end
     else if arg = '--nogui' then
       GCfg.NoUI := True
+    else if ValueOf('--shutdown-token=', val) then
+      GCfg.ShutdownToken := Trim(val)
     else if ValueOf('--patch=', val) then
       LWServerPatchMode := (Trim(val) = '1') or SameText(Trim(val), 'true')
     else if arg = '--patch' then
@@ -545,15 +561,24 @@ begin
       WriteLn('  --trust-proxy         在 nginx/Caddy 反代后面：取 X-Forwarded-For 作客户端 IP');
       WriteLn('  --ssl                 开 HTTPS（纯 FPC；自签证书零配置即可用）');
       WriteLn('  --ssl-host=名         证书主机名/SAN 域名或 IP；留空用自签证书');
-      WriteLn('  --ssl-cert=文件       指定 PEM 证书（配 --ssl-key=）');
-      WriteLn('  --ssl-key=文件        指定 PEM 私钥');
+      WriteLn('  --ssl-cert=文件       指定 PEM 证书（配 --ssl-key=）；给了证书即自动开 HTTPS');
+      WriteLn('  --ssl-key=文件        指定 PEM 私钥（同上，不必再写 --ssl）');
+      WriteLn('  别名: --tls-cert= / --tls-key= 等价于 --ssl-cert= / --ssl-key=');
       WriteLn('  提示: 需随包带 libssl-3-x64.dll + libcrypto-3-x64.dll');
       WriteLn('  --nogui               GUI 构建下也不弹服务端面板（服务化部署）');
       WriteLn('  --patch=1             增量补丁（事件只回变化的 ops，默认关；老前端自动退回全量）');
       WriteLn('  --log=path            把服务端日志追加写入文件');
+      WriteLn('  --shutdown-token=X    开放 POST /lw/shutdown 优雅退出（只认回环地址 +');
+      WriteLn('                        该令牌，缺省不开）。lwhyper 拉起 worker 时自动注入');
       WriteLn('已注册窗体: ' + FormNames);
       Halt(0);
-    end;
+    end
+    { 未知参数以前被静默忽略：--tls-cert 拼错成 --tlscert 这种，服务照常
+      以 HTTP 起来，直到浏览器 https 握手才报一堆看不懂的二进制。现在直接
+      说清楚，别让人对着"参数好像没生效"猜半天。 }
+    else if Copy(arg, 1, 2) = '--' then
+      LWLog('警告: 未识别的参数 ' + arg + '，已忽略（检查拼写；TLS 参数是 ' +
+        '--ssl / --ssl-host / --ssl-cert / --ssl-key，也接受 --tls-cert / --tls-key）');
   end;
 
   { TLS 证书路径：相对路径以 exe 目录为基准（服务方式启动时 cwd 常是

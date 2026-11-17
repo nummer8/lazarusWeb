@@ -91,6 +91,12 @@ type
     SSLHost: string;
     SSLCertFile: string;
     SSLKeyFile: string;
+    { 优雅退出令牌（--shutdown-token=）。非空时开放 POST /lw/shutdown：
+      只接受回环地址 + X-LW-Shutdown 头等于本令牌的请求，收到后先回 200，
+      再由看护线程收尾退出。留空 = 该端点根本不存在，普通应用不受影响。
+      lwhyper 启动时会生成随机令牌并注入到每个 worker 的命令行，
+      热更新用它让 worker 自己收尾，而不是 Terminate 强杀。 }
+    ShutdownToken: string;
   end;
 
   { 由 lwapp 提供：按名字创建窗体实例 }
@@ -127,6 +133,17 @@ type
     HandleRequestError 把它静默吞掉（不写日志）。3.3.1 下不会用到。 }
   ELWUpgraded = class(Exception);
 
+  TLWServer = class;
+  TLWShutdownWatch = class;
+
+  { /lw/shutdown 的看护线程。请求回调里只置标志并回 200 —— Stop 会
+    AbortConnections，如果在自己这条连接的回调里调它，客户端连"确认
+    收到"都看不到。本线程看到标志后先等 300ms 让应答写回去，再收尾。 }
+  TLWShutdownWatch = class(TThread)
+  protected
+    FServer: TLWServer;
+    procedure Execute; override;
+  end;
 
   TLWServer = class
   private
@@ -137,6 +154,11 @@ type
     FLister: TLWFormLister;
     FSweeper: TLWSweepThread;
     FStartedAt: TDateTime;
+    { /lw/shutdown 的看护线程与它的标志：请求线程只置位并回 200，
+      真正的 Stop 由看护线程做（Stop 会 AbortConnections，不能在自己的
+      请求回调里调，否则那条 200 应答会被自己掐断） }
+    FShutdownWatch: TLWShutdownWatch;
+    FStopRequested: Boolean;
     { Start 已经进去过（accept 循环跑起来了）。Stop 里靠它判断
       要不要等 Start 返回，避免在别人脚下把 FHTTP 拆掉 }
     FStartCalled: Boolean;
@@ -184,6 +206,9 @@ type
     procedure ApiAjax(var ARequest: TFPHTTPConnectionRequest; var AResponse: TFPHTTPConnectionResponse);
     { 负载均衡健康检查：/lw/healthz }
     procedure ApiHealth(var AResponse: TFPHTTPConnectionResponse);
+    { 优雅退出：/lw/shutdown（只在配置了 ShutdownToken 时存在） }
+    procedure ApiShutdown(var ARequest: TFPHTTPConnectionRequest;
+      var AResponse: TFPHTTPConnectionResponse);
     { 图形验证码图片：/lw/api/captcha?k=<令牌>&v=<版本>&n&w&h[&r=<时间戳>]
       带 r 表示"换一张"（浏览器端点图刷新），会强制重新生成答案 }
     procedure ApiCaptcha(var ARequest: TFPHTTPConnectionRequest; var AResponse: TFPHTTPConnectionResponse);
@@ -214,6 +239,9 @@ type
     procedure PrintBanner;
     procedure Start;
     procedure Stop;
+    { 收到 /lw/shutdown（看护线程正在收尾）。nogui 主循环靠它判断
+      "服务已被停掉"，从而正常返回而不是空转 }
+    property StopRequested: Boolean read FStopRequested;
     { 服务端面板（lwpanel）用的只读视图 }
     function Cfg: TLWServerConfig;
     function SessionCount: Integer;
@@ -689,6 +717,28 @@ end;
 
 { ---------------- TLWServer ---------------- }
 
+procedure TLWShutdownWatch.Execute;
+begin
+  while not Terminated do
+  begin
+    if FServer.FStopRequested then
+    begin
+      { 300ms 让刚才那条 200 应答先写回对端：Stop ③ 会 AbortConnections，
+        抢在发送前面就把连接掐了，lwhyper 那边会看到"连接被重置"而不是回执 }
+      Sleep(300);
+      LWLog('[lw] /lw/shutdown 已受理，优雅退出中');
+      try
+        FServer.Stop;
+      except
+        on E: Exception do
+          LWLog('警告: 优雅退出时出错: ' + E.Message);
+      end;
+      Exit;
+    end;
+    Sleep(100);
+  end;
+end;
+
 constructor TLWServer.Create(const ACfg: TLWServerConfig; AFactory: TLWFormFactory;
   ALister: TLWFormLister);
 begin
@@ -712,6 +762,15 @@ end;
 destructor TLWServer.Destroy;
 begin
   LWStopTrace('Destroy 进入（Stop 幂等，这里通常是空转）');
+  { 看护线程可能正停在 Stop 里面（/lw/shutdown 路径）：必须等它说完，
+    否则这边接着拆 FHTTP/FStore 会和它撞上。它没被触发时靠 Terminate
+    叫醒，最多 100ms }
+  if FShutdownWatch <> nil then
+  begin
+    FShutdownWatch.Terminate;
+    FShutdownWatch.WaitFor;
+    FreeAndNil(FShutdownWatch);
+  end;
   Stop;
   LWStopTrace('Destroy ① Stop 完毕');
   FStore.Free;
@@ -976,6 +1035,15 @@ begin
     写的，等于会话过期清理从来没跑过） }
   FSweeper := TLWSweepThread.Create(FStore, FCfg.SessionTimeoutMin);
   FSweeper.Start;
+
+  { /lw/shutdown 的看护线程。同样必须赶在 Active := True 之前起。
+    令牌为空时不建线程 —— 普通应用连这个退出端点都没有，也就用不着看护 }
+  if FCfg.ShutdownToken <> '' then
+  begin
+    FShutdownWatch := TLWShutdownWatch.Create(True);
+    FShutdownWatch.FServer := Self;
+    FShutdownWatch.Start;
+  end;
 
   FStartCalled := True;
   try
@@ -1843,6 +1911,54 @@ begin
   end;
 end;
 
+{ 优雅退出：POST /lw/shutdown
+
+  为什么要有它：负载均衡器换版时如果只能 Terminate 强杀 worker，正在处理
+  的请求会断在半截、日志缓冲可能丢、退出清理（会话落盘之类）全被跳过。
+  让 worker 自己走正常停服流程（Stop）要干净得多。
+
+  三道闸，缺一不可：
+    ① 只有给了 --shutdown-token= 才存在这个端点（留空 = 路径不存在）；
+    ② 只认回环地址（lwhyper 与 worker 同机，127.0.0.1 就够）；
+    ③ 令牌放在自定义头里，不放 URL —— 浏览器里的页面给跨域请求加不了
+       自定义头（会先发 CORS 预检，我们不应答），所以"点个链接就把本机
+       开发服务器关掉"这条路走不通。
+
+  本回调只置标志 + 回 200，真正的 Stop 交给看护线程：Stop 会
+  AbortConnections，在这里做会把这条应答自己掐断。 }
+procedure TLWServer.ApiShutdown(var ARequest: TFPHTTPConnectionRequest;
+  var AResponse: TFPHTTPConnectionResponse);
+var
+  ra, tok: string;
+begin
+  ra := LowerCase(Trim(ARequest.RemoteAddress));
+  if (Pos('127.0.0.1', ra) = 0) and (Pos('::1', ra) = 0) and
+     (ra <> 'localhost') then
+  begin
+    LWLog('[lw] 拒绝 /lw/shutdown：来源非回环地址 (' + ra + ')');
+    Reply('{"ok":false,"err":"loopback only"}',
+      'application/json; charset=utf-8', 403, AResponse);
+    Exit;
+  end;
+  tok := Trim(ARequest.GetCustomHeader('X-LW-Shutdown'));
+  if tok <> FCfg.ShutdownToken then
+  begin
+    LWLog('[lw] 拒绝 /lw/shutdown：令牌不匹配');
+    Reply('{"ok":false,"err":"bad token"}',
+      'application/json; charset=utf-8', 403, AResponse);
+    Exit;
+  end;
+  if not SameText(ARequest.Method, 'POST') then
+  begin
+    Reply('{"ok":false,"err":"POST required"}',
+      'application/json; charset=utf-8', 405, AResponse);
+    Exit;
+  end;
+  Reply('{"ok":true,"bye":"shutting down"}',
+    'application/json; charset=utf-8', 200, AResponse);
+  FStopRequested := True;   { 看护线程接手，见 TLWShutdownWatch.Execute }
+end;
+
 { 图形验证码图片。
 
   URL 由 lwwriter 按控件状态生成：k=令牌 v=版本 n=字符数 w/h=像素尺寸。
@@ -2063,6 +2179,14 @@ begin
     Exit;
   end;
 
+  { 优雅退出：只有配了 --shutdown-token= 时才存在这个端点（见 ApiShutdown）。
+    没配就落到后面的普通路由，等同"没有这个路径" }
+  if (p = '/lw/shutdown') and (FCfg.ShutdownToken <> '') then
+  begin
+    ApiShutdown(ARequest, AResponse);
+    Exit;
+  end;
+
   { 图形验证码图片。不走会话：令牌本身就是"哪一张图"的凭证，
     放在静态资源判断之前，免得被当成未知路径 }
   if p = '/lw/api/captcha' then
@@ -2241,6 +2365,18 @@ begin
   { FPC 3.2.2 的 WebSocket 兼容路径用异常跳出响应流程，不是故障：静默返回 }
   if E is ELWUpgraded then
     Exit;
+  { 浏览器用 https:// 连到了纯 HTTP 端口：fcl-web 会把 TLS ClientHello 的
+    二进制当 HTTP 请求行解析，抛 EHTTPServer「Invalid control character in
+    request」，消息里带着整段握手字节 —— 刷屏且看不懂（NOTES 坑 178）。
+    换成一句能照做的提示，别把用户吓以为服务崩了。 }
+  if (Pos('EHTTPServer', E.ClassName) > 0) and
+     (Pos('Invalid control character', E.Message) > 0) then
+  begin
+    LWLog('[warn] 收到非 HTTP 流量（看起来是 TLS 握手），本服务当前是 HTTP。' +
+      '若浏览器地址是 https:// 请改成 http://；要 HTTPS 请在启动参数加 --ssl' +
+      '（或给 --ssl-cert/--ssl-key，给证书会自动开启 HTTPS）。');
+    Exit;
+  end;
   { 到这里的异常都是"这一个连接"的问题：最常见是浏览器已经断开/中止了
     请求（关页签、切走、Ext 的请求超时 abort、长轮询被取消），我们这时
     才把响应写下去，socket 已死 -> TStream.WriteBuffer 抛 EWriteError

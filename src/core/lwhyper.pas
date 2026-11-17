@@ -1880,8 +1880,17 @@ begin
     else if key = '--update-dir' then ACfg.UpdateDir := val
     else if key = '--ssl' then ACfg.UseSSL := True
     else if key = '--ssl-host' then ACfg.SSLHost := val
-    else if key = '--ssl-cert' then ACfg.SSLCertFile := val
-    else if key = '--ssl-key' then ACfg.SSLKeyFile := val
+    { 与 lwapp 一致：--tls-cert/--tls-key 是别名，给了证书即自动开 HTTPS }
+    else if (key = '--ssl-cert') or (key = '--tls-cert') then
+    begin
+      ACfg.SSLCertFile := val;
+      ACfg.UseSSL := True;
+    end
+    else if (key = '--ssl-key') or (key = '--tls-key') then
+    begin
+      ACfg.SSLKeyFile := val;
+      ACfg.UseSSL := True;
+    end
     else
     begin
       WriteLn('未知参数: ', arg);
