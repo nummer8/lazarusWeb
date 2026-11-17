@@ -8,13 +8,14 @@ unit lwdesign;
 interface
 
 uses
-  lwdsgnregister, LazarusPackageIntf;
+  lwdsgnregister, lwdsgntplgen, lwdsgntplcore, LazarusPackageIntf;
 
 implementation
 
 procedure Register;
 begin
   RegisterUnit('lwdsgnregister', @lwdsgnregister.Register);
+  RegisterUnit('lwdsgntplgen', @lwdsgntplgen.Register);
 end;
 
 initialization
