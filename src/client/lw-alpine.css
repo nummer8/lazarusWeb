@@ -4,18 +4,30 @@
    这里全部用 lw-* 前缀的自绘控件样式。
 
    ------------------------------------------------------------------
-   主题（亮色 / 深色 / 跟随系统）
+   主题（7 套配色 + 跟随系统）
    ------------------------------------------------------------------
-   所有颜色都走 --lw-* 变量，两套调色板：
-     :root                        -> 亮色（默认）
-     html[data-lw-theme="dark"]   -> 深色（同名的变量整体覆盖）
-   "跟随系统" 由 JS 解析成 light/dark 后写到 <html data-lw-theme>，
-   所以 CSS 里只有两套，不需要第三套 @media 分支 —— 系统主题切换
-   （含 Windows 定时切换、任务栏开关）由 lw-alpine.js 的 matchMedia
-   监听实时改属性，页面不用刷新。
+   所有颜色都走 61 个 --lw-* 变量，一个主题 = 一组变量值：
 
-   改配色只动这两个块；组件规则里不再出现颜色字面量。
-   左侧折叠菜单（TLWSideMenu）也是两套：亮色=浅灰蓝面板，深色=深蓝面板。 */
+     浅色系  :root / html[data-lw-theme="light"]   亮色（默认）
+             html[data-lw-theme="paper"]          米黄纸张
+             html[data-lw-theme="mint"]           护眼绿
+             html[data-lw-theme="contrast"]       高对比（白底黑字）
+     深色系  html[data-lw-theme="dark"]            深色（基准，61 个全量）
+             html[data-lw-theme="midnight"]       深蓝夜色（只覆盖色调）
+             html[data-lw-theme="forest"]         墨绿夜色（只覆盖色调）
+
+   三条约定（新增主题时照着做，见 NOTES 坑 174）：
+     1. 浅色变体**写全 61 个变量** —— 它继承的 :root 是蓝灰亮色，漏一个
+        就会在某个角落冒出蓝色；
+     2. 深色变体只覆盖色调，其余继承深色基准块 —— 但选择器必须写进基准
+        那一行（dark, midnight, forest 三选一），否则整块不生效；
+     3. 组件规则里不许出现颜色字面量，加新控件也要用变量，否则新主题下
+        它不会变色。
+   "跟随系统" 由 JS 解析成 light/dark 后写到 <html data-lw-theme>，
+   所以 CSS 里没有 @media 分支 —— 系统主题切换（含 Windows 定时切换、
+   任务栏开关）由 lw-alpine.js 的 matchMedia 监听实时改属性，页面不刷新。
+
+   左侧折叠菜单（TLWSideMenu）同样吃这套变量，每套主题都给了自己的面板色。 */
 
 :root {
     color-scheme: light;
@@ -55,7 +67,10 @@
     --lw-border3: #ccd6de;         /* 窗体外框 / 页签栏 */
     --lw-border-strong: #a8b4bd;   /* 窗体边框 */
     --lw-border-soft: #c3ced9;     /* 虚线框 / 分隔条 */
-    --lw-bevel-hi: #ffffff;        /* 3D 凸起高光（bvRaised 上/左） */
+    --lw-bevel-hi: #dde4ea;        /* 3D 凸起高光（bvRaised 上/左）。
+        不能用纯白：面板内表面是 --lw-surface(#ffffff)，白高光与自己
+        的底色同色 → 上/左边框"隐身"（LCL 真机面板底是 clBtnFace 灰，
+        白高光才可辨；Web 主题面板改白底后必须给高光留对比度） */
     --lw-bevel-lo: #8a97a3;        /* 3D 凸起阴影（bvRaised 下/右） */
 
     /* 强调色 */
@@ -98,7 +113,12 @@
     --lw-ch-title: #2b3a49;
 }
 
-html[data-lw-theme="dark"] {
+/* 深色族基准：dark / midnight / forest 共用同一份 61 个变量，
+   后面每个变体只覆盖"色调"相关的项。新增深色主题时把选择器加进这一行，
+   再补一个覆盖块即可，不用抄 61 行（抄漏一个就会残留蓝色，见坑 174）。 */
+html[data-lw-theme="dark"],
+html[data-lw-theme="midnight"],
+html[data-lw-theme="forest"] {
     color-scheme: dark;
 
     --lw-bg: #15181c;
@@ -133,7 +153,10 @@ html[data-lw-theme="dark"] {
     --lw-border-strong: #4a5563;
     --lw-border-soft: #414c58;
     --lw-bevel-hi: #46515e;
-    --lw-bevel-lo: #12161a;
+    --lw-bevel-lo: #2a323c;        /* 3D 凸起阴影（bvRaised 下/右）。
+        不能取太黑（原 #12161a）：与面板底 #1d2229 / 窗体底 #191d23
+        几乎同色 → 下/右边框"隐身"（亮色主题白高光的镜像问题，
+        见坑 149）；仍明显深于 hi #46515e，方向语义不变 */
 
     --lw-accent: #4a90d9;
     --lw-accent2: #6ab0ff;
@@ -170,6 +193,365 @@ html[data-lw-theme="dark"] {
     --lw-ch-axis: #8894a3;
     --lw-ch-text: #b6c1cd;
     --lw-ch-title: #dde3ea;
+}
+
+/* ---------------- 浅色族变体（从 :root 完整覆盖 61 个变量） ----------------
+   浅色变体与亮色的差异是全局色调（暖/绿/黑白），几乎每个变量都要改，
+   所以这里写全，不做增量 —— 漏一个就会在某个角落冒出默认的蓝灰。 */
+
+/* 米黄纸张：暖色护眼，像旧书/阅读器；强调色用棕金 */
+html[data-lw-theme="paper"] {
+    color-scheme: light;
+
+    --lw-bg: #e7dfcd;
+    --lw-fg: #2a241c;
+    --lw-fg2: #3a3025;
+    --lw-fg2b: #4a3d2d;
+    --lw-fg3: #5b4d3a;
+    --lw-fg3b: #6b5c46;
+    --lw-fg4: #7a6a52;
+    --lw-fg5: #9a8a6e;
+    --lw-icon: #7a6a52;
+    --lw-muted: #a99a7f;
+    --lw-muted2: #c0b298;
+
+    --lw-surface: #fdfaf1;
+    --lw-surface2: #f5efdf;
+    --lw-surface3: #efe7d3;
+    --lw-surface4: #faf5e7;
+    --lw-surface5: #fffdf7;
+    --lw-win-bg: #f4eddc;
+    --lw-cap-a: #ded0b4;
+    --lw-cap-b: #cdbb98;
+    --lw-cap-fg: #3d3223;
+    --lw-title-a: #f8f3e6;
+    --lw-title-b: #ece2cc;
+    --lw-btn-b: #f1e9d7;
+
+    --lw-border: #c2b393;
+    --lw-border2: #e4dac4;
+    --lw-border3: #d3c6ab;
+    --lw-border-strong: #b0a07d;
+    --lw-border-soft: #cabca0;
+    --lw-bevel-hi: #efe6d2;
+    --lw-bevel-lo: #8e7f62;
+
+    --lw-accent: #b1782f;
+    --lw-accent2: #d8a962;
+    --lw-accent-strong: #8a5b1e;
+    --lw-accent-dim: #c9ac82;
+    --lw-accent-weak: #f0e2c8;
+    --lw-accent-text: #6b4517;
+    --lw-hover: #f4ecd8;
+    --lw-hover2: #f8f2e4;
+    --lw-sel: #ecdbb8;
+    --lw-danger: #b85342;
+    --lw-track: #e2d8c1;
+    --lw-track2: #e8dfcb;
+    --lw-mask: rgba(253, 250, 241, .58);
+    --lw-captcha-filter: sepia(.22) saturate(.92);
+
+    --lw-sm-bg: #efe7d4;
+    --lw-sm-fg: #3a3025;
+    --lw-sm-fg2: #5b4d3a;
+    --lw-sm-head: #7a6a52;
+    --lw-sm-muted: #9a8a6e;
+    --lw-sm-arrow: #9a8a6e;
+    --lw-sm-hover: #e6d9bc;
+    --lw-sm-on: #e9d8b4;
+    --lw-sm-on-fg: #6b4517;
+    --lw-sm-bar: #b1782f;
+    --lw-sm-sep: rgba(0, 0, 0, .08);
+    --lw-sm-line: #e2d7c0;
+    --lw-sm-ic-filter: invert(1) hue-rotate(180deg) saturate(.25) brightness(1.06);
+
+    --lw-ch-grid: #e6dcc8;
+    --lw-ch-axis: #9a8a6e;
+    --lw-ch-text: #5b4d3a;
+    --lw-ch-title: #3a3025;
+}
+
+/* 护眼绿：白底仍在（表格/输入框要清晰），环境与强调色转绿 */
+html[data-lw-theme="mint"] {
+    color-scheme: light;
+
+    --lw-bg: #dfe8e1;
+    --lw-fg: #1c2a20;
+    --lw-fg2: #24382b;
+    --lw-fg2b: #2f4736;
+    --lw-fg3: #3f5645;
+    --lw-fg3b: #4f6857;
+    --lw-fg4: #627a68;
+    --lw-fg5: #8a9d90;
+    --lw-icon: #667e6c;
+    --lw-muted: #93a597;
+    --lw-muted2: #adbcb0;
+
+    --lw-surface: #fcfffc;
+    --lw-surface2: #eef5ef;
+    --lw-surface3: #e9f1ea;
+    --lw-surface4: #f6fbf6;
+    --lw-surface5: #fdfffd;
+    --lw-win-bg: #eff5f0;
+    --lw-cap-a: #d2e4d6;
+    --lw-cap-b: #bdd6c4;
+    --lw-cap-fg: #22392b;
+    --lw-title-a: #f6fbf7;
+    --lw-title-b: #e6f0e8;
+    --lw-btn-b: #eaf3ec;
+
+    --lw-border: #b3c8b9;
+    --lw-border2: #d9e6db;
+    --lw-border3: #c8d8cc;
+    --lw-border-strong: #a2b8a8;
+    --lw-border-soft: #bfd1c3;
+    --lw-bevel-hi: #dceadf;
+    --lw-bevel-lo: #8ba294;
+
+    --lw-accent: #2f8f5b;
+    --lw-accent2: #63bb8b;
+    --lw-accent-strong: #1f6b43;
+    --lw-accent-dim: #8abfa2;
+    --lw-accent-weak: #d6eade;
+    --lw-accent-text: #16512f;
+    --lw-hover: #e7f3eb;
+    --lw-hover2: #eef8f1;
+    --lw-sel: #cde6d6;
+    --lw-danger: #cc5a4d;
+    --lw-track: #d5e4d9;
+    --lw-track2: #dfeae2;
+    --lw-mask: rgba(252, 255, 252, .55);
+    --lw-captcha-filter: hue-rotate(-18deg) saturate(.95);
+
+    --lw-sm-bg: #eaf2ec;
+    --lw-sm-fg: #24382b;
+    --lw-sm-fg2: #3f5645;
+    --lw-sm-head: #667e6c;
+    --lw-sm-muted: #8a9d90;
+    --lw-sm-arrow: #8a9d90;
+    --lw-sm-hover: #dfece3;
+    --lw-sm-on: #d3e8da;
+    --lw-sm-on-fg: #16512f;
+    --lw-sm-bar: #2f8f5b;
+    --lw-sm-sep: rgba(0, 0, 0, .07);
+    --lw-sm-line: #dbe8de;
+    --lw-sm-ic-filter: invert(1) hue-rotate(180deg) saturate(.25) brightness(1.06);
+
+    --lw-ch-grid: #dfeae2;
+    --lw-ch-axis: #8a9d90;
+    --lw-ch-text: #3f5645;
+    --lw-ch-title: #24382b;
+}
+
+/* 高对比：白底纯黑字、边框到黑、强调改深蓝；选中用亮黄，
+   给色弱/强光环境/投屏用（这是唯一一套允许"边框全黑"的主题） */
+html[data-lw-theme="contrast"] {
+    color-scheme: light;
+
+    --lw-bg: #ffffff;
+    --lw-fg: #000000;
+    --lw-fg2: #000000;
+    --lw-fg2b: #000000;
+    --lw-fg3: #111111;
+    --lw-fg3b: #222222;
+    --lw-fg4: #222222;
+    --lw-fg5: #333333;
+    --lw-icon: #000000;
+    --lw-muted: #555555;
+    --lw-muted2: #666666;
+
+    --lw-surface: #ffffff;
+    --lw-surface2: #f0f0f0;
+    --lw-surface3: #e6e6e6;
+    --lw-surface4: #f7f7f7;
+    --lw-surface5: #ffffff;
+    --lw-win-bg: #ffffff;
+    --lw-cap-a: #ffffff;
+    --lw-cap-b: #ededed;
+    --lw-cap-fg: #000000;
+    --lw-title-a: #ffffff;
+    --lw-title-b: #f2f2f2;
+    --lw-btn-b: #f0f0f0;
+
+    --lw-border: #000000;
+    --lw-border2: #999999;
+    --lw-border3: #000000;
+    --lw-border-strong: #000000;
+    --lw-border-soft: #666666;
+    --lw-bevel-hi: #ffffff;
+    --lw-bevel-lo: #000000;
+
+    --lw-accent: #0000cc;
+    --lw-accent2: #4d4dff;
+    --lw-accent-strong: #000099;
+    --lw-accent-dim: #0000cc;
+    --lw-accent-weak: #d0d0ff;
+    --lw-accent-text: #000080;
+    --lw-hover: #fff2a8;
+    --lw-hover2: #fff8d0;
+    --lw-sel: #ffdf6e;
+    --lw-danger: #b00020;
+    --lw-track: #cccccc;
+    --lw-track2: #dcdcdc;
+    --lw-mask: rgba(255, 255, 255, .7);
+    --lw-captcha-filter: contrast(1.25);
+
+    --lw-sm-bg: #ffffff;
+    --lw-sm-fg: #000000;
+    --lw-sm-fg2: #000000;
+    --lw-sm-head: #000000;
+    --lw-sm-muted: #444444;
+    --lw-sm-arrow: #000000;
+    --lw-sm-hover: #e8e8e8;
+    --lw-sm-on: #ffdf6e;
+    --lw-sm-on-fg: #000080;
+    --lw-sm-bar: #0000cc;
+    --lw-sm-sep: #000000;
+    --lw-sm-line: #000000;
+    --lw-sm-ic-filter: none;
+
+    --lw-ch-grid: #999999;
+    --lw-ch-axis: #333333;
+    --lw-ch-text: #111111;
+    --lw-ch-title: #000000;
+}
+
+/* ---------------- 深色族变体（只覆盖色调，其余继承上面的深色基准） ---------------- */
+
+/* 深蓝夜色：比 dark 更蓝、更冷，企业后台常见的那种"夜色蓝" */
+html[data-lw-theme="midnight"] {
+    --lw-bg: #0c131f;
+    --lw-fg: #e3eaf4;
+    --lw-fg2: #dbe4f0;
+    --lw-fg2b: #c6d4e6;
+    --lw-fg3: #b3c2d6;
+    --lw-fg3b: #a3b3c9;
+    --lw-fg4: #8fa1b9;
+    --lw-fg5: #8496ae;
+    --lw-icon: #93a5bd;
+    --lw-muted: #6b7d95;
+    --lw-muted2: #5c6d84;
+
+    --lw-surface: #141d2c;
+    --lw-surface2: #182437;
+    --lw-surface3: #16202f;
+    --lw-surface4: #1a2637;
+    --lw-surface5: #192436;
+    --lw-win-bg: #101825;
+    --lw-cap-a: #23334c;
+    --lw-cap-b: #182437;
+    --lw-cap-fg: #dae6f4;
+    --lw-title-a: #1b2637;
+    --lw-title-b: #151f2e;
+    --lw-btn-b: #182437;
+
+    --lw-border: #2e3d54;
+    --lw-border2: #233043;
+    --lw-border3: #2e3d54;
+    --lw-border-strong: #3d4f6b;
+    --lw-border-soft: #33425a;
+    --lw-bevel-hi: #384963;
+    --lw-bevel-lo: #1f2a3b;
+
+    --lw-accent: #4c8dff;
+    --lw-accent2: #7fb0ff;
+    --lw-accent-strong: #85b7f2;
+    --lw-accent-dim: #3a5c8c;
+    --lw-accent-weak: #1c2f4a;
+    --lw-accent-text: #a8caff;
+    --lw-hover: #182a42;
+    --lw-hover2: #16253a;
+    --lw-sel: #1f3a5c;
+    --lw-danger: #e2695f;
+    --lw-track: #263345;
+    --lw-track2: #263345;
+    --lw-mask: rgba(4, 8, 14, .6);
+
+    --lw-sm-bg: #16202f;
+    --lw-sm-fg: #dbe6f4;
+    --lw-sm-fg2: #c6d4e6;
+    --lw-sm-head: #93a5bd;
+    --lw-sm-muted: #8296af;
+    --lw-sm-arrow: #93a8c2;
+    --lw-sm-hover: #1e2d42;
+    --lw-sm-on: #263d5a;
+    --lw-sm-on-fg: #ffffff;
+    --lw-sm-bar: #4c8dff;
+    --lw-sm-sep: rgba(255, 255, 255, .06);
+    --lw-sm-line: rgba(255, 255, 255, .05);
+
+    --lw-ch-grid: #263345;
+    --lw-ch-axis: #8496ae;
+    --lw-ch-text: #b3c2d6;
+    --lw-ch-title: #dbe4f0;
+}
+
+/* 墨绿夜色：深色里的"森林绿"，长时间盯日志比纯蓝灰舒服 */
+html[data-lw-theme="forest"] {
+    --lw-bg: #0e1512;
+    --lw-fg: #e0eae3;
+    --lw-fg2: #d6e3da;
+    --lw-fg2b: #c2d3c8;
+    --lw-fg3: #b0c2b7;
+    --lw-fg3b: #a0b3a7;
+    --lw-fg4: #8b9f92;
+    --lw-fg5: #809486;
+    --lw-icon: #90a596;
+    --lw-muted: #6a7d71;
+    --lw-muted2: #5b6c61;
+
+    --lw-surface: #15201a;
+    --lw-surface2: #19261f;
+    --lw-surface3: #17231c;
+    --lw-surface4: #1b2921;
+    --lw-surface5: #1a2720;
+    --lw-win-bg: #111a15;
+    --lw-cap-a: #22362a;
+    --lw-cap-b: #182720;
+    --lw-cap-fg: #d8e6dd;
+    --lw-title-a: #1a2720;
+    --lw-title-b: #151f19;
+    --lw-btn-b: #19261f;
+
+    --lw-border: #2f4237;
+    --lw-border2: #24352b;
+    --lw-border3: #2f4237;
+    --lw-border-strong: #3f5546;
+    --lw-border-soft: #354a3d;
+    --lw-bevel-hi: #3a5142;
+    --lw-bevel-lo: #1f2c24;
+
+    --lw-accent: #45a06e;
+    --lw-accent2: #6cc48f;
+    --lw-accent-strong: #7dc79b;
+    --lw-accent-dim: #356b4e;
+    --lw-accent-weak: #1f3428;
+    --lw-accent-text: #a9e0be;
+    --lw-hover: #1a2b22;
+    --lw-hover2: #172620;
+    --lw-sel: #24402f;
+    --lw-danger: #d4665c;
+    --lw-track: #27372d;
+    --lw-track2: #27372d;
+    --lw-mask: rgba(6, 11, 8, .6);
+
+    --lw-sm-bg: #17221b;
+    --lw-sm-fg: #d6e3da;
+    --lw-sm-fg2: #c2d3c8;
+    --lw-sm-head: #90a596;
+    --lw-sm-muted: #829887;
+    --lw-sm-arrow: #96ac9c;
+    --lw-sm-hover: #203026;
+    --lw-sm-on: #294234;
+    --lw-sm-on-fg: #ffffff;
+    --lw-sm-bar: #45a06e;
+    --lw-sm-sep: rgba(255, 255, 255, .06);
+    --lw-sm-line: rgba(255, 255, 255, .04);
+
+    --lw-ch-grid: #27372d;
+    --lw-ch-axis: #809486;
+    --lw-ch-text: #b0c2b7;
+    --lw-ch-title: #d6e3da;
 }
 
 html, body {
@@ -772,6 +1154,9 @@ html, body {
 .lw-btn.lw-bic-retry::before { content: "\21BB\00A0"; font-weight: bold; }
 .lw-btn.lw-bic-ignore::before { content: "\2715\00A0"; font-weight: bold; opacity: .6; }
 
+/* TLWCamera：镜头图标（与上传按钮外观同源，靠图标区分语义） */
+.lw-cam::before { content: "\1F4F7\00A0"; font-size: 1.05em; line-height: 1; }
+
 .lw-cb { display: flex; align-items: center; gap: 6px; cursor: default; white-space: nowrap; }
 .lw-cb input { margin: 0; }
 .lw-cb input:disabled + span { color: var(--lw-muted); }
@@ -955,10 +1340,86 @@ html, body {
     width: auto;
     height: 100%;
 }
-.lw-updown { text-align: center; }
+/* TUpDown：贴着编辑框的上下箭头（坑 152，替代误渲染的数字输入框）。
+   桌面端上下堆叠（LCL 缺省样子），按设计期 w×h 定位；箭头用 CSS 三角形
+   画（.lw-ud-a），方向由两端布局分别旋转 —— 按钮语义恒定：第 1 枚=加、
+   第 2 枚=减。移动端改为左右大号触控区（溢出设计尺寸，命中面积 ≥40px，
+   小箭头在触屏上几乎点不中）。另支持滚轮步进（@wheel 绑在 .lw-ud 上）。 */
+.lw-ud {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    min-height: 20px;
+    min-width: 16px;
+}
+.lw-ud-btn {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    margin: 0;
+    border: 1px solid rgba(0, 0, 0, .3);
+    background: linear-gradient(#fdfdfd, #e8e8e8);
+    color: #2b3a49;
+    line-height: 1;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+}
+.lw-ud-up { border-radius: 3px 3px 0 0; }
+.lw-ud-dn { border-radius: 0 0 3px 3px; margin-top: -1px; }
+/* CSS 三角形：默认朝上；减号按钮旋转 180° 朝下 */
+.lw-ud-a {
+    display: block;
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 5px solid currentColor;
+}
+.lw-ud-dn .lw-ud-a { transform: rotate(180deg); }
+.lw-ud-btn:active { background: #d0d8e0; }
+.lw-ud-btn:disabled { opacity: .45; cursor: default; }
+
+/* 移动端：改为 −/+ 文字按钮（用户 2026-11-16 定稿：比左右箭头更明确），
+   放大到舒适触控尺寸（允许溢出设计期小方块，.lw-n 无 overflow 裁剪；
+   加号在右、减号在左）。高度不另设最小值：跟随包装层（与 Associate
+   编辑框设计高度一致，用户要求两者齐平），仅横向放宽保证可点。 */
+html[data-lw-layout="mobile"] .lw-ud {
+    flex-direction: row;
+    width: auto;
+    height: 100%;
+    min-width: 68px;
+    min-height: 0;
+    gap: 3px;
+}
+html[data-lw-layout="mobile"] .lw-ud-btn {
+    min-width: 32px;
+    min-height: 0;
+    border-radius: 3px;
+    font-size: 20px;
+    font-weight: 600;
+    font-family: 'Segoe UI', Arial, sans-serif;
+}
+html[data-lw-layout="mobile"] .lw-ud-dn { margin-top: 0; }
+/* 常规步进器惯例：− 在左、+ 在右（DOM 顺序不变，仅视觉对调） */
+html[data-lw-layout="mobile"] .lw-ud-up { order: 2; }
+html[data-lw-layout="mobile"] .lw-ud-dn { order: 1; }
+html[data-lw-layout="mobile"] .lw-ud-a { display: none; }
+html[data-lw-layout="mobile"] .lw-ud-up::after { content: '+'; }
+html[data-lw-layout="mobile"] .lw-ud-dn::after { content: '\2212'; } /* − */
 
 /* ---------- 图形 / 帧 ---------- */
 .lw-img { max-width: 100%; max-height: 100%; }
+/* 相机本地回显（TLWCamera.PreviewImage）：客户端拍完直接把 Blob 塞进
+   目标 TImage。!important 是为了压过 TImage 的 :style 绑定 ——
+   src 为空时它会给 img 写 visibility:hidden */
+.lw-img[data-lw-photo] { visibility: visible !important; object-fit: contain; }
 /* 图形验证码（TLWCaptcha）：服务端现画的 PNG，铺满控件矩形，点一下换一张。
    深色主题不做第二张图 —— 用 filter 反相就够了，省一次请求也省一套配色 */
 .lw-captcha {
@@ -1254,3 +1715,64 @@ html, body {
     margin-bottom: 8px;
 }
 .lw-end-s { font-size: 13px; color: var(--lw-fg2); }
+
+/* ---------- 自适应移动布局（方案 B，自研） ----------
+   html[data-lw-layout="desktop|mobile"]、html[data-lw-input="mouse|touch"]
+   由 lw-alpine.js 的自适应模块维护。模板骨架 .lw-tpl 里的占位容器
+   .lw-ph 承接被搬进来的控件节点；控件在占位符内恢复文档流，
+   宽高交给模板自己的 CSS（模板可写 <style> 定制排布）。 */
+.lw-tpl {
+    padding: 10px 12px 16px;
+}
+/* 模板接管窗体顶层（任意端）：客户区超高时滚动。
+   这里给的是 height 而不是 min-height，并且用"单轨 grid"把客户区高度变成
+   模板根节点的**确定**高度：模板的主区域要写 calc(100% - 其它控件)，百分比
+   高度只有落在确定高度上才解析得出来。只写 height:100% 不够 —— 这条链上
+   有一环是 flex 项的 flex:1，Chromium 在百分比解析时不算它 definite，于是
+   根节点的 100% 退化成 auto、主区域塌到 min-height（gallery 实测 240px）。
+   1fr 轨道的尺寸是确定的，网格项拿到的就是它（实测 714px），见坑 164。
+   类由 lwApplyFormTpl 加/摘（lw-kids-tpl） */
+.lw-kids.lw-kids-tpl {
+    overflow: auto;
+}
+.lw-kids.lw-kids-tpl > .lw-tpl {
+    height: 100%;
+    box-sizing: border-box;
+    display: grid;
+    grid-template-rows: 1fr;
+}
+.lw-tpl .lw-ph {
+    display: block;
+    margin: 0 0 10px;
+}
+.lw-tpl .lw-ph > .lw-n {
+    position: static;
+    width: auto;
+    max-width: 100%;
+}
+.lw-tpl .lw-ph > .lw-n > .lw-label {
+    white-space: normal;
+}
+
+/* 触控细节：与布局模式解耦，只看输入能力（html[data-lw-input]）。
+   iOS 聚焦输入框字号 <16px 会整页放大，触屏下提到 16px；
+   touch-action 消除双击缩放判定延迟。 */
+html[data-lw-input="touch"] .lw-btn,
+html[data-lw-input="touch"] .lw-menu-top,
+html[data-lw-input="touch"] .lw-tab,
+html[data-lw-input="touch"] .lw-tpl .lw-n {
+    touch-action: manipulation;
+}
+html[data-lw-input="touch"] .lw-input,
+html[data-lw-input="touch"] .lw-select,
+html[data-lw-input="touch"] .lw-memo {
+    font-size: 16px;
+}
+
+/* 平移模式：存在无模板回退窗体（fm.tplFallback，窗体保持设计宽高）时，
+   #lw-root 允许滚动，用户左右/上下滑动查看超出视口的内容；
+   全部窗体有模板或处于桌面模式时开关关闭，保持原来的不滚动。 */
+html[data-lw-pan="1"] #lw-root {
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+}

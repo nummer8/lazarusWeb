@@ -16,17 +16,27 @@
 var LW = (function () {
     'use strict';
 
-    /* ---------------- 主题（亮色 / 深色 / 跟随系统） ----------------
-       三档偏好：light / dark / auto（auto = 跟随系统配色）。
-        · 偏好存 localStorage['lw-theme']：刷新、多标签页、多窗体一致；
-        · auto 时监听 matchMedia，系统深色开关（含 Windows 的定时切换）
-          一变就跟着切，页面不刷新；
-        · 实际生效的主题写在 <html data-lw-theme="light|dark"> 上，
-          CSS 只认这一个属性（两套调色板见 lw-alpine.css 顶部）；
-        · 服务端窗体属性 LWTheme / LWThemeButton 只在"本地还没有用户
-          选择"时作为首次默认值 —— 用户手动选过就以本地为准。 */
+    /* ---------------- 主题（8 档：7 套配色 + 跟随系统） ----------------
+       固定配色 7 套，分两个色系（CSS 里也按这个分组，见 lw-alpine.css）：
+
+         浅色系：light 亮色 / paper 米黄纸张 / mint 护眼绿 / contrast 高对比
+         深色系：dark 深色 / midnight 深蓝夜色 / forest 墨绿夜色
+
+       偏好存 localStorage['lw-theme']（light/dark/paper/mint/midnight/
+       forest/contrast/auto），刷新、多标签页、多窗体一致；
+       auto = 跟随系统配色，监听 matchMedia，系统深色开关（含 Windows 的
+       定时切换）一变就跟着切，页面不刷新；
+       实际生效的主题写在 <html data-lw-theme="..."> 上（auto 时解析成
+       light 或 dark），CSS 只认这一个属性；
+       服务端窗体属性 LWTheme / LWThemeButton 只在"本地还没有用户选择"
+       时作为首次默认值 —— 用户手动选过就以本地为准。 */
     var THEME_KEY = 'lw-theme';
-    var THEME_MODES = ['light', 'dark', 'auto'];
+    /* 固定配色（可单独选中）；auto 不在里面，它要按系统解析 */
+    var THEME_FIXED = ['light', 'dark', 'paper', 'mint', 'midnight',
+        'forest', 'contrast'];
+    var THEME_MODES = THEME_FIXED.concat(['auto']);
+    /* 深色系集合：figcaption 图标、图表重绘、业务侧判断"是不是深色"都用它 */
+    var THEME_DARK = ['dark', 'midnight', 'forest'];
     var themePref = 'auto';
     var themeSaved = false;     /* 本地是否已有用户选择 */
     var themeBtns = [];         /* 已创建的标题栏按钮（换主题要一起换图标） */
@@ -34,31 +44,45 @@ var LW = (function () {
     var mqDark = (window.matchMedia ?
         window.matchMedia('(prefers-color-scheme: dark)') : null);
 
+    function themeIsDark(name) { return THEME_DARK.indexOf(name) >= 0; }
     function themeResolve(p) {
-        if (p === 'light' || p === 'dark') return p;
+        if (THEME_FIXED.indexOf(p) >= 0) return p;
         return (mqDark && mqDark.matches) ? 'dark' : 'light';
     }
     function themeLabel(p) {
-        return p === 'light' ? '亮色' : (p === 'dark' ? '深色' : '跟随系统');
+        switch (p) {
+            case 'light': return '亮色';
+            case 'dark': return '深色';
+            case 'paper': return '米黄纸张';
+            case 'mint': return '护眼绿';
+            case 'midnight': return '深蓝夜色';
+            case 'forest': return '墨绿夜色';
+            case 'contrast': return '高对比';
+            default: return '跟随系统';
+        }
     }
     /* 图标用手绘 SVG：Unicode 的 ☀/☾ 在不同机器上字重、大小差很多，
-       自己画的三枚（太阳 / 月牙 / 半黑半白）在标题栏里尺寸一致 */
+       自己画的三枚（太阳 / 月牙 / 半黑半白）在标题栏里尺寸一致。
+       形状只表达色系（浅色系=太阳、深色系=月牙、跟随系统=半圆），
+       具体是哪一套用强调色区分 —— 填充色跟着主题走，一眼能看出当前配色。 */
     function themeIcon(p) {
+        var real = themeResolve(p);
+        var accent = 'var(--lw-accent)';
         var s = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" ' +
             'stroke="currentColor" stroke-width="1.3" stroke-linecap="round">';
-        if (p === 'light') {
-            s += '<circle cx="8" cy="8" r="3.1" fill="currentColor" stroke="none"/>';
+        if (p === 'auto') {
+            s += '<circle cx="8" cy="8" r="5.3"/>' +
+                '<path d="M8 2.7a5.3 5.3 0 0 1 0 10.6z" fill="' + accent + '" stroke="none"/>';
+        } else if (themeIsDark(real)) {
+            s += '<path d="M10.6 2.4a6 6 0 1 0 2.9 10.4A6.9 6.9 0 0 1 10.6 2.4z" ' +
+                'fill="' + accent + '" stroke="none"/>';
+        } else {
+            s += '<circle cx="8" cy="8" r="3.1" fill="' + accent + '" stroke="none"/>';
             [[13.4, 8, 15.2, 8], [11.82, 11.82, 13.09, 13.09], [8, 13.4, 8, 15.2],
              [4.18, 11.82, 2.91, 13.09], [2.6, 8, 0.8, 8], [4.18, 4.18, 2.91, 2.91],
              [8, 2.6, 8, 0.8], [11.82, 4.18, 13.09, 2.91]].forEach(function (l) {
                 s += '<line x1="' + l[0] + '" y1="' + l[1] + '" x2="' + l[2] + '" y2="' + l[3] + '"/>';
             });
-        } else if (p === 'dark') {
-            s += '<path d="M10.6 2.4a6 6 0 1 0 2.9 10.4A6.9 6.9 0 0 1 10.6 2.4z" ' +
-                'fill="currentColor" stroke="none"/>';
-        } else {
-            s += '<circle cx="8" cy="8" r="5.3"/>' +
-                '<path d="M8 2.7a5.3 5.3 0 0 1 0 10.6z" fill="currentColor" stroke="none"/>';
         }
         return s + '</svg>';
     }
@@ -105,10 +129,13 @@ var LW = (function () {
         }
         for (var i = 0; i < themeBtns.length; i++) themeBtnSync(themeBtns[i]);
         /* 图表是静态 SVG 字符串，颜色用类名承载 CSS 变量，换主题自动变色；
-           业务侧若自己画了 canvas/图片，可监听这个事件重绘 */
+           业务侧若自己画了 canvas/图片，可监听这个事件重绘。
+           detail.theme 是真实生效的配色名（'midnight' 这类具体值），
+           判断"是不是深色"请用 detail.dark —— 别写 theme === 'dark'，
+           深色系有三套。 */
         try {
             document.dispatchEvent(new CustomEvent('lw:themechange',
-                { detail: { theme: real, pref: p } }));
+                { detail: { theme: real, pref: p, dark: themeIsDark(real) } }));
         } catch (e) { }
         return real;
     }
@@ -222,6 +249,14 @@ var LW = (function () {
        那种控件 Caption 里的 & 是字面量（LCL 不解析），这里也不解析。 */
     window.$lwCap = function (s, on) {
         return on === 0 ? esc(s) : accHtml(esc(s));
+    };
+    /* 带换行的文本（TLabel/TStaticText 的 Caption 可含 LineEnding）：
+       LCL DrawText 对 Caption 里的 CR/LF 是真的换行，与 WordWrap 无关；
+       HTML 里裸换行会被折叠成空格，必须在 esc 之后补成 <br>。
+       只给 label/static 的渲染点用 —— 按钮/页签/菜单等单行 Caption 不做。 */
+    window.$lwTxt = function (s, on) {
+        var es = esc(s).replace(/\r\n|\r|\n/g, '<br>');
+        return on === 0 ? es : accHtml(es);
     };
 
     /* Alt+字母 触发加速键：在可见的可交互元素里找 <u>k</u> 并点击。
@@ -420,8 +455,14 @@ var LW = (function () {
         var inp = document.createElement('input');
         inp.type = 'file';
         if (node.multiple) inp.multiple = true;
-        var acc = filterToAccept(node.filter);
+        /* 相机控件固定只要图片；capture 决定唤起哪颗摄像头
+           （environment 后置 / user 前置）。桌面浏览器忽略 capture，
+           自动退化成普通的"选择图片文件"对话框。
+           注意：不用 getUserMedia —— 那条路要求安全上下文（HTTPS 或
+           localhost），手机走局域网 http 打开会被浏览器直接拒绝。 */
+        var acc = (node.kind === 'camera') ? 'image/*' : filterToAccept(node.filter);
         if (acc) inp.accept = acc;
+        if (node.kind === 'camera' && node.capture) inp.setAttribute('capture', node.capture);
         inp.style.position = 'fixed';
         inp.style.left = '-9999px';
         document.body.appendChild(inp);
@@ -429,20 +470,140 @@ var LW = (function () {
         inp.onchange = function () {
             var files = inp.files;
             if (!files || !files.length) { cleanup(); return; }
+            if (node.kind === 'camera') showPhoto(node, files[0]);
             uploadFiles(node, files, cleanup);
         };
         inp.click();
     }
 
-    function uploadFiles(node, files, done) {
-        var fd = new FormData();
+    /* 桌面端能不能用"网页摄像头"（页面内取景）而不是系统相机 App：
+       · 指针必须是"精细"的（鼠标/触控板）—— 手机、平板一律走系统相机，
+         那里 capture 唤起的是原生相机，体验更好；
+       · 必须是安全上下文（HTTPS 或 localhost）—— getUserMedia 的硬性
+         前提，局域网 http 下 navigator.mediaDevices 直接是 undefined；
+       · 该控件还没失败过（失败一次就永久降级为选文件，免得每次点都弹
+         一次权限框；见 openWebcam 的 catch）。 */
+    function canUseWebcam(node) {
+        return !!(node && node.kind === 'camera' && !node._camFail &&
+            window.isSecureContext && navigator.mediaDevices &&
+            navigator.mediaDevices.getUserMedia && window.matchMedia &&
+            window.matchMedia('(hover: hover) and (pointer: fine)').matches);
+    }
+
+    /* 桌面端网页摄像头：getUserMedia 拿 MediaStream 自己画预览，点"拍摄"
+       把当前帧画进 canvas 转 JPEG，走与系统相机完全相同的上传通道。
+       为什么桌面不能也用 capture：桌面浏览器忽略该属性，只会弹文件框。
+       为什么失败后要置 _camFail：getUserMedia 的失败是异步的，catch 里再
+       调 input.click() 已经脱离用户手势，Chrome/Safari 会拒绝弹文件框，
+       所以只能"这次提示、下次点击直接走文件选择"。 */
+    function openWebcam(node) {
+        var constraints = {
+            audio: false,
+            video: {
+                facingMode: node.capture === 'user' ? 'user' : 'environment',
+                width: { ideal: 1280 }, height: { ideal: 720 }
+            }
+        };
+        navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
+            showWebcamDialog(node, stream);
+        }).catch(function (err) {
+            node._camFail = true;
+            var why = (err && err.name === 'NotFoundError')
+                ? '这台电脑上没有检测到摄像头'
+                : (err && err.name === 'NotAllowedError')
+                    ? '浏览器拒绝了摄像头权限（可点地址栏左侧的摄像头图标重新允许）'
+                    : '当前页面不能调用摄像头（网页需为 HTTPS 或 localhost）';
+            showMsg('无法打开摄像头',
+                esc(why) + '<br>已改为「选择图片文件」，再点一次拍照按钮即可。');
+        });
+    }
+
+    function showWebcamDialog(node, stream) {
+        var wrap = document.createElement('div');
+        wrap.style.cssText = 'position:fixed;left:0;top:0;right:0;bottom:0;z-index:99999;' +
+            'background:rgba(0,0,0,.62);display:flex;align-items:center;justify-content:center;';
+        var box = document.createElement('div');
+        box.style.cssText = 'background:#fff;border-radius:10px;padding:12px;' +
+            'box-shadow:0 12px 40px rgba(0,0,0,.4);max-width:94vw;';
+        var vid = document.createElement('video');
+        vid.autoplay = true;
+        vid.playsInline = true;
+        vid.muted = true;
+        vid.srcObject = stream;
+        vid.style.cssText = 'display:block;max-width:86vw;max-height:64vh;' +
+            'border-radius:6px;background:#000;' +
+            (node.capture === 'user' ? 'transform:scaleX(-1);' : '');
+        var bar = document.createElement('div');
+        bar.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;margin-top:10px;';
+        var bFile = document.createElement('button');
+        bFile.type = 'button'; bFile.className = 'lw-btn'; bFile.textContent = '选择图片';
+        var bCancel = document.createElement('button');
+        bCancel.type = 'button'; bCancel.className = 'lw-btn'; bCancel.textContent = '取消';
+        var bShot = document.createElement('button');
+        bShot.type = 'button'; bShot.className = 'lw-btn lw-cam'; bShot.textContent = '拍摄';
+        bar.appendChild(bFile); bar.appendChild(bCancel); bar.appendChild(bShot);
+        box.appendChild(vid); box.appendChild(bar); wrap.appendChild(box);
+        document.body.appendChild(wrap);
+
+        function stop() {
+            try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { }
+            try { document.body.removeChild(wrap); } catch (e) { }
+        }
+        bCancel.onclick = stop;
+        wrap.onclick = function (e) { if (e.target === wrap) stop(); };
+        /* 想在桌面上选已有图片：这里仍在用户手势里，能正常弹文件框 */
+        bFile.onclick = function () { stop(); pickFile(node); };
+        bShot.onclick = function () {
+            var w = vid.videoWidth, h = vid.videoHeight;
+            if (!w || !h) { showMsg('画面还没准备好', '摄像头刚打开，稍等一下再拍。'); return; }
+            var scale = Math.min(1, 1600 / Math.max(w, h));  /* 长边压到 1600 以内 */
+            var cv = document.createElement('canvas');
+            cv.width = Math.round(w * scale);
+            cv.height = Math.round(h * scale);
+            cv.getContext('2d').drawImage(vid, 0, 0, cv.width, cv.height);
+            stop();
+            cv.toBlob(function (blob) {
+                if (!blob) return;
+                var file = new File([blob], 'photo-' + Date.now() + '.jpg',
+                    { type: 'image/jpeg' });
+                showPhoto(node, file);
+                uploadFiles(node, [file], null);
+            }, 'image/jpeg', 0.9);
+        };
+    }
+
+    /* 相机本地回显：拍完立刻把 Blob 显示到 TLWCamera.PreviewImage 指定的
+       TImage 上。走本地 ObjectURL 而不是等服务端补丁 —— 手机照片几 MB，
+       转 base64 塞进组件树会让之后每次增量补丁都白跑一遍。
+       服务端那边只有落盘 + OnCapture，组件树里的 image.src 始终为空，
+       所以这里直接改 DOM 不会被增量协调冲掉（src 变了才重设）。 */
+    function showPhoto(node, file) {
+        var pid = node.preview;
+        if (!pid || !file) return;
+        var w = S.E[pid];
+        var img = w && w.querySelector('img.lw-img');
+        if (!img) return;
+        try {
+            var url = URL.createObjectURL(file);
+            img.onload = function () { try { URL.revokeObjectURL(url); } catch (e) { } };
+            img.onerror = function () { try { URL.revokeObjectURL(url); } catch (e) { } };
+            /* 标记属性：CSS 里用 !important 压过 :style 绑定的
+               visibility:hidden（src 为空时 TImage 就是隐藏的） */
+            img.setAttribute('data-lw-photo', '1');
+            img.src = url;
+        } catch (e) { }
+    }
+
+    function uploadFiles(node, files, done) {        var fd = new FormData();
         for (var i = 0; i < files.length; i++) fd.append('f' + i, files[i], files[i].name);
-        var base = node.caption || '上传文件…';
+        var isCam = (node.kind === 'camera');
+        var base = node.caption || (isCam ? '拍照…' : '上传文件…');
+        var busyWord = isCam ? '保存中 ' : '上传中 ';
         var xhr = new XMLHttpRequest();
         xhr.open('POST', '/lw/api/upload?sid=' + encodeURIComponent(S.sid || '') +
             '&id=' + node.id, true);
         xhr.upload.onprogress = function (e) {
-            if (e.lengthComputable) setCaption(node.id, '上传中 ' + Math.round(e.loaded * 100 / e.total) + '%');
+            if (e.lengthComputable) setCaption(node.id, busyWord + Math.round(e.loaded * 100 / e.total) + '%');
         };
         function finish() {
             setBusy(false);
@@ -896,8 +1057,26 @@ var LW = (function () {
         var inp = document.createElement('input');
         inp.type = 'color';
         inp.value = (S.ND[id] && S.ND[id].value) || '#ffffff';
+        /* 原生调色板是**锚着 input 的位置**弹出的：以前把 input 摆在
+           left:-9999px（只求不可见），Chromium 照锚点把弹窗开到视口外
+           —— 用户看到的就是"点了色块没反应"（坑 166）。所以 input 必须
+           落在视口内：贴着色块摆一个 1px 的透明 input，弹窗就像下拉一样
+           从色块下方展开。opacity:0 不影响锚点（元素仍参与布局）。 */
+        var x = 40, y = 40;
+        var sw = S.E[id];
+        if (sw) {
+            var r = sw.getBoundingClientRect();
+            x = Math.min(Math.max(4, r.left), window.innerWidth - 8);
+            y = Math.min(Math.max(4, r.bottom), window.innerHeight - 8);
+        }
         inp.style.position = 'fixed';
-        inp.style.left = '-9999px';
+        inp.style.left = x + 'px';
+        inp.style.top = y + 'px';
+        inp.style.width = '1px';
+        inp.style.height = '1px';
+        inp.style.opacity = '0';
+        inp.style.border = 'none';
+        inp.style.padding = '0';
         document.body.appendChild(inp);
         inp.oninput = function () {
             var hex = String(inp.value).toUpperCase();
@@ -988,6 +1167,19 @@ var LW = (function () {
 
     var CONTAINER_KINDS = ['form', 'panel', 'groupbox', 'scrollbox', 'frame', 'tabs', 'tabsheet', 'tabctl', 'toolbar'];
     function isContainer(node) { return CONTAINER_KINDS.indexOf(node.kind) >= 0; }
+
+    /* 容器的"内容容器"：控件子节点真正挂着的那个元素。
+       不能用裸 querySelector('.lw-kids') 一把抓 —— 它是深度优先首匹配：
+       TPageControl（tabs）自己没有 .lw-kids（页签页在 .lw-tabs-body 里），
+       却会命中第一个页签页内部的 .lw-kids（隐藏、尺寸 0），拿它当 body
+       跑 runLayout 直接早退，页签页的拉伸重排就永远轮不到（坑 151）。
+       tabs/tabctl 的差异：tabctl 客户区是公共一块（.lw-kids 在 tabs-body
+       里），tabs 每页独立（.lw-tabs-body 的直接子节点就是各页包装）。 */
+    function containerBody(el, kind) {
+        if (!el) return el;
+        if (kind === 'tabs') return el.querySelector('.lw-tabs-body') || el;
+        return el.querySelector('.lw-kids') || el.querySelector('.lw-body') || el;
+    }
 
     function wrapHtml(node, inner, cls, style) {
         return '<div class="lw-n ' + (cls || '') + '" data-lwid="' + node.id + '"' +
@@ -1081,9 +1273,11 @@ var LW = (function () {
                    就是页面上一道莫名其妙的竖线，还会把窗体撑出纵向滚动条。
                    所以窄到这个程度一律按单行排（宁可截断，也不竖排）。 */
                 var lblWrap = node.wordwrap && !(node.w < 16);
+                /* LCL TAlignment 序数：0=左 1=右 2=中（坑 156：之前按
+                   1=中 2=右 映射，taCenter 的标签全被渲染成右对齐） */
                 return '<div class="lw-label" style="white-space:' + (lblWrap ? 'normal' : 'nowrap') +
-                    ';overflow:hidden;' + (node.textalign === 1 ? 'text-align:center;' : node.textalign === 2 ? 'text-align:right;' : '') +
-                    fs + '" x-html="$lwCap(' + r + '.txt, ' + r + '.acc)" @click="' +
+                    ';overflow:hidden;' + (node.textalign === 2 ? 'text-align:center;' : node.textalign === 1 ? 'text-align:right;' : '') +
+                    fs + '" x-html="$lwTxt(' + r + '.txt, ' + r + '.acc)" @click="' +
                     evAttr(id, 'OnClick') + '"></div>';
             }
 
@@ -1097,26 +1291,32 @@ var LW = (function () {
                 var sb = node.staticborder === 1 ? ' lw-static-single'
                     : node.staticborder === 2 ? ' lw-static-sunken' : '';
                 var sbg = (node.transparent === false && node.bg) ? 'background:' + node.bg + ';' : '';
-                var sj = node.textalign === 1 ? 'center' : (node.textalign === 2 ? 'flex-end' : 'flex-start');
+                var sj = node.textalign === 2 ? 'center' : (node.textalign === 1 ? 'flex-end' : 'flex-start');
                 return '<div class="lw-label lw-static' + sb + '" style="display:flex;align-items:center;' +
                     'justify-content:' + sj + ';white-space:nowrap;overflow:hidden;' + sbg + fs +
-                    '" x-html="$lwCap(' + r + '.txt, ' + r + '.acc)" @click="' +
+                    '" x-html="$lwTxt(' + r + '.txt, ' + r + '.acc)" @click="' +
                     evAttr(id, 'OnClick') + '"></div>';
             }
 
             case 'button':
             case 'bitbtn':
             case 'speedbutton':
-            case 'fileupload': {
+            case 'fileupload':
+            case 'camera': {
                 var bic = '';
                 if (k === 'bitbtn' && node.btnkind > 0) {
                     var BICONS = { 1: 'ok', 2: 'cancel', 3: 'help', 4: 'yes', 5: 'no', 6: 'close', 7: 'abort', 8: 'retry', 9: 'ignore', 10: 'all', 11: 'notoall', 12: 'yestoall' };
                     if (BICONS[node.btnkind]) bic = ' lw-bic-' + BICONS[node.btnkind];
                 }
+                /* 相机与上传共用按钮外观：前者点开系统相机（.lw-cam 加镜头图标），
+                   后者弹文件对话框。两者都不发 OnClick —— 服务端在文件落盘后
+                   触发 OnUpload / OnCapture */
                 var clickExp = (k === 'fileupload')
                     ? 'pickUpload(\'' + id + '\')'
-                    : '$lwBtnClick(\'' + id + '\',\'OnClick\')';
-                return '<button type="button" class="lw-btn' + bic + '" style="' + fs + '" ' + dis +
+                    : (k === 'camera' ? 'pickPhoto(\'' + id + '\')'
+                        : '$lwBtnClick(\'' + id + '\',\'OnClick\')');
+                var camCls = (k === 'camera') ? ' lw-cam' : '';
+                return '<button type="button" class="lw-btn' + bic + camCls + '" style="' + fs + '" ' + dis +
                     ' :class="' + r + '.down ? \'lw-btn-pressed\' : \'\'" @click="' + clickExp +
                     '" x-html="$lwCap(' + r + '.cap, ' + r + '.acc)"></button>';
             }
@@ -1277,9 +1477,20 @@ var LW = (function () {
                     '" ' + dis + ' @change="' + evAttr(id, 'OnChange', '{val:String(' + r + '.val)}') + '"/>';
 
             case 'updown':
-                return '<input type="number" class="lw-input lw-updown" x-model.number="' + r + '.val"' +
-                    (node.min != null ? ' min="' + node.min + '"' : '') + (node.max != null ? ' max="' + node.max + '"' : '') +
-                    ' ' + dis + ' @change="' + evAttr(id, 'OnClick', '{val:String(' + r + '.val)}') + '"/>';
+                /* 坑 152：之前误渲染成 <input type=number>（桌面/移动端都一样，
+                   看起来像"多了一个输入框"）。TUpDown 的本体是贴着编辑框的
+                   上下箭头：点箭头本地先步进（即时反馈），再回传 OnClick，
+                   服务端夹 Min/Max 并联动 Associate 编辑框文本。
+                   形态分两端（用户 2026-11-16 定稿）：桌面上下堆叠（LCL 缺省
+                   样子），移动端 −/+ 大号触控区 —— 方向全在 CSS（.lw-ud-a
+                   三角形 / 移动端 ::after 内容切换），按钮语义不变
+                   （第 1 枚=加、第 2 枚=减）；另支持滚轮步进。 */
+                return '<span class="lw-ud" @wheel.prevent="$lwUd(\'' + id + '\', $event.deltaY < 0 ? 1 : -1)">' +
+                    '<button type="button" class="lw-ud-btn lw-ud-up" :disabled="' + r + '.dis" ' +
+                    'aria-label="增加" @click="$lwUd(\'' + id + '\',1)"><i class="lw-ud-a"></i></button>' +
+                    '<button type="button" class="lw-ud-btn lw-ud-dn" :disabled="' + r + '.dis" ' +
+                    'aria-label="减少" @click="$lwUd(\'' + id + '\',-1)"><i class="lw-ud-a"></i></button>' +
+                    '</span>';
 
             case 'grid':
             case 'drawgrid':
@@ -1485,6 +1696,21 @@ var LW = (function () {
         if (!r) return;
         r.idx = i;
         if ($lwHas(id, 'OnClick')) fire(id, 'OnClick', { val: String(i) });
+    };
+
+    /* TUpDown 上下箭头（坑 152）：本地先按 Increment 步进并夹 Min/Max
+       （与 LCL 一致：Max=0 表示不设上限），再回传 OnClick 让服务端
+       联动 Associate 编辑框。服务端是最终裁决，补丁回来会校正 r.val */
+    window.$lwUd = function (id, dir) {
+        var n = S.ND[id], r = S.R[id];
+        if (!n || !r || r.dis) return;
+        var inc = (n.inc > 0) ? n.inc : 1;
+        var v = (r.val || 0) + dir * inc;
+        if (n.min != null) v = Math.max(n.min, v);
+        if (n.max != null && n.max > 0) v = Math.min(n.max, v);
+        if (v === r.val) return;
+        r.val = v;
+        if ($lwHas(id, 'OnClick')) fire(id, 'OnClick', { val: String(v) });
     };
 
     /* ---------------- drawgrid 单元格自绘标记 ----------------
@@ -1786,6 +2012,17 @@ var LW = (function () {
         if (n) pickFile(n);
     };
 
+    /* 相机按钮（TLWCamera）：
+       桌面浏览器 -> 网页摄像头（页面内取景，需 HTTPS/localhost）；
+       手机/平板  -> 系统相机 App（capture，任何 http 页面都能用）；
+       都不行时   -> 退化成"选择图片文件"。 */
+    window.pickPhoto = function (id) {
+        var n = S.ND[id];
+        if (!n) return;
+        if (canUseWebcam(n)) openWebcam(n);
+        else pickFile(n);
+    };
+
     /* ---------------- 树（递归结构用命令式 DOM 生成） ---------------- */
 
     function treeConv(list, out, counter) {
@@ -1837,33 +2074,66 @@ var LW = (function () {
 
     /* ---------------- 主菜单 / 右键菜单 ---------------- */
 
-    /* 主题弹层的"当前实例"：外部点击关闭用它做判断（见 closeThemeMenu） */
-    var themePopEl = null, themePopAnchor = null;
-
-    function closeThemeMenu() {
-        if (themePopEl) themePopEl.remove();
-        themePopEl = null;
-        themePopAnchor = null;
-    }
+    /* 所有 .lw-menu-pop（主菜单下拉、右键菜单、子菜单、主题弹层）共用
+       "当前顶层弹层 + 打开它的锚点"，外部关闭只注册一个常驻监听：
+         · 点弹层内 -> 不关，交给菜单项 click / 子菜单 mouseenter；
+         · 点锚点内 -> 不关，交给锚点 click 做"再点一次收起"；
+         · 点其它处 -> 关。
+       以前只有主题弹层有外部关闭（themePopEl 那一套），主菜单和右键菜单
+       弹出后必须选中菜单项才消失（坑 148）。监听必须是常驻单例：开一次
+       注册一个、关掉时自摘的写法，在"点按钮开第二次"那次不会摘，旧监听
+       会于下一次 mousedown 先把新弹层删掉，click 落在已移除的元素上，
+       表现为"切过一次主题后再也切不动，刷新才好"。捕获阶段是必须的 ——
+       很多控件会 stopPropagation，冒泡阶段收不到这次 mousedown。 */
+    var menuPopEl = null, menuPopAnchor = null;
 
     function closeAllMenus() {
         document.querySelectorAll('.lw-menu-pop').forEach(function (m) { m.remove(); });
-        themePopEl = null;
-        themePopAnchor = null;
+        menuPopEl = null;
+        menuPopAnchor = null;
     }
 
-    /* 主题弹层的"点外面关掉"：常驻一个监听，判断的是当前弹层实例。
-       不能改成"开一次弹层注册一个，关掉时自摘" —— 那种写法只在
-       点在弹层外时才会摘，点在按钮上（开第二次弹层）那次不摘，
-       旧监听就留下了；下一次 mousedown 它先把新弹层删掉，
-       click 于是落在已被移除的元素上、永远到不了菜单项，
-       表现为"切过一次主题后再也切不动，刷新才好"。 */
-    document.addEventListener('mousedown', function (ev) {
-        if (!themePopEl) return;
-        if (themePopEl.contains(ev.target)) return;
-        if (themePopAnchor && themePopAnchor.contains(ev.target)) return;
-        closeThemeMenu();
+    /* 建好并登记顶层弹层（先 append 再定位，调用方才能量 offsetWidth）。
+       子菜单由 bindMenuPop 直接 append 到 body，不参与登记。 */
+    function openMenuPop(items, anchor) {
+        closeAllMenus();
+        var host = document.createElement('div');
+        host.innerHTML = menuPopHtml(items);
+        var pop = host.firstChild;
+        document.body.appendChild(pop);
+        /* 弹层内右键不该弹浏览器自带菜单 */
+        pop.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
+        menuPopEl = pop;
+        menuPopAnchor = anchor || null;
+        return pop;
+    }
+
+    function menuOutsideDown(ev) {
+        if (!menuPopEl) return;
+        if (!menuPopEl.parentNode) { menuPopEl = null; menuPopAnchor = null; return; }
+        /* 右键一律先关旧的；若落在带 popup 的控件上，随后的 contextmenu
+           会在新位置重开，和桌面端"右键换地方弹菜单"一致 */
+        if (ev.button === 2) { closeAllMenus(); return; }
+        var t = ev.target;
+        if (t && t.closest && t.closest('.lw-menu-pop')) return;
+        if (menuPopAnchor && t && menuPopAnchor.contains(t)) return;
+        closeAllMenus();
+    }
+    document.addEventListener('mousedown', menuOutsideDown, true);
+    document.addEventListener('touchstart', function (ev) {
+        var t = ev.target;
+        if (!menuPopEl) return;
+        if (t && t.closest && t.closest('.lw-menu-pop')) return;
+        if (menuPopAnchor && t && menuPopAnchor.contains(t)) return;
+        closeAllMenus();
     }, true);
+    document.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Escape' && menuPopEl) closeAllMenus();
+    }, true);
+    /* 切到别的窗口 / 浏览器标签时收不到 mousedown，按失焦收起 */
+    window.addEventListener('blur', function () {
+        if (menuPopEl) closeAllMenus();
+    });
 
     function menuPopHtml(items) {
         var h = '<div class="lw-menu-pop">';
@@ -1878,9 +2148,12 @@ var LW = (function () {
     }
 
     function bindMenuPop(host, items) {
+        /* 分隔线只画 .lw-menu-sep、不生成 .lw-menu-item，绑定时也要按
+           非分隔项重新编号，否则有分隔线的菜单会整体错位一个 id */
+        var clickable = (items || []).filter(function (m) { return m && !m.sep; });
         host.querySelectorAll('.lw-menu-item').forEach(function (el, i) {
-            var m = items[i];
-            if (!m || m.sep) return;
+            var m = clickable[i];
+            if (!m) return;
             el.addEventListener('click', function (e) {
                 e.stopPropagation();
                 if (m.enabled === false) return;
@@ -1917,19 +2190,14 @@ var LW = (function () {
        弹层复用 .lw-menu-pop 的三项菜单；标题栏本来就有放大/关闭图标，
        放这里不会压住状态栏文字，也不用额外的浮层定位。 */
     function themeMenu(anchor) {
-        closeAllMenus();
-        var host = document.createElement('div');
-        host.innerHTML = menuPopHtml(THEME_MODES.map(function (p) {
+        /* 同一个锚点再点一次 = 收起（外部点击统一由 menuOutsideDown 处理） */
+        if (menuPopEl && menuPopAnchor === anchor) { closeAllMenus(); return; }
+        var pop = openMenuPop(THEME_MODES.map(function (p) {
             return { caption: themeLabel(p), checked: p === themePref };
-        }));
-        var pop = host.firstChild;
-        document.body.appendChild(pop);
+        }), anchor);
         var r = anchor.getBoundingClientRect();
         pop.style.left = Math.max(4, Math.round(r.right - pop.offsetWidth)) + 'px';
         pop.style.top = Math.round(r.bottom + 2) + 'px';
-        /* 登记当前实例：外部点击由上面那个常驻监听负责关闭 */
-        themePopEl = pop;
-        themePopAnchor = anchor;
         pop.querySelectorAll('.lw-menu-item').forEach(function (el, i) {
             el.addEventListener('click', function (e) {
                 e.stopPropagation();
@@ -1952,6 +2220,274 @@ var LW = (function () {
         if (before) title.insertBefore(b, before); else title.appendChild(b);
         return b;
     }
+
+    /* ---------------- 自适应布局 + 窗体模板（方案 B，自研） ----------------
+       不判「设备」，判「布局模式」：是否把窗体顶层控件从绝对定位搬进
+       HTML 模板的 {%控件名%} 占位符，由可用宽度决定（断点 834px 进 /
+       1100px 出，835~1099 回滞区保持上一态，首次落点看指针能力）。
+       模板按窗体名取：移动端 /lw/tpl/<窗体名>.m.html，桌面
+       /lw/tpl/<窗体名>.html（404 = 该窗体没有该端模板）。没模板的窗体
+       两端都保持设计期所见即所得（桌面=绝对定位原样；移动=平移模式，
+       设计尺寸原样由 #lw-root 滚动）。搬迁的是同一批 DOM 节点：不重建、
+       不重取树，S.P 仍指向窗体 kids（逻辑父级不变），事件 id 与增量补丁
+       照旧。事件只当触发器：媒体查询 change 在首次断点变化 / 指针变化会
+       漏发（CDP 实测），resize 与 visualViewport.resize 会成组重复，状态
+       一律现读 + 回滞。全部为 Web 标准 API，细节见 docs/MOBILE.md 第 8 节。 */
+    var TPL_MQ_IN = '(max-width: 834px)';
+    var TPL_MQ_OUT = '(min-width: 1100px)';
+    var TPL_KEY = 'lw-layout';      /* ?layout= / sessionStorage 硬覆盖 */
+    var layoutState = null;         /* null=未定；'desktop' | 'mobile' */
+    var tplCache = {};              /* 窗体名 -> 模板串 | null（404 也缓存） */
+
+    function lwIsTouch() {
+        return matchMedia('(any-pointer: coarse)').matches &&
+               matchMedia('(hover: none)').matches;
+    }
+
+    function lwLayoutNow() {
+        var force = null;
+        try {
+            force = new URLSearchParams(location.search).get('layout') ||
+                    sessionStorage.getItem(TPL_KEY);
+        } catch (e) { }
+        if (force === 'desktop' || force === 'mobile') return force;
+        var enter = matchMedia(TPL_MQ_IN).matches;
+        var leave = matchMedia(TPL_MQ_OUT).matches;
+        if (layoutState === null) {
+            /* 首次落点：回滞区用指针能力定（平板进、桌面窄窗不进） */
+            if (enter) return 'mobile';
+            if (leave) return 'desktop';
+            return lwIsTouch() ? 'mobile' : 'desktop';
+        }
+        if (enter) return 'mobile';
+        if (leave) return 'desktop';
+        return layoutState;
+    }
+
+    function lwSetAttr() {
+        document.documentElement.setAttribute('data-lw-layout', layoutState);
+        document.documentElement.setAttribute('data-lw-input',
+            lwIsTouch() ? 'touch' : 'mouse');
+    }
+
+    function lwFetchTpl(name, suffix, cb) {
+        /* 缓存 key 带后缀：同名窗体的桌面/移动模板分开缓存（404 也缓存） */
+        var key = name + '|' + suffix;
+        if (key in tplCache) { cb(tplCache[key]); return; }
+        fetch('/lw/tpl/' + encodeURIComponent(name) + suffix,
+            { credentials: 'same-origin' })
+            .then(function (r) { return r.ok ? r.text() : null; })
+            .then(function (t) { tplCache[key] = t; cb(t); })
+            .catch(function () { tplCache[key] = null; cb(null); });
+    }
+
+    /* 模板串 -> 骨架。{%控件名%} 换成占位容器；引用了不存在的控件名
+       返回 null —— 整体回退桌面绝对定位，不做半套 */
+    function lwTplHost(formId, tpl) {
+        var bad = null;
+        var html = tpl.replace(/\{%\s*([A-Za-z_][A-Za-z0-9_]*)\s*%\}/g,
+            function (_, name) {
+                if (!(name in S.NAME)) { bad = name; return ''; }
+                return '<span class="lw-ph" data-lw-ph="' + esc(name) + '"></span>';
+            });
+        if (bad) { log('tpl 占位符无此控件:', bad, '-> 回退桌面布局'); return null; }
+        var host = document.createElement('div');
+        host.className = 'lw-tpl';
+        host.setAttribute('data-lw-form', formId);
+        host.innerHTML = html;
+        return host;
+    }
+
+    /* 控件节点落进它的占位符（模板未接管 / 无此占位符则留在原地）。
+       只清定位内联不改 S.P：syncChildren 靠 S.P === kids 判定走 patch
+       而不是整棵重建 */
+    function lwDropNode(id, name) {
+        var fm = S.forms[S.WIN[id]];
+        if (!fm || !fm.tplApplied || !fm.tplEl || !name) return false;
+        var ph = fm.tplEl.querySelector('[data-lw-ph="' + name + '"]');
+        var w = S.E[id];
+        if (!ph || !w) return false;
+        w.classList.add('lw-flow');
+        w.style.left = ''; w.style.top = ''; w.style.zIndex = '';
+        w.style.width = ''; w.style.height = '';
+        ph.appendChild(w);
+        return true;
+    }
+
+    /* 单窗体模板切换。mode='mobile'|'desktop'：
+       有该端模板 -> 顶层控件搬进占位符（流式排布，桌面不改窗体几何）；
+       没有模板   -> 设计期所见即所得（桌面=绝对定位原样；移动=平移模式）。 */
+    function lwApplyFormTpl(fm, mode) {
+        var formId = fm.f.id;
+        var kids = S.E[formId];
+        var win = fm.el;
+        if (!kids || !win) return;
+        if (fm.tplApplied && fm.tplLayout === mode) return;
+        /* 拆掉已套用的模板（换端或回绝对定位）：按建树原序搬回原位 */
+        if (fm.tplApplied && fm.tplOrder) {
+            fm.tplOrder.forEach(function (cid) {
+                var w = S.E[cid];
+                if (w) { w.classList.remove('lw-flow'); kids.appendChild(w); }
+            });
+            if (fm.tplEl && fm.tplEl.parentNode) fm.tplEl.parentNode.removeChild(fm.tplEl);
+            fm.tplApplied = false; fm.tplEl = null; fm.tplOrder = null;
+            kids.classList.remove('lw-kids-tpl');
+        }
+        if (mode === 'mobile') {
+            if (!fm.savedPos) {
+                fm.savedPos = { left: win.style.left, width: win.style.width,
+                                height: win.style.height };
+            }
+            /* 移动端窗体贴满视口：模板内容（单列流式）往往高于桌面客户区，
+               且手机上本就该全屏；状态栏贴窗体底，超出部分客户区滚动 */
+            win.style.width = Math.min(fm.f.w || 300, window.innerWidth - 8) + 'px';
+            win.style.height = (window.innerHeight - 12) + 'px';
+            win.style.left = Math.max(4, Math.round((window.innerWidth - win.offsetWidth) / 2)) + 'px';
+            win.style.top = '6px';
+        } else {
+            /* 桌面模板不改窗体几何：位置尺寸保持设计期（WYSIWYG 基准），
+               只有客户区内容变流式；从移动态切回时先恢复原几何 */
+            fm.tplFallback = false;
+            if (fm.savedPos) {
+                win.style.left = fm.savedPos.left;
+                win.style.width = fm.savedPos.width;
+                win.style.height = fm.savedPos.height;
+                fm.savedPos = null;
+            }
+        }
+        lwUpdatePan();
+        fm.tplSeq = (fm.tplSeq || 0) + 1;
+        var seq = fm.tplSeq;
+        fm.tplPending = true;
+        lwFetchTpl(fm.f.name || String(formId),
+            mode === 'mobile' ? '.m.html' : '.html', function (tpl) {
+            /* fetch 是异步的：回来时模式可能已切换或窗体已关，按序号丢弃 */
+            if (seq !== fm.tplSeq || !S.forms[formId]) return;
+            fm.tplPending = false;
+            var host = tpl ? lwTplHost(formId, tpl) : null;
+            if (!host) {
+                if (mode === 'desktop') {
+                    /* 桌面无模板：设计期所见即所得 —— 绝对定位原样恢复。
+                       tplPending 在等待期间让 placeNode/syncChildren 暂走
+                       流式路径，这里全部搬回并重跑 runLayout */
+                    (fm.f.children || []).forEach(function (n) {
+                        var w = S.E[n.id];
+                        if (w) w.classList.remove('lw-flow');
+                        placeNode(n.id, n);
+                    });
+                    runLayout({ body: kids }, fm.f.children || []);
+                    lwUpdatePan();
+                    return;
+                }
+                /* 移动端无模板：回退绝对定位。
+                   tplFallback 让 placeNode / syncChildren / ResizeObserver
+                   恢复走桌面路径，lw-flow 一并摘掉。
+                   不做整体等比缩放（字号太小，用户 2026-11-16 拍板放弃），
+                   也不把窗体硬压到视口宽——压窄后子控件仍按设计坐标摆，
+                   右侧被裁/留白（用户真机截图反馈）。改为平移模式：
+                   窗体保持设计宽高（字号原大），超出视口的部分由
+                   #lw-root 滚动平移查看；设计尺寸小于视口时撑满视口。 */
+                fm.tplFallback = true;
+                win.style.width = Math.max(fm.f.w || 300, window.innerWidth - 8) + 'px';
+                win.style.height = Math.max(fm.f.h || 400, window.innerHeight - 12) + 'px';
+                win.style.left = '0px';
+                win.style.top = '6px';
+                lwUpdatePan();
+                (fm.f.children || []).forEach(function (n) {
+                    var w = S.E[n.id];
+                    if (w) w.classList.remove('lw-flow');
+                    placeNode(n.id, n);
+                });
+                runLayout({ body: kids }, fm.f.children || []);
+                return;
+            }
+            fm.tplLayout = mode;
+            fm.tplOrder = (fm.f.children || []).map(function (n) { return n.id; })
+                .filter(function (cid) {
+                    return S.E[cid] && S.E[cid].parentNode === kids;
+                });
+            kids.classList.add('lw-kids-tpl');
+            kids.appendChild(host);
+            fm.tplApplied = true; fm.tplEl = host; fm.tplFallback = false;
+            (fm.f.children || []).forEach(function (n) {
+                lwDropNode(n.id, n.name);
+            });
+        });
+    }
+
+    function lwRelayout(mode) {
+        Object.keys(S.forms).forEach(function (k) {
+            lwApplyFormTpl(S.forms[k], mode);
+        });
+    }
+
+    /* 无模板回退窗体的视口跟随（不整体缩放，超界由根容器滚动查看）：窗体保持设计宽高
+       （字号原大），固定 left=0；设计尺寸小于视口时撑满视口。旋转/改窗/
+       键盘弹出时重算。超出视口的内容由 #lw-root 的滚动平移查看（见
+       lwUpdatePan 与 html[data-lw-pan] CSS）——既不裁内容，也不会出现
+       "拖动窗体后右侧一片空白"。尺寸变化由 ResizeObserver 触发 runLayout
+       重排拉伸型子控件。 */
+    function lwFallbackSize(fm) {
+        var win = fm.el;
+        if (!win || layoutState !== 'mobile') return;
+        win.style.width = Math.max(fm.f.w || 300, window.innerWidth - 8) + 'px';
+        win.style.height = Math.max(fm.f.h || 400, window.innerHeight - 12) + 'px';
+        win.style.left = '0px';
+        win.style.top = '6px';
+    }
+
+    /* 平移模式开关：存在无模板回退窗体时允许 #lw-root 滚动，其余情况
+       （全部有模板 / 桌面模式）关闭，恢复桌面"窗体自由摆放不滚动"。 */
+    function lwUpdatePan() {
+        var any = false;
+        if (layoutState === 'mobile') {
+            Object.keys(S.forms).some(function (k) {
+                if (S.forms[k] && S.forms[k].tplFallback) { any = true; return true; }
+                return false;
+            });
+        }
+        document.documentElement.setAttribute('data-lw-pan', any ? '1' : '0');
+    }
+
+    function lwFallbackSizeAll() {
+        Object.keys(S.forms).forEach(function (k) {
+            var fm = S.forms[k];
+            if (fm && fm.tplFallback) lwFallbackSize(fm);
+        });
+        lwUpdatePan();
+    }
+
+    function lwApplyLayout() {
+        var want = lwLayoutNow();
+        if (want === layoutState) return;
+        layoutState = want;
+        lwSetAttr();
+        lwRelayout(want);
+    }
+
+    var lwPending = false;
+    function lwScheduleLayout() {
+        if (lwPending) return;
+        lwPending = true;
+        requestAnimationFrame(function () {
+            lwPending = false;
+            lwApplyLayout();
+            lwFallbackSizeAll();   /* 布局模式没变但视口变了（旋转/键盘）也要跟随 */
+        });
+    }
+    [TPL_MQ_IN, TPL_MQ_OUT, '(any-pointer: coarse)', '(orientation: landscape)']
+        .forEach(function (q) {
+            var mq = matchMedia(q);
+            if (mq.addEventListener) mq.addEventListener('change', lwScheduleLayout);
+            else if (mq.addListener) mq.addListener(lwScheduleLayout);
+        });
+    window.addEventListener('resize', lwScheduleLayout);
+    window.addEventListener('orientationchange', lwScheduleLayout);
+    if (window.visualViewport) {
+        visualViewport.addEventListener('resize', lwScheduleLayout);
+    }
+    layoutState = lwLayoutNow();
+    lwSetAttr();
 
     /* ---------------- 节点创建 / 子节点同步 ---------------- */
 
@@ -1985,8 +2521,7 @@ var LW = (function () {
 
         /* 容器：递归渲染子节点 */
         if (isContainer(node)) {
-            var body = w.querySelector('.lw-kids') || w.querySelector('.lw-body') || w;
-            if (k === 'tabs') body = w.querySelector('.lw-tabs-body');
+            var body = containerBody(w, k);
             syncChildren({ body: body, winId: ct.winId, flow: (k === 'toolbar'), parentKind: k, parentId: id }, node);
             if (k === 'tabs') buildTabbar(id, node);
             if (k === 'tabctl') buildTabCtl(id, node);
@@ -2172,6 +2707,20 @@ var LW = (function () {
     function placeNode(id, node) {
         var w = S.E[id];
         if (!w) return;
+        /* 模板接管窗体顶层（任意端）：窗体顶层控件不写绝对定位内联样式
+           （进占位符后由模板 CSS 排布）；容器内部控件照旧 —— 模板只重排
+           窗体顶层。等待模板回包（tplPending）与回退窗体不走这里 */
+        var pfid = S.WIN[id];
+        var pfm = (pfid != null && S.forms[pfid] && S.P[id] === S.E[pfid])
+            ? S.forms[pfid] : null;
+        if (pfm && (pfm.tplApplied || pfm.tplPending)) {
+            w.style.left = ''; w.style.top = ''; w.style.zIndex = '';
+            w.classList.add('lw-flow');
+            if (node.visible === false && node.kind !== 'tabsheet') w.style.display = 'none';
+            else if (node.kind !== 'tabsheet') w.style.display = '';
+            lwDropNode(id, node.name);
+            return;
+        }
         if (node.kind === 'toolbutton' || w.classList.contains('lw-flow')) {
             w.style.position = 'static';
             return;
@@ -2247,7 +2796,7 @@ var LW = (function () {
         if (S.ND[n.id]) { S.ND[n.id].x = x; S.ND[n.id].y = y; S.ND[n.id].w = w; S.ND[n.id].h = h; }
         /* 容器尺寸变了，内部 align 子项跟着重排 */
         if (isContainer(n) && S.kids[n.id]) {
-            defer(function () { runLayout({ body: S.E[n.id].querySelector('.lw-kids') || S.E[n.id] }, S.ND[n.id].children || []); }, 0);
+            defer(function () { runLayout({ body: containerBody(S.E[n.id], S.K[n.id]) }, S.ND[n.id].children || []); }, 0);
         }
     }
 
@@ -2271,7 +2820,14 @@ var LW = (function () {
             if (cid && !keep[cid]) destroyNode(cid);
         });
         S.kids[body.__lwid || node.id || ''] = list.map(function (n) { return n.id; });
-        runLayout(ct, list);
+        /* 模板接管窗体顶层（任意端）时不跑 runLayout（排布交给模板 CSS）；
+           容器内部（body 不是窗体 kids）、等待回包（tplPending）与回退
+           窗体照常 */
+        var sfm = ct.winId != null ? S.forms[ct.winId] : null;
+        if (!(sfm && (sfm.tplApplied || sfm.tplPending) &&
+              body === S.E[ct.winId])) {
+            runLayout(ct, list);
+        }
     }
 
     function destroyNode(id) {
@@ -2294,14 +2850,13 @@ var LW = (function () {
         if (node.popup && node.popup.length) {
             w.addEventListener('contextmenu', function (e) {
                 e.preventDefault();
-                closeAllMenus();
-                var host = document.createElement('div');
-                host.innerHTML = menuPopHtml(node.popup);
-                var pop = host.firstChild;
-                document.body.appendChild(pop);
+                /* 用最新下发的节点：菜单项的 checked / enabled 可能被服务端改过 */
+                var cur = S.ND[id] || node;
+                var items = cur.popup || node.popup;
+                var pop = openMenuPop(items, null);
                 pop.style.left = e.clientX + 'px';
                 pop.style.top = e.clientY + 'px';
-                bindMenuPop(pop, node.popup);
+                bindMenuPop(pop, items);
             });
         }
         if (has('OnDblClick')) {
@@ -2388,7 +2943,8 @@ var LW = (function () {
            不动（用户的显式选择优先于设计期默认值） */
         if (!S.themeSeen) {
             S.themeSeen = true;
-            if (!themeSaved && (f.theme === 'light' || f.theme === 'dark')) {
+            /* 7 套配色都能当默认值（服务端 LWTheme 下拉里就是这 7 个 + auto） */
+            if (!themeSaved && THEME_FIXED.indexOf(f.theme) >= 0) {
                 themeApply(f.theme, false);
             }
         }
@@ -2475,19 +3031,14 @@ var LW = (function () {
                         fire(m.id, 'OnClick');
                         return;
                     }
-                    var existed = el.__lwOpen;
-                    closeAllMenus();
-                    if (existed) { el.__lwOpen = false; return; }
-                    el.__lwOpen = true;
-                    var host = document.createElement('div');
-                    host.innerHTML = menuPopHtml(m.items);
-                    var pop = host.firstChild;
-                    document.body.appendChild(pop);
+                    /* 开关状态看真实弹层，别再用 100ms 计时器猜：外部点击
+                       现在会关掉弹层，计时器那套会把"再点一次收起"变成重开 */
+                    if (menuPopEl && menuPopAnchor === el) { closeAllMenus(); return; }
+                    var pop = openMenuPop(m.items, el);
                     var r = el.getBoundingClientRect();
                     pop.style.left = r.left + 'px';
                     pop.style.top = r.bottom + 'px';
                     bindMenuPop(pop, m.items);
-                    setTimeout(function () { el.__lwOpen = false; }, 100);
                 });
             });
         }
@@ -2540,6 +3091,9 @@ var LW = (function () {
                 e.target.classList.contains('lw-win-max') ||
                 e.target.classList.contains('lw-win-theme')) return;
             if (win.__lwMax) return;   /* 最大化时不可拖 */
+            /* 平移模式（移动端无模板回退）下窗体固定 left=0、靠滚动查看，
+               拖走会让右侧/下方露出页面底色，禁止拖动 */
+            if (document.documentElement.getAttribute('data-lw-pan') === '1') return;
             var sx = e.clientX - win.offsetLeft, sy = e.clientY - win.offsetTop;
             function mv(ev2) {
                 win.style.left = Math.max(0, ev2.clientX - sx) + 'px';
@@ -2586,7 +3140,11 @@ var LW = (function () {
                         if (win.__lwStatus) placeStatusbar(win, body, fm.f);
                         /* 侧栏高度与客户区右移量跟着窗口尺寸走 */
                         if (win.__lwSide) applySideLayout(win, body, kids, fm.f);
-                        runLayout({ body: kids }, fm.f.children || []);
+                        /* 模板接管时顶层排布交给模板 CSS（kids === body，
+                           任意端） */
+                        if (!(fm.tplApplied || fm.tplPending)) {
+                            runLayout({ body: kids }, fm.f.children || []);
+                        }
                     } catch (e) { }
                 });
             });
@@ -2600,6 +3158,9 @@ var LW = (function () {
 
         var that = { body: kids, winId: f.id };
         syncChildren(that, f);
+        /* 窗体建好即按当前布局模式套模板（两端都会尝试；无模板各自回退
+           设计期所见即所得） */
+        lwApplyFormTpl(S.forms[f.id], layoutState || 'desktop');
         return S.forms[f.id];
     }
 
@@ -2768,7 +3329,7 @@ var LW = (function () {
                 if (prev.text !== n.text) r.txt = n.text != null ? String(n.text) : (n.caption || '');
                 else if (prev.caption !== n.caption) r.txt = n.caption || '';
             } else if (n.kind === 'button' || n.kind === 'bitbtn' || n.kind === 'speedbutton' ||
-                n.kind === 'toolbutton' || n.kind === 'fileupload') {
+                n.kind === 'toolbutton' || n.kind === 'fileupload' || n.kind === 'camera') {
                 if (prev.caption !== n.caption) r.cap = n.caption || '';
                 if (n.kind === 'speedbutton' && prev.down !== undefined && prev.down !== n.down) r.down = !!n.down;
             } else if (n.kind === 'groupbox' || n.kind === 'radiogroup' || n.kind === 'checkgroup' || n.kind === 'dbradiogroup') {
@@ -2956,8 +3517,7 @@ var LW = (function () {
 
         /* 容器：递归同步子节点 */
         if (isContainer(n) && n.kind !== 'form') {
-            var body = el.querySelector('.lw-kids');
-            if (n.kind === 'tabs') body = el.querySelector('.lw-tabs-body');
+            var body = containerBody(el, n.kind);
             if (body) syncChildren({ body: body, winId: S.WIN[id], flow: (n.kind === 'toolbar'), parentKind: n.kind, parentId: id }, n);
         }
     }
@@ -3031,8 +3591,7 @@ var LW = (function () {
         }
         var el = S.E[n.id];
         if (!el) return null;
-        var body = el.querySelector('.lw-kids');
-        if (n.kind === 'tabs') body = el.querySelector('.lw-tabs-body');
+        var body = containerBody(el, n.kind);
         if (!body) return null;
         return {
             body: body, winId: S.WIN[n.id], flow: (n.kind === 'toolbar'),
@@ -3424,6 +3983,7 @@ var LW = (function () {
            带着 after 游标：服务端只回"序号比它新"的第一条。 */
         api('/lw/api/poll', null, function (resp, err) {
             if (!err && resp) {
+                if (S.pollErr) { S.pollErr = 0; hideSplash(); }
                 if (resp.gone) {
                     forgetSid();
                     S.sid = null;
@@ -3437,6 +3997,12 @@ var LW = (function () {
                 }
                 if (resp.cmd) handleCmd(resp.cmd, resp.tree);
                 if (typeof resp.seq === 'number' && resp.seq > S.after) S.after = resp.seq;
+            } else if (err) {
+                /* 服务端进程不在了（连接拒绝/超时）：连续失败就给出可见提示，
+                   别让页面冻在旧画面上让用户以为"控件没了"。服务端恢复后
+                   下一次轮询成功会自动清掉提示；会话没了走 resp.gone 重连。 */
+                S.pollErr = (S.pollErr || 0) + 1;
+                if (S.pollErr === 2) showSplash('与服务端失去连接，正在重试…');
             }
             defer(startPoll, err ? 1500 : 30);
         }, { params: { sid: S.sid, t: 20000, after: S.after }, timeout: 35000 });
@@ -3529,10 +4095,19 @@ var LW = (function () {
     var BYE_KEY = 'lw.bye';
     var BYE_GRACE_MS = 3000;
 
+    /* 墓碑双写到 localStorage（按页签 ID 分开）：浏览器"恢复上次会话"
+       时 sessionStorage 可能被**在 pagehide 写入之前**就快照下来 —— 实测
+       （2026-11-17，dbaware 用户复现）这种时候墓碑丢了、旧 sid 又被挂回，
+       关浏览器再开还是跳过登录。localStorage 不随页签快照走，按 S.tab
+       分开存，多个页签互不干扰；"记住我"仍按 persisted() 单独放行。 */
+    function byeLsKey() { return BYE_KEY + ':' + (S.tab || 'x'); }
+
     try {
         window.addEventListener('pagehide', function (ev) {
             if (ev && ev.persisted) return;      /* 进 bfcache：页面没死，别留墓碑 */
-            try { sessionStorage.setItem(BYE_KEY, String(Date.now())); } catch (e) { }
+            var t = String(Date.now());
+            try { sessionStorage.setItem(BYE_KEY, t); } catch (e) { }
+            try { localStorage.setItem(byeLsKey(), t); } catch (e) { }
         });
     } catch (e) { }
 
@@ -3543,7 +4118,14 @@ var LW = (function () {
         try {
             t = parseInt(sessionStorage.getItem(BYE_KEY) || '0', 10) || 0;
             sessionStorage.removeItem(BYE_KEY);
-        } catch (e) { return false; }
+        } catch (e) { }
+        /* localStorage 那份是双写的另一半：即使页签快照不带墓碑也能判出
+           "中间关过窗口"。取两份里较新的时刻，读完即删。 */
+        try {
+            var lt = parseInt(localStorage.getItem(byeLsKey()) || '0', 10) || 0;
+            if (lt > t) t = lt;
+            localStorage.removeItem(byeLsKey());
+        } catch (e) { }
         if (!t) return false;
         /* 用 performance.timeOrigin（本次导航开始的时刻）而不是 Date.now()：
            差的只是"上次卸载 -> 这次导航开始"的空档，页面本身加载多久不算进来，
@@ -3685,16 +4267,34 @@ var LW = (function () {
         start: start,
         reload: function () { boot(); },
         sid: function () { return S.sid; },
-        /* 主题：业务代码可以用 LW.theme.set('dark') 之类直接切 */
+        /* 主题：业务代码可以用 LW.theme.set('midnight') 之类直接切；
+           7 套固定配色见 THEME_FIXED，另加 'auto'（跟随系统） */
         theme: {
             set: function (p) { return themeApply(p, true); },
-            get: function () { return themePref; },        /* 偏好：light/dark/auto */
+            get: function () { return themePref; },   /* 偏好（含 auto） */
             current: function () { return themeResolve(themePref); },  /* 实际生效 */
+            dark: function () { return themeIsDark(themeResolve(themePref)); },
             modes: function () { return THEME_MODES.slice(); },
             /* 有窗体时给标题栏按钮开关；无窗体时只影响之后创建的窗体 */
             button: function (on) {
                 themeBtnHidden = !on;
                 themeBtns.forEach(function (b) { b.style.display = on ? '' : 'none'; });
+            }
+        },
+        /* 自适应布局：读取/硬覆盖当前模式（'desktop' | 'mobile'）。
+           set(null/其它值) 清除覆盖，回到按宽度断点自动判定 */
+        layout: {
+            get: function () { return layoutState; },
+            touch: lwIsTouch,
+            set: function (m) {
+                try {
+                    if (m === 'desktop' || m === 'mobile') {
+                        sessionStorage.setItem(TPL_KEY, m);
+                    } else {
+                        sessionStorage.removeItem(TPL_KEY);
+                    }
+                } catch (e) { }
+                lwScheduleLayout();
             }
         },
         /* 诊断：补丁/全量各来了多少次，当前树版本 */

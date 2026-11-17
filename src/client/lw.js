@@ -69,6 +69,14 @@ var LW = (function () {
     /* on === 0 表示服务端说这个控件的 ShowAccelChar=False：
        Caption 里的 & 是字面量，和 LCL 一样原样显示 */
     function accText(s, on) { return on === 0 ? esc(s) : accHtml(esc(s)); }
+    /* 带换行的文本（TLabel/TStaticText 的 Caption 可含 LineEnding）：
+       LCL DrawText 对 Caption 里的 CR/LF 是真的换行，与 WordWrap 无关；
+       HTML 里裸换行会被折叠成空格，必须在 esc 之后补成 <br>。
+       只给 label/static 的渲染点用 —— 按钮/页签/菜单等单行 Caption 不做。 */
+    function brText(s, on) {
+        var es = esc(s).replace(/\r\n|\r|\n/g, '<br>');
+        return on === 0 ? es : accHtml(es);
+    }
 
     /* Alt+字母 触发加速键：找可见的可交互元素（按钮 / 复选框 label /
        页签 / 菜单项）里带 <u>k</u> 的那个并点击。 */
@@ -160,8 +168,10 @@ var LW = (function () {
         var inp = document.createElement('input');
         inp.type = 'file';
         if (node.multiple) inp.multiple = true;
-        var acc = filterToAccept(node.filter);
+        /* TLWCamera：固定只要图片，capture 唤起系统相机（桌面浏览器忽略） */
+        var acc = (node.kind === 'camera') ? 'image/*' : filterToAccept(node.filter);
         if (acc) inp.accept = acc;
+        if (node.kind === 'camera' && node.capture) inp.setAttribute('capture', node.capture);
         inp.style.position = 'fixed';
         inp.style.left = '-9999px';
         document.body.appendChild(inp);
@@ -178,18 +188,94 @@ var LW = (function () {
         inp.click();
     }
 
+    /* 桌面端（鼠标/触控板 + 安全上下文）用网页摄像头取景；手机/平板仍走
+       capture 唤起系统相机；失败一次后降级为选文件（见 openWebcam 注释）。 */
+    function canUseWebcam(node) {
+        return !!(node && node.kind === 'camera' && !node._camFail &&
+            window.isSecureContext && navigator.mediaDevices &&
+            navigator.mediaDevices.getUserMedia && window.matchMedia &&
+            window.matchMedia('(hover: hover) and (pointer: fine)').matches);
+    }
+
+    function openWebcam(node, btn) {
+        navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: {
+                facingMode: node.capture === 'user' ? 'user' : 'environment',
+                width: { ideal: 1280 }, height: { ideal: 720 }
+            }
+        }).then(function (stream) {
+            var wrap = document.createElement('div');
+            wrap.style.cssText = 'position:fixed;left:0;top:0;right:0;bottom:0;z-index:99999;' +
+                'background:rgba(0,0,0,.62);display:flex;align-items:center;justify-content:center;';
+            var box = document.createElement('div');
+            box.style.cssText = 'background:#fff;border-radius:10px;padding:12px;' +
+                'box-shadow:0 12px 40px rgba(0,0,0,.4);max-width:94vw;';
+            var vid = document.createElement('video');
+            vid.autoplay = true; vid.playsInline = true; vid.muted = true;
+            vid.srcObject = stream;
+            vid.style.cssText = 'display:block;max-width:86vw;max-height:64vh;' +
+                'border-radius:6px;background:#000;' +
+                (node.capture === 'user' ? 'transform:scaleX(-1);' : '');
+            var bar = document.createElement('div');
+            bar.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;margin-top:10px;';
+            var bFile = document.createElement('button');
+            bFile.type = 'button'; bFile.className = 'lw-btn'; bFile.textContent = '选择图片';
+            var bCancel = document.createElement('button');
+            bCancel.type = 'button'; bCancel.className = 'lw-btn'; bCancel.textContent = '取消';
+            var bShot = document.createElement('button');
+            bShot.type = 'button'; bShot.className = 'lw-btn lw-cam'; bShot.textContent = '拍摄';
+            bar.appendChild(bFile); bar.appendChild(bCancel); bar.appendChild(bShot);
+            box.appendChild(vid); box.appendChild(bar); wrap.appendChild(box);
+            document.body.appendChild(wrap);
+
+            function stop() {
+                try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { }
+                try { document.body.removeChild(wrap); } catch (e) { }
+            }
+            bCancel.onclick = stop;
+            wrap.onclick = function (e) { if (e.target === wrap) stop(); };
+            bFile.onclick = function () { stop(); pickFile(node, btn); };
+            bShot.onclick = function () {
+                var w = vid.videoWidth, h = vid.videoHeight;
+                if (!w || !h) { Ext.Msg.alert('画面还没准备好', '摄像头刚打开，稍等一下再拍。'); return; }
+                var scale = Math.min(1, 1600 / Math.max(w, h));
+                var cv = document.createElement('canvas');
+                cv.width = Math.round(w * scale);
+                cv.height = Math.round(h * scale);
+                cv.getContext('2d').drawImage(vid, 0, 0, cv.width, cv.height);
+                stop();
+                cv.toBlob(function (blob) {
+                    if (!blob) return;
+                    var file = new File([blob], 'photo-' + Date.now() + '.jpg',
+                        { type: 'image/jpeg' });
+                    uploadFiles(node, btn, [file], null);
+                }, 'image/jpeg', 0.9);
+            };
+        }).catch(function (err) {
+            node._camFail = true;
+            var why = (err && err.name === 'NotFoundError')
+                ? '这台电脑上没有检测到摄像头'
+                : (err && err.name === 'NotAllowedError')
+                    ? '浏览器拒绝了摄像头权限（可点地址栏左侧的摄像头图标重新允许）'
+                    : '当前页面不能调用摄像头（网页需为 HTTPS 或 localhost）';
+            Ext.Msg.alert('无法打开摄像头', why + '。已改为「选择图片文件」，再点一次拍照按钮即可。');
+        });
+    }
+
     function uploadFiles(node, btn, files, done) {
         var fd = new FormData(), i;
         for (i = 0; i < files.length; i++) fd.append('f' + i, files[i], files[i].name);
 
-        var base = node.caption || '上传文件…';
+        var base = node.caption || (node.kind === 'camera' ? '拍照…' : '上传文件…');
+        var busyWord = (node.kind === 'camera') ? '保存中 ' : '上传中 ';
         var xhr = new XMLHttpRequest();
         xhr.open('POST', '/lw/api/upload?sid=' + encodeURIComponent(S.sid || '') +
             '&id=' + node.id, true);
 
         xhr.upload.onprogress = function (e) {
             if (e.lengthComputable && btn.setText) {
-                btn.setText('上传中 ' + Math.round(e.loaded * 100 / e.total) + '%');
+                btn.setText(busyWord + Math.round(e.loaded * 100 / e.total) + '%');
             }
         };
         function finish() {
@@ -668,11 +754,13 @@ var LW = (function () {
             case 'static':
                 cfg.autoEl = {
                     tag: 'div',
-                    html: accText(node.text != null ? node.text : node.caption, node.acc),
+                    html: brText(node.text != null ? node.text : node.caption, node.acc),
                     style: 'white-space:' + (node.wordwrap ? 'normal' : 'nowrap') + ';overflow:hidden;'
                 };
-                if (node.textalign === 1) cfg.autoEl.style += 'text-align:center;';
-                else if (node.textalign === 2) cfg.autoEl.style += 'text-align:right;';
+                /* LCL TAlignment 序数：0=左 1=右 2=中（坑 156：之前按
+                   1=中 2=右 映射，taCenter 的标签全被渲染成右对齐） */
+                if (node.textalign === 2) cfg.autoEl.style += 'text-align:center;';
+                else if (node.textalign === 1) cfg.autoEl.style += 'text-align:right;';
                 /* TBoundLabel 的高度交给文字自己：LCL 给的 24px 盒子里文字只
                    占上半部分，固定高度会在标签和编辑框之间白留一条（看起来
                    "间距偏大"）。auto 高度下盒子贴着文字走，间距就是 LabelSpacing。 */
@@ -784,11 +872,15 @@ var LW = (function () {
                 return addTo(Ext.create('Ext.button.Button', cfg), ct);
 
             case 'fileupload':
-                cfg.text = accText(node.caption || '上传文件…', node.acc);
+            case 'camera':
+                cfg.text = accText(node.caption || (node.kind === 'camera' ? '拍照…' : '上传文件…'), node.acc);
                 cfg.scale = 'small';
                 c = Ext.create('Ext.button.Button', cfg);
                 addTo(c, ct);
-                c.on('click', function () { pickFile(node, c); });
+                c.on('click', function () {
+                    if (node.kind === 'camera' && canUseWebcam(node)) openWebcam(node, c);
+                    else pickFile(node, c);
+                });
                 return c;
 
             case 'edit':
@@ -2230,7 +2322,12 @@ var LW = (function () {
         try {
             if (n.kind === 'label' || n.kind === 'static' || n.kind === 'statusbar') {
                 if ((prev.text !== n.text || prev.caption !== n.caption) && cmp.getEl()) {
-                    cmp.getEl().update(accText(n.text != null ? n.text : n.caption, n.acc));
+                    /* label/static 的 Caption 可含 LineEnding（要 <br>）；
+                       状态栏是单行面板，保持 accText 不折行 */
+                    var t = (n.kind === 'statusbar')
+                        ? accText(n.text != null ? n.text : n.caption, n.acc)
+                        : brText(n.text != null ? n.text : n.caption, n.acc);
+                    cmp.getEl().update(t);
                 }
             } else if (cmp.setText && (n.kind === 'button' || n.kind === 'bitbtn' || n.kind === 'speedbutton' || n.kind === 'toolbutton')) {
                 if (prev.caption !== n.caption) cmp.setText(accText(n.caption || ''));
@@ -2238,7 +2335,7 @@ var LW = (function () {
                 if (n.kind === 'speedbutton' && cmp.setPressed && prev.down !== undefined && prev.down !== n.down) {
                     try { cmp.setPressed(!!n.down); } catch (e2) { }
                 }
-            } else if (cmp.setText && n.kind === 'fileupload') {
+            } else if (cmp.setText && (n.kind === 'fileupload' || n.kind === 'camera')) {
                 /* 上传中按钮文字是进度，结束后由 uploadFiles 还原；
                    服务端改 Caption 时这里跟过去 */
                 if (prev.caption !== n.caption && prev.caption !== undefined) cmp.setText(accText(n.caption || ''));
@@ -2562,9 +2659,9 @@ var LW = (function () {
         if (has('OnClick')) {
             if (node.kind === 'button' || node.kind === 'bitbtn' || node.kind === 'speedbutton' || node.kind === 'toolbutton') {
                 cmp.on('click', function () { fire(node, 'OnClick'); });
-            } else if (node.kind === 'fileupload') {
-                /* 上传按钮的点击已经绑成"选文件"，不再额外回传 OnClick，
-                   业务逻辑写在 OnUpload 里 */
+            } else if (node.kind === 'fileupload' || node.kind === 'camera') {
+                /* 上传/相机按钮的点击已经绑成"选文件/拍照"，不再额外回传
+                   OnClick，业务逻辑写在 OnUpload / OnCapture 里 */
             } else if (node.kind === 'label' || node.kind === 'static' || node.kind === 'panel' || node.kind === 'image') {
                 onEl(cmp, 'click', function () { fire(node, 'OnClick'); });
             } else {
@@ -3067,10 +3164,19 @@ var LW = (function () {
     var BYE_KEY = 'lw.bye';
     var BYE_GRACE_MS = 3000;
 
+    /* 墓碑双写到 localStorage（按页签 ID 分开）：浏览器"恢复上次会话"
+       时 sessionStorage 可能被**在 pagehide 写入之前**就快照下来 —— 实测
+       （2026-11-17，dbaware 用户复现）这种时候墓碑丢了、旧 sid 又被挂回，
+       关浏览器再开还是跳过登录。localStorage 不随页签快照走，按 S.tab
+       分开存，多个页签互不干扰；"记住我"仍按 persisted() 单独放行。 */
+    function byeLsKey() { return BYE_KEY + ':' + (S.tab || 'x'); }
+
     try {
         window.addEventListener('pagehide', function (ev) {
             if (ev && ev.persisted) return;
-            try { sessionStorage.setItem(BYE_KEY, String(Date.now())); } catch (e) { }
+            var t = String(Date.now());
+            try { sessionStorage.setItem(BYE_KEY, t); } catch (e) { }
+            try { localStorage.setItem(byeLsKey(), t); } catch (e) { }
         });
     } catch (e) { }
 
@@ -3079,7 +3185,14 @@ var LW = (function () {
         try {
             t = parseInt(sessionStorage.getItem(BYE_KEY) || '0', 10) || 0;
             sessionStorage.removeItem(BYE_KEY);
-        } catch (e) { return false; }
+        } catch (e) { }
+        /* localStorage 那份是双写的另一半：即使页签快照不带墓碑也能判出
+           "中间关过窗口"。取两份里较新的时刻，读完即删。 */
+        try {
+            var lt = parseInt(localStorage.getItem(byeLsKey()) || '0', 10) || 0;
+            if (lt > t) t = lt;
+            localStorage.removeItem(byeLsKey());
+        } catch (e) { }
         if (!t) return false;
         /* 用 performance.timeOrigin（本次导航开始的时刻）而不是 Date.now()：
            差的只是"上次卸载 -> 这次导航开始"的空档，页面本身加载多久不算进来，
