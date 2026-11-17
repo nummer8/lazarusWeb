@@ -109,10 +109,15 @@ start-gui.bat           :: 双击启动 GUI 版（dbaware_gui.exe，见下节）
 --client=alpine       浏览器渲染层：alpine（默认，内置）| ext（可选，需 ext 目录）；不指定时自动探测（都在则优先 alpine）
 --ext=7.0.0           默认 Ext 版本（URL 也可 ?ext=<版本> 临时切换）
 --extdir=目录         ext-js 目录（配置项 ExtDir 的等价物）
---theme=crisp         默认主题（classic/crisp/gray/material/neptune/graphite）
+--theme=crisp         默认主题（Ext 渲染层：classic/crisp/gray/material/neptune/graphite；
+                      Alpine 层的配色不在这里，见下）
 --title=标题          浏览器标签页标题（缺省取 Application.Title）
 --timeout=20          会话空闲超时（分钟）
 --trust-proxy         放到 nginx/Caddy 后面时加：日志里的客户端 IP 取 X-Forwarded-For
+--ssl                 开 HTTPS（FPC 自带；不给证书则自动生成自签证书）
+--ssl-host=名         证书主机名/SAN 域名或 IP，不是监听地址
+--ssl-cert=文件       指定 PEM 证书（与 --ssl-key 成对；相对路径按 exe 目录解析）
+--ssl-key=文件        指定 PEM 私钥（与 --ssl-cert 成对）
 --ajax-cors           /lw/ajax/* 允许跨域调用（给第三方页面集成用）
 --verbose             打印每个请求与异常栈
 --nogui               GUI 构建下也不弹服务端面板（服务化部署）
@@ -140,10 +145,14 @@ ExtDir=ext-7.0.0
 | 项 | 含义 | 留空/非法时 |
 |---|---|---|
 | `Port` | 监听端口 | 用默认 **8090**（超范围会给警告） |
-| `Theme` | 默认主题（`?theme=` 仍可临时覆盖） | 用 `crisp` |
+| `Theme` | 默认主题（仅 Ext 渲染层，`?theme=` 仍可临时覆盖）；Alpine 层的配色在标题栏按钮里选，见 `docs/MANUAL.md` §5.1 | 用 `crisp` |
 | `ExtDir` | ext-js 目录，绝对/相对路径都行 | 自动查找 `<root>\ext-<版本>` |
 | `Patch` | 增量补丁开关，`1` = 事件只回变化的 ops | 默认 `0`（关） |
 | `Client` | 浏览器渲染层：`ext` / `alpine`（不写则自动探测） | 自动探测 |
+| `SSL` | 开 HTTPS：`1` / `true` / `yes` | 默认 `0`（HTTP） |
+| `SSLHost` | 证书主机名/SAN 域名或 IP；不是监听地址 | 留空时用自签证书 |
+| `SSLCert` | PEM 证书路径（与 `SSLKey` 成对，相对路径按 exe 目录） | 留空时用自签证书 |
+| `SSLKey` | PEM 私钥路径（与 `SSLCert` 成对） | 留空时用自签证书 |
 
 细节（都是踩过之后定的）：
 
@@ -212,8 +221,9 @@ TMainForm = class(TLWForm)   // 原来是 class(TForm)
 MyApp/
   MyApp.exe
   src/client/alpine.min.js   44 KB   Alpine.js 本体（defer 加载，不走 CDN）
-  src/client/lw-alpine.js    177 KB  渲染/协调器
-  src/client/lw-alpine.css    41 KB  样式（亮/暗主题 CSS 变量都在这里）
+  src/client/lw-alpine.js    205 KB  渲染/协调器（也是模板/自适应唯一生效层）
+  src/client/lw-alpine.css    59 KB  样式：7 套配色（亮色/米黄/护眼绿/高对比/深色/深蓝/墨绿）的 CSS 变量都在这里
+  tpl/                              可选：窗体模板；仅 Alpine 层使用，缺失时静默回退设计期布局
   favicon.ico                       可选：浏览器标签图标（放 exe 同目录或 --root 目录皆可）
   ext-<版本>/                       可选：Ext JS 渲染层（约 75MB，需 --client=ext 显式切换）
   cert/                             可选：开 SSL 且使用自有 PEM 时放 server.crt/server.key/ca.crt
@@ -286,7 +296,7 @@ tools/build.sh hyper_gui          # GUI 工具用宿主 widgetset 编
 
 | 位置 | 内容 |
 |---|---|
-| File → New → Project | **lazarusWeb Application**（默认 widgetset，IDE 里 F9 直接跑）与 **lazarusWeb Application (nogui)**（`LCLWidgetType=nogui` 控制台服务，部署档）两个模板；一键生成 `.lpr/.lpi/umain.pas/.lfm/build.bat/build.sh` |
+| File → New → Project | **lazarusWeb Application**（默认 widgetset，`$APPTYPE GUI`，IDE 里 F9 直接跑，无黑窗口）与 **lazarusWeb Application (nogui)**（`LCLWidgetType=nogui` 控制台服务，部署档）两个模板。落盘时机与 Lazarus 自带模板一致：选完模板不弹对话框、不写盘（工程是"虚拟"的），按保存（Ctrl+S）时才弹"保存项目"对话框，目录默认取 IDE 选项里的"项目构建测试的目录"，这一步生成 `.lpr/.lpi/umain.pas/.lfm/build.bat/build.sh`，并把框架的 `src/client` 拷到工程目录下的 `lw/`（运行期按 `exe/lw/<文件>` 找静态资源）。nogui 档的 `.lpi` 宏在**保存事务真正结束之后**才补写（`.lpi` 与所有单元都落盘、连续两轮稳定才动手；保存过程中绝不弹框、不重载工程，见 NOTES 坑 172），所以**保存后约 1 秒**才补齐，补完弹一句「nogui 档：重新加载工程后生效」——点"是"重开工程，F9 就是无窗口控制台服务 |
 | File → New → File | **lazarusWeb Form** —— 一个 `TLWForm` 窗体单元，直接进设计器 |
 | 组件面板 | **lazarusWeb** 页：`TLWFileUpload` / `TLWCamera` 等 |
 
@@ -299,11 +309,27 @@ tools\install_design.bat        :: 先注册三个包
 然后按它的提示在 IDE 里 `Package → Open Package File → lwdesign.lpk → Use → Install`，
 让 IDE 重建一次（设计期包是静态链接进 `lazarus.exe` 的，必须重建才能生效）。
 
+第一次用，五步：
+
+1. **装包**：上面一行命令 + `Install` 重建 IDE（换新版包也要重装一次，否则跑的还是旧代码）；
+2. **新建**：`文件 → 新建 → 项目` 选模板（GUI 档调试 / nogui 档部署），选完**不写盘**；
+3. **保存**：`Ctrl+S` 弹标准"保存项目"对话框才落盘。工程名别叫 `LWApp`（与 `lwapp.pas` 撞名，编译报 `Duplicate identifier "LWAPP"`），默认的 `LWApp1` 就安全；
+4. **nogui 档多一步**：保存后约 1 秒弹「nogui 档：重新加载工程后生效」，点 **"是"**；
+5. **F9**。
+
+> **注意：保存后 1 秒内按 F9，用的还是 win32 widgetset** —— 宏刚写进 `.lpi`
+> 文件，IDE 内存里的工程选项还没重读，编出来照样弹服务端面板窗口。等第 4 步
+> 那个询问框出现、点"是"之后再 F9 就对了；不想重开工程就用工程目录里的
+> `build.bat` 编。
+
+落盘文件清单、每一步的界面细节和排障（`%TEMP%\lazarusweb-wizard.log`）见
+`docs/MANUAL.md`「用 IDE 向导新建工程（从头建一个）」。
+
 > TLWForm 是**真正的 TForm 后代**，不是 uniGUI 那种影子类，所以不需要任何
 > 设计期代理：拖上去的 TButton/TEdit 就是 LCL 自己的控件，属性面板、事件页、
 > 对齐工具、锚点全部照常可用，窗体设计器里看到的布局就是浏览器里的布局。
 
-不想开 IDE 也可以直接用命令行生成同一份骨架（模板是共用的）：
+不想开 IDE 也可以直接用命令行生成工程骨架（此处生成的是 Lazarus 工程，不是窗体模板；模板骨架请用上面的 IDE Tools 菜单）：
 
 ```
 tools\lwnew.exe --name=DemoApp --dir=C:\work\DemoApp --units=C:\LazarusWeb\src\core
@@ -311,9 +337,11 @@ tools\lwnew.exe --name=DemoApp --dir=C:\work\DemoApp --units=C:\LazarusWeb\src\c
 
 `--units` 指定源码目录时不依赖已安装的包；省略它则要求 `lwserver` 包已注册。
 
-**编译方式**：nogui widgetset 只能用 lazbuild 指定，IDE 里直接按 F9 会用 IDE
-自己的 widgetset（win32），链接不到 LCL 的 nogui 单元。向导生成的 `build.bat`
-已经写好：
+**编译方式**：LCL 用哪个 widgetset 由 `.lpi` 里的 `LCLWidgetType` 宏决定。
+仓库里的 demo 和手工改造的老工程都没有这个宏，IDE 里按 F9 会用 IDE 自己的
+widgetset（win32），链接不到 LCL 的 nogui 单元，只能靠 lazbuild 指定；向导
+生成的 nogui 工程已经把这个宏写进 `.lpi`，重新加载工程后 IDE 里 F9 直接就是
+nogui（保存后 1 秒内按 F9 仍会是 win32，见上一节）。`build.bat` 两种都写好：
 
 ```
 lazbuild -B --ws=nogui <工程>.lpi
@@ -321,7 +349,8 @@ lazbuild -B --ws=nogui <工程>.lpi
 
 > 注意区分：**包**（`lwserver.lpk`）在 IDE 里可以直接编译/安装 —— `lwws.pas`
 > 的 nogui 补丁用 `{$IFDEF LCLnogui}` 包着，非 nogui 下退化成空实现；
-> 但**工程**（demo / 自己新建的）必须 `--ws=nogui`，见 `docs/NOTES.md` 坑 15。
+> 但**没带 `LCLWidgetType` 宏的工程**（demo、手工改造的老工程）必须
+> `--ws=nogui`，见 `docs/NOTES.md` 坑 15。
 
 ## 文件上传 / 下载
 
@@ -509,9 +538,14 @@ Alpine 渲染层内置移动端自适应，**业务代码零改动**：视口 �
 - **一键生成模板骨架**：装了设计期包 `lwdesign` 后，IDE 的 **Tools 菜单**
   多一项「生成 lazarusWeb 窗体模板（当前单元 LFM）」——按当前打开窗体的
   .lfm 一次生成**桌面 + 移动**两份模板骨架到 `<工程目录>\tpl\`（含
-  `{%控件名%}` 占位符与按设计期逐控件定高的基础 CSS，已存在逐份询问覆盖），
-  生成完拷到运行根目录（或工程目录即运行根目录时直接生效），刷新即见；
-  详见 `MANUAL.md` 16.0，范例 `demos\gallery`；
+  `{%控件名%}` 占位符、按设计期逐控件定高的基础 CSS，铺满窗体的主区域
+  按**容器**高度伸缩 `calc(100% - 其它控件)`（桌面按行累计，移动单列直加；
+  不是 `100vh` —— 窗体开进浮窗时客户区比视口小），已存在逐份询问覆盖），
+  生成时附自检报告（跳过的非可视控件、重复/非法占位符名、嵌套容器、主区域
+  改动）；生成完拷到运行根目录（或工程目录即运行根目录时直接生效），刷新即见；
+  详见 `MANUAL.md` 16.0；现成范例 `demos\mobile_demo\tpl\`（手工调过比例），
+  生成器本身拿 `demos\gallery` 与 `demos\dbaware` 的真实窗体做解析与尺寸
+  回归（后者覆盖浮窗里的主窗体、无主区域的登录页、顶部工具行 + PDF 主区域）；
 - **拍照上传**：`TLWCamera` 控件（组件面板拖上即用）——手机点按钮唤起
   系统相机，拍完自动传回服务端（`OnCapture`），浏览器本地即时预览；
   局域网 http 可用（不需要 HTTPS），见 README「拍照（TLWCamera）」节；
@@ -710,6 +744,10 @@ GUI 版与控制台版共用 `src/core/lwhyper.pas`，代理行为完全一致�
 --root= / --theme=   转发给 worker
 --worker-args="..."  原样追加到 worker 命令行（如 --trust-proxy）
 --logdir=目录        worker 日志目录（缺省 <TEMP>\lwhyper）
+--ssl                外层开 HTTPS；worker 之间仍走 HTTP
+--ssl-host=名        证书主机名/SAN 域名或 IP；留空用自签证书
+--ssl-cert=文件      指定 PEM 证书（与 --ssl-key 成对）
+--ssl-key=文件       指定 PEM 私钥（与 --ssl-cert 成对）
 --verbose            打印每个代理请求与探针
 ```
 
@@ -744,7 +782,7 @@ GUI 版与控制台版共用 `src/core/lwhyper.pas`，代理行为完全一致�
   `ip_hash`、`/lw/healthz` 探针、`--trust-proxy`；会话外置到 Redis 未实现）
 - ~~`lwconvert` 深化~~ ✅ 已完成（v2：基类改写、启动代码改写、`.lpi` 重新生成、支持度报告、`tests/t_convert.py` 端到端回归）
 - ~~把 placeholder 里的高频控件补上渲染器~~ ✅ 已实现：`TRadioGroup`/`TCheckGroup`/`TCheckListBox`/`TValueListEditor`（坑 25/42/97）、`TDateEdit`/`TTimeEdit`（坑 55/70）均已 ok，见 `docs/CONTROL_MATRIX.md`
-- Alpine.js 轻量客户端 ✅ 已实现：第二渲染层 `lw-alpine.js`，URL 加 `?client=alpine` 或启动参数 `--client=alpine` 启用，无需 ext 目录（坑 89–97）
+- Alpine.js 轻量客户端 ✅ 已实现：**默认渲染层** `lw-alpine.js`，无需 ext 目录；Ext JS 为可选层，需 `--client=ext` 显式启用（坑 89–97）
 
 ## 开源协议
 
