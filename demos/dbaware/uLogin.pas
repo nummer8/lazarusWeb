@@ -168,6 +168,15 @@ begin
   { AutoSize 必须先关：开着的话 LCL 会按文字重算尺寸，把它撑得比 lfm 里
     的框子还高 —— 浏览器端那块多出来的高度会把窗体顶出纵向滚动条 }
   lblHint.AutoSize := False;
+  { LFM 是编译期资源：IDE 里再保存一次窗体，lblHint 就被写回设计期那个
+    1×1 的旧值（本仓库已经发生过两次，见坑 132.1/坑 167）。1px 宽的标签
+    即使客户端按 nowrap 渲染，也只是 1px 的一列字影 —— 看着还是一根竖线。
+    这里按最小可读尺寸兜底，LFM 处于哪个版本都不影响运行结果。 }
+  if (lblHint.Width < 300) or (lblHint.Height < 30) then
+  begin
+    lblHint.Width := 540;
+    lblHint.Height := 60;
+  end;
   lblHint.WordWrap := True;
   lblHint.Caption :=
   '演示账号：admin / 123456（管理员）· guest / guest（只读）；' +

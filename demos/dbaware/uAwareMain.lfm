@@ -387,7 +387,7 @@ object AwareForm: TAwareForm
         Top = 54
         Width = 780
         Lines.Strings = (
-          '<h2 style="color:#2255aa;margin:4px 0">TLWHTMLFrame · 富文本面板</h2>'
+          '<h2 style="color:var(--lw-fg2b);margin:4px 0">TLWHTMLFrame · 富文本面板</h2>'
           '<p>这段 HTML 由<b>服务端 Pascal 代码</b>提供，等价于 uniGUI 的 uniHTMLFrame。</p>'
           '<ul>'
           '<li>支持任意 HTML / 内联 CSS</li>'
@@ -395,12 +395,12 @@ object AwareForm: TAwareForm
           '<li>可与数据绑定、对话框、上传等框架能力自由组合</li>'
           '</ul>'
           '<table border="1" cellpadding="4" style="border-collapse:collapse">'
-          '<tr style="background:#dde"><th>lazarusWeb</th><th>uniGUI</th></tr>'
+          '<tr style="background:var(--lw-surface3)"><th>lazarusWeb</th><th>uniGUI</th></tr>'
           '<tr><td>TLWHTMLFrame</td><td>uniHTMLFrame</td></tr>'
           '<tr><td>TLWPDFFrame</td><td>uniPDFFrame</td></tr>'
           '<tr><td>TLWFileUpload</td><td>uniFileUpload</td></tr>'
           '</table>'
-          '<p style="color:#888">在左边编辑 HTML 源码，点下面按钮立即刷新右下面板。</p>'
+          '<p style="color:var(--lw-fg3b)">在左边编辑 HTML 源码，点下面按钮立即刷新右下面板。</p>'
         )
         ScrollBars = ssVertical
         TabOrder = 0
@@ -420,7 +420,7 @@ object AwareForm: TAwareForm
         Top = 660
         Width = 1590
         HTML.Strings = (
-          '<h2 style="color:#2255aa;margin:4px 0">TLWHTMLFrame · 富文本面板</h2>'
+          '<h2 style="color:var(--lw-fg2b);margin:4px 0">TLWHTMLFrame · 富文本面板</h2>'
           '<p>这段 HTML 由<b>服务端 Pascal 代码</b>提供，等价于 uniGUI 的 uniHTMLFrame。</p>'
           '<ul>'
           '<li>支持任意 HTML / 内联 CSS</li>'
@@ -428,12 +428,12 @@ object AwareForm: TAwareForm
           '<li>可与数据绑定、对话框、上传等框架能力自由组合</li>'
           '</ul>'
           '<table border="1" cellpadding="4" style="border-collapse:collapse">'
-          '<tr style="background:#dde"><th>lazarusWeb</th><th>uniGUI</th></tr>'
+          '<tr style="background:var(--lw-surface3)"><th>lazarusWeb</th><th>uniGUI</th></tr>'
           '<tr><td>TLWHTMLFrame</td><td>uniHTMLFrame</td></tr>'
           '<tr><td>TLWPDFFrame</td><td>uniPDFFrame</td></tr>'
           '<tr><td>TLWFileUpload</td><td>uniFileUpload</td></tr>'
           '</table>'
-          '<p style="color:#888">在左边编辑 HTML 源码，点下面按钮立即刷新右下面板。</p>'
+          '<p style="color:var(--lw-fg3b)">在左边编辑 HTML 源码，点下面按钮立即刷新右下面板。</p>'
         )
         TabOrder = 2
       end
@@ -496,7 +496,7 @@ object AwareForm: TAwareForm
         Left = 18
         Height = 31
         Top = 15
-        Width = 923
+        Width = 857
         Caption = 'TLWChart（对应 uniGUI 的 uniChart，Ext charts 包渲染）+ 日期选择 + Toast'
         Font.Height = -23
         Font.Style = [fsBold]
@@ -757,7 +757,7 @@ object AwareForm: TAwareForm
         Top = 387
         Width = 570
         HTML.Strings = (
-          '<div style="font:13px system-ui,Segoe UI,sans-serif;padding:6px"><button id="lwAjaxBtn" style="padding:5px 10px;cursor:pointer">GET /lw/ajax/items</button> <button id="lwAjaxWho" style="padding:5px 10px;cursor:pointer">GET /lw/ajax/whoami?sid=</button><pre id="lwAjaxOut" style="margin:8px 0 0 0;height:104px;overflow:auto;background:#f7f9fc;border:1px solid #dbe3ec;padding:6px;font-size:12px">点上面的按钮试试</pre></div><script>function lwAjaxShow(t){document.getElementById("lwAjaxOut").textContent=t;}document.getElementById("lwAjaxBtn").onclick=function(){ fetch("/lw/ajax/items?limit=3").then(function(r){return r.json();}) .then(function(j){lwAjaxShow(JSON.stringify(j,null,1));}) .catch(function(e){lwAjaxShow("请求失败: "+e);});};document.getElementById("lwAjaxWho").onclick=function(){ var sid=(window.LW&&LW.sid)?LW.sid():""; fetch("/lw/ajax/whoami?sid="+encodeURIComponent(sid)) .then(function(r){return r.json();}) .then(function(j){lwAjaxShow(JSON.stringify(j,null,1));}) .catch(function(e){lwAjaxShow("请求失败: "+e);});};</script>'
+          '<div style="font:13px system-ui,Segoe UI,sans-serif;padding:6px"><button id="lwAjaxBtn" style="padding:5px 10px;cursor:pointer">GET /lw/ajax/items</button> <button id="lwAjaxWho" style="padding:5px 10px;cursor:pointer">GET /lw/ajax/whoami?sid=</button><pre id="lwAjaxOut" style="margin:8px 0 0 0;height:104px;overflow:auto;background:var(--lw-surface2);border:1px solid var(--lw-border);color:var(--lw-fg);padding:6px;font-size:12px">点上面的按钮试试</pre></div><script>function lwAjaxShow(t){document.getElementById("lwAjaxOut").textContent=t;}document.getElementById("lwAjaxBtn").onclick=function(){ fetch("/lw/ajax/items?limit=3").then(function(r){return r.json();}) .then(function(j){lwAjaxShow(JSON.stringify(j,null,1));}) .catch(function(e){lwAjaxShow("请求失败: "+e);});};document.getElementById("lwAjaxWho").onclick=function(){ var sid=(window.LW&&LW.sid)?LW.sid():""; fetch("/lw/ajax/whoami?sid="+encodeURIComponent(sid)) .then(function(r){return r.json();}) .then(function(j){lwAjaxShow(JSON.stringify(j,null,1));}) .catch(function(e){lwAjaxShow("请求失败: "+e);});};</script>'
         )
         TabOrder = 14
       end

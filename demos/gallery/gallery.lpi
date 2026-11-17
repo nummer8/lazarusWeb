@@ -30,6 +30,12 @@
       <Item>
         <PackageName Value="LCL"/>
       </Item>
+      <Item>
+        <PackageName Value="lazreport"/>
+      </Item>
+      <Item>
+        <PackageName Value="lr_extexp"/>
+      </Item>
     </RequiredPackages>
     <Units>
       <Unit>
@@ -43,6 +49,10 @@
         <HasResources Value="True"/>
         <ResourceBaseClass Value="Form"/>
         <UnitName Value="uGallery"/>
+      </Unit>
+      <Unit>
+        <Filename Value="uLazReportDemo.pas"/>
+        <IsPartOfProject Value="True"/>
       </Unit>
       <Unit>
         <Filename Value="uabout.pas"/>
@@ -61,7 +71,7 @@
     </Target>
     <SearchPaths>
       <IncludeFiles Value="$(ProjOutDir)"/>
-      <OtherUnitFiles Value="../../src/core"/>
+      <OtherUnitFiles Value="../../src/core;C:/111/ccr/QF_Lazreport/source/addons/lrFclPDFExport/"/>
       <UnitOutputDirectory Value="lib/$(TargetCPU)-$(TargetOS)-nogui"/>
     </SearchPaths>
     <Linking>

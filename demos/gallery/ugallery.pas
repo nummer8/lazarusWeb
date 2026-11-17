@@ -1,7 +1,7 @@
 {
   lazarusWeb :: 全功能画廊
   ------------------------------------------------------------------
-  一个窗体 + TPageControl 十二个分类页 + 底部公共事件日志：
+  一个窗体 + TPageControl 十三个分类页 + 底部公共事件日志：
 
     tsStd    标准控件    TLabel/TStaticText/TEdit/TMemo/TCheckBox/TRadioButton/
                          TListBox/TComboBox/TGroupBox/TScrollBox
@@ -23,9 +23,11 @@
                          unit 列 PickList 下拉、made 列日期选择、active 列勾选框
                          （框架按字段类型自动出 cedit=2/3/4）
     tsBig    大表分页    TLWDBGrid：sqlite 1000 行、每页 50、过滤条、qty 汇总
+    tsReport 报表        QF_Lazreport：载入 混凝土配合比.frf 模板 → 灌示例数据
+                         → 服务端排版 → fcl-pdf 导出 → TLWPDFFrame 预览
 
   ------------------------------------------------------------------
-  界面全部在设计期做好（ugallery.lfm）—— 12 个页签、60+ 控件的位置、
+  界面全部在设计期做好（ugallery.lfm）—— 13 个页签、60+ 控件的位置、
   标题、项目列表、表格列、对齐方式、事件关联都写在 lfm 里，可以在 IDE
   里直接打开改。本单元只保留三类代码：
 
@@ -50,15 +52,24 @@ interface
 uses
   Classes, SysUtils, Forms, Controls, Graphics, StdCtrls, ExtCtrls, ComCtrls,
   Grids, ValEdit, CheckLst, MaskEdit, Spin, EditBtn, Buttons, Dialogs, Menus,
-  FPJSON,
+  FPJSON, SyncObjs,
   DB, DBCtrls, DBGrids, sqldb, sqlite3conn, FPTimer, lwform,
-  lwchart, lwui, lwweb, lwfileupload, lwdbgrid, lwdbnav;
+  lwchart, lwui, lwweb, lwfileupload, lwdbgrid, lwdbnav,
+  uLazReportDemo;
 
 type
+
+  { TGalleryForm }
+
   TGalleryForm = class(TLWForm)
+    EditButton1: TEditButton;
+    lbl6: TLabel;
+    MenuItem1: TMenuItem;
+    MenuItem2: TMenuItem;
     { ---- 设计期控件（名字与 ugallery.lfm 一一对应）---- }
     { 骨架 }
     pcMain: TPageControl;
+    PopupMenu1: TPopupMenu;
     tsStd: TTabSheet;
     tsBtn: TTabSheet;
     tsEdit: TTabSheet;
@@ -71,6 +82,7 @@ type
     tsMisc: TTabSheet;
     tsDB: TTabSheet;
     tsBig: TTabSheet;
+    tsReport: TTabSheet;
     pnlLog: TPanel;
     lblLogCap: TLabel;
     mmoLog: TMemo;
@@ -222,6 +234,12 @@ type
     { tsBig 大表分页 }
     grdBig: TLWDBGrid;
     lblBigHint: TLabel;
+    { tsReport 报表（QF_Lazreport） }
+    lblRepHint: TLabel;
+    btnRepMake: TButton;
+    btnRepDownload: TButton;
+    lblRepInfo: TLabel;
+    pfReport: TLWPDFFrame;
     { 非可视组件（同样在 lfm 里） }
     dsMem: TDataSource;
     dsBig: TDataSource;
@@ -278,6 +296,9 @@ type
     procedure DlFile(Sender: TObject);
     procedure SyncClock(Sender: TObject);
     procedure GaugeStep(Sender: TObject);
+    { tsReport 事件 }
+    procedure RepMake(Sender: TObject);
+    procedure RepDownload(Sender: TObject);
   private
     { 纯内存状态：TFPTimer 工作线程只碰这些字段（LCL 控件跨线程一碰就崩）}
     FMaskShown: Boolean;
@@ -296,6 +317,10 @@ type
     FTrans2: TSQLTransaction;
     qryBig: TSQLQuery;
     tmMain: TFPTimer;
+    { tsReport：QF_Lazreport 的报表对象（首次点"生成"时才建）与最近一次
+      导出的 PDF 路径（下载按钮用） }
+    FReport: TLazReportDemo;
+    FReportFile: string;
     procedure Log(const S: string);
     { 建 sqlite 库/表/种子数据 + 接 DataSource/DataField }
     procedure SetupData;
@@ -477,7 +502,7 @@ begin
   tmMain.Interval := 1000;
   tmMain.OnTimer := @Tick;
   tmMain.Enabled := True;
-  Log('画廊就绪：12 页 60+ 控件（全部在设计期摆放），点任何东西都会回显到这里。');
+  Log('画廊就绪：13 页 60+ 控件（全部在设计期摆放），点任何东西都会回显到这里。');
 end;
 
 procedure TGalleryForm.pcMainChange(Sender: TObject);
@@ -899,6 +924,8 @@ begin
     这里读到的必须是新页签序号（坑 97 之前永远是 0） }
   Log('Edit.TTabControl TabIndex=' + IntToStr(tcMain.TabIndex) +
     ' [' + tcMain.Tabs[tcMain.TabIndex] + ']');
+  lblTc.Caption:='TTabControl：页签是字符串列表，客户区是公共的一块---'+ IntToStr(tcMain.TabIndex) +
+    ' [' + tcMain.Tabs[tcMain.TabIndex] + ']';
 end;
 
 { ============================ tsGrid 网格列表 ============================ }
@@ -1212,6 +1239,90 @@ begin
   SendText('lazarusWeb 下载演示' + LineEnding + '时间：' +
     FormatDateTime('yyyy-mm-dd hh:nn:ss', Now), 'demo.txt');
   Log('Misc.SendText -> demo.txt');
+end;
+
+{ ============================ tsReport 报表（QF_Lazreport） ============================ }
+
+{ LazReport 有进程级全局状态（CurReport / frVariables / 字体管理器 / 字体缓存），
+  画廊是多会话共进程，两个会话同时渲染会互相串版面，所以这里串行化。
+  量级很小：一份 A4 表单排版 + 导出 PDF 约 100ms 级。 }
+var
+  GReportLock: TCriticalSection = nil;
+
+procedure TGalleryForm.RepMake(Sender: TObject);
+var
+  fn, err, src: string;
+  ok: Boolean;
+begin
+  if FReport = nil then
+  begin
+    { 模板与 exe 同目录（照 gallery.db / gridsave.json 的约定） }
+    FReport := TLazReportDemo.Create(IncludeTrailingPathDelimiter(
+      ExtractFilePath(ParamStr(0))) + REPORT_TEMPLATE);
+    GReportLock := TCriticalSection.Create;
+  end;
+
+  { 每次生成换一个新文件名：iframe 只有 URL 变了才会真的重载 }
+  fn := IncludeTrailingPathDelimiter(ExtractFilePath(ParamStr(0))) +
+    'uploads' + PathDelim + 'lazreport' + PathDelim + 'report_' +
+    FormatDateTime('yyyymmdd_hhnnss_zzz', Now) + '.pdf';
+  ForceDirectories(ExtractFileDir(fn));
+
+  ok := False;
+  err := '';
+  GReportLock.Enter;
+  try
+    try
+      ok := FReport.Prepare(err);
+      if ok then
+        ok := FReport.ExportPDF(fn);
+      if not ok and (err = '') then
+        err := 'PDF 导出失败';
+    except
+      on E: Exception do
+      begin
+        ok := False;
+        err := E.ClassName + ': ' + E.Message;
+      end;
+    end;
+  finally
+    GReportLock.Leave;
+  end;
+
+  if not ok then
+  begin
+    FReportFile := '';
+    btnRepDownload.Enabled := False;
+    lblRepInfo.Caption := '生成失败：' + err;
+    Log('Report.生成失败 ' + err);
+    Exit;
+  end;
+
+  FReportFile := fn;
+  pfReport.PDFFile := fn;
+  btnRepDownload.Enabled := True;
+  if FReport.DataReportNo <> '' then
+    src := '数据 报告编号 ' + FReport.DataReportNo + '（tfdata.db）'
+  else if FReport.DataError <> '' then
+    src := '内置示例值 · ' + FReport.DataError
+  else
+    src := '内置示例值';
+  lblRepInfo.Caption := Format('已生成 %d 页 · %s（模板 %s · %s）',
+    [FReport.PageCount, ExtractFileName(fn), REPORT_TEMPLATE, src]);
+  Log('Report.生成 -> ' + ExtractFileName(fn) + '，' +
+    IntToStr(FReport.PageCount) + ' 页');
+end;
+
+procedure TGalleryForm.RepDownload(Sender: TObject);
+begin
+  if (FReportFile = '') or (not FileExists(FReportFile)) then
+  begin
+    ShowMessage('请先点"生成报表（LazReport）"');
+    Log('Report.下载：还没有生成 PDF');
+    Exit;
+  end;
+  SendFile(FReportFile, '混凝土配合比.pdf');
+  Log('Report.下载 -> 混凝土配合比.pdf');
 end;
 
 procedure TGalleryForm.DlFile(Sender: TObject);

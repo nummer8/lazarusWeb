@@ -8,7 +8,7 @@ unit uAbout;
 interface
 
 uses
-  Classes, SysUtils, Forms, Controls, StdCtrls, lwform;
+  Classes, SysUtils, Forms, Controls, StdCtrls, lwform,lwbase;
 
 type
   TAboutForm = class(TLWForm)
@@ -24,6 +24,7 @@ implementation
 
 procedure TAboutForm.FormCreate(Sender: TObject);
 begin
+  lblTitle.Caption:='lazarusWeb ' + LW_VERSION + ' · 全功能画廊';
   lblBody.Caption :=
     '纯 Pascal 服务端 + 真实 LCL 控件 + Alpine.js或Ext JS 前端。' + LineEnding +
     '这个窗体是真实的 TLWForm（.lfm 加载），' + LineEnding +

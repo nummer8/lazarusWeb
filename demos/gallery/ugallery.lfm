@@ -14,9 +14,9 @@ object GalleryForm: TGalleryForm
     Height = 900
     Top = 0
     Width = 1800
-    ActivePage = tsDB
+    ActivePage = tsEdit
     Align = alClient
-    TabIndex = 10
+    TabIndex = 2
     TabOrder = 0
     OnChange = pcMainChange
     object tsStd: TTabSheet
@@ -218,6 +218,26 @@ object GalleryForm: TGalleryForm
           TabOrder = 0
         end
       end
+      object EditButton1: TEditButton
+        Left = 24
+        Height = 32
+        Top = 386
+        Width = 219
+        ButtonCaption = 'ok'
+        ButtonWidth = 34
+        MaxLength = 0
+        NumGlyphs = 1
+        PasswordChar = #0
+        TabOrder = 11
+        Text = 'EditButton1'
+      end
+      object lbl6: TLabel
+        Left = 24
+        Height = 24
+        Top = 360
+        Width = 120
+        Caption = 'TEditButton：'
+      end
     end
     object tsBtn: TTabSheet
       Caption = '按钮'
@@ -306,6 +326,7 @@ object GalleryForm: TGalleryForm
       Caption = '扩展输入'
       ClientHeight = 863
       ClientWidth = 1792
+      PopupMenu = PopupMenu1
       object lbl8: TLabel
         Left = 24
         Height = 24
@@ -367,7 +388,7 @@ object GalleryForm: TGalleryForm
       object leMail: TLabeledEdit
         Left = 450
         Height = 32
-        Top = 144
+        Top = 158
         Width = 402
         EditLabel.Height = 24
         EditLabel.Width = 402
@@ -415,7 +436,7 @@ object GalleryForm: TGalleryForm
       object leHello: TLabeledEdit
         Left = 24
         Height = 32
-        Top = 150
+        Top = 158
         Width = 360
         EditLabel.Height = 24
         EditLabel.Width = 360
@@ -724,7 +745,7 @@ object GalleryForm: TGalleryForm
         OnClick = VeClick
         Strings.Strings = (
           '标题=lazarusWeb'
-          '版本=0.9.0'
+          '版本=0.9.6'
           '主题=crisp'
         )
         ColWidths = (
@@ -975,7 +996,7 @@ object GalleryForm: TGalleryForm
         Height = 38
         Top = 366
         Width = 240
-        Caption = '应用到下方面板'
+        Caption = '应用到右上方面板'
         TabOrder = 1
         OnClick = HtmlApply
       end
@@ -1112,7 +1133,7 @@ object GalleryForm: TGalleryForm
         Height = 38
         Top = 141
         Width = 225
-        Caption = '会话遮罩 2 秒'
+        Caption = '会话遮罩'
         TabOrder = 7
         OnClick = DlgMask
       end
@@ -1178,9 +1199,9 @@ object GalleryForm: TGalleryForm
         OnClick = DynAdd
       end
       object pnlDyn: TPanel
-        Left = 24
+        Left = 32
         Height = 240
-        Top = 126
+        Top = 136
         Width = 720
         TabOrder = 2
       end
@@ -1361,6 +1382,51 @@ object GalleryForm: TGalleryForm
         Caption = 'TLWDBGrid：1000 行 / 每页 50 / 顶部过滤 / qty 列汇总 / 两级表头 —— 显示层分页，对应 uniDBGrid 的分页过滤汇总能力。'
       end
     end
+    object tsReport: TTabSheet
+      Caption = '报表 LazReport'
+      ClientHeight = 863
+      ClientWidth = 1792
+      object lblRepHint: TLabel
+        Left = 24
+        Height = 24
+        Top = 18
+        Width = 951
+        Caption = '模板：混凝土配合比.frf（FastReport 2.46）→ QF_Lazreport 服务端无头渲染 → fcl-pdf 导出，浏览器自带查看器预览'
+      end
+      object btnRepMake: TButton
+        Left = 24
+        Height = 38
+        Top = 51
+        Width = 240
+        Caption = '生成报表（LazReport）'
+        TabOrder = 0
+        OnClick = RepMake
+      end
+      object btnRepDownload: TButton
+        Left = 276
+        Height = 38
+        Top = 51
+        Width = 210
+        Caption = '下载 PDF'
+        Enabled = False
+        TabOrder = 1
+        OnClick = RepDownload
+      end
+      object lblRepInfo: TLabel
+        Left = 510
+        Height = 24
+        Top = 58
+        Width = 574
+        Caption = '尚未生成。点左边按钮：载入模板 → 灌示例数据 → 排版 → 导出 PDF。'
+      end
+      object pfReport: TLWPDFFrame
+        Left = 24
+        Height = 730
+        Top = 102
+        Width = 1632
+        TabOrder = 2
+      end
+    end
   end
   object pnlLog: TPanel
     Left = 0
@@ -1401,5 +1467,15 @@ object GalleryForm: TGalleryForm
   object dlgOpen: TOpenDialog
     Left = 248
     Top = 432
+  end
+  object PopupMenu1: TPopupMenu
+    Left = 799
+    Top = 268
+    object MenuItem1: TMenuItem
+      Caption = 'MenuItem1'
+    end
+    object MenuItem2: TMenuItem
+      Caption = 'MenuItem2'
+    end
   end
 end

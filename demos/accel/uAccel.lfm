@@ -1,0 +1,9 @@
+object AccelForm: TAccelForm
+  Left = 0
+  Top = 0
+  Caption = 'lazarusWeb · 加速键审计'
+  ClientHeight = 640
+  ClientWidth = 780
+  OnCreate = FormCreate
+  LCLVersion = '4.2'
+end

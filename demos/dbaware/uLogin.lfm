@@ -79,9 +79,9 @@ object LoginForm: TLoginForm
   end
   object lblHint: TLabel
     Left = 45
-    Height = 1
+    Height = 60
     Top = 384
-    Width = 1
+    Width = 540
     Font.Color = clGray
     ParentFont = False
   end

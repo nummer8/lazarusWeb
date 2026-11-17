@@ -1,0 +1,6 @@
+cpu=8 iters=10
+TGalleryForm  nodes=157  first_write=5.1ms  first_json=1.1ms  bytes=74947
+TGalleryForm  avg_write=3.04ms  avg_json=1.46ms  bytes=74947  iters=10
+TAboutForm  nodes=4  first_write=0.1ms  first_json=0.0ms  bytes=1999
+TAboutForm  avg_write=0.03ms  avg_json=0.03ms  bytes=1999  iters=10
+done

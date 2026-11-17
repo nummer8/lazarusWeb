@@ -176,6 +176,8 @@ type
     procedure SetChartStatic;
     procedure OpenReportForm;
     procedure UpdateUserLabel;
+    { 把示例 HTML 里的浅色字面量换成主题变量，见实现处的注释 }
+    procedure NormalizeFrameColors;
   public
     destructor Destroy; override;
     { 主窗体被"切换回来"时刷新当前用户（注销后换个账号登录也能显示对） }
@@ -332,6 +334,8 @@ begin
     ② 把数据源接回控件 —— LFM 里没有数据库对象，这些引用是代码接的。 }
   SetupData;
 
+  NormalizeFrameColors;
+
   grdItems.DataSource := FDs;
   lblCode.DataSource := FDs;
   edName.DataSource := FDs;
@@ -359,6 +363,63 @@ begin
 
   UpdateUserLabel;
   UpdateState(nil, nil);
+end;
+
+{ 帧内 HTML 里的颜色字面量 → 主题变量。
+
+  示例 HTML 是写在 uAwareMain.lfm 里的。LFM 是编译期资源：改完必须
+  lazbuild -B 重建，否则 exe 里还是旧字符串；更要紧的是它在 IDE 里再保存
+  一次就有可能被写回旧文本（本仓库已经出现过一次，见坑 165）。只在 LFM 里
+  改，用户重编译后看到的仍是旧颜色 —— 所以在启动时再兜一层，让修复不依赖
+  LFM 那几行字能不能活下来。
+
+  为什么底、边、字要一起换：写死的浅底一旦换成深底、前景还是原来那套默认
+  深字，只是从"浅字浅底"变成"深字深底"，照样看不清。 }
+procedure TAwareForm.NormalizeFrameColors;
+var
+  s: string;
+
+  function Fix(const S: string): string;
+  begin
+    Result := S;
+    { 代码块：底 + 前景必须成对给 }
+    Result := StringReplace(Result, 'background:#f7f9fc',
+      'background:var(--lw-surface2);color:var(--lw-fg)', [rfReplaceAll]);
+    { 表头行 / 正文边框 / 两处文字 }
+    Result := StringReplace(Result, 'border:1px solid #dbe3ec',
+      'border:1px solid var(--lw-border)', [rfReplaceAll]);
+    Result := StringReplace(Result, 'background:#dde',
+      'background:var(--lw-surface3)', [rfReplaceAll]);
+    Result := StringReplace(Result, 'color:#2255aa',
+      'color:var(--lw-fg2b)', [rfReplaceAll]);
+    Result := StringReplace(Result, 'color:#888',
+      'color:var(--lw-fg3b)', [rfReplaceAll]);
+  end;
+
+  procedure FixOwner(AOwner: TComponent);
+  var
+    i: Integer;
+  begin
+    for i := 0 to AOwner.ComponentCount - 1 do
+    begin
+      if AOwner.Components[i] is TLWHTMLFrame then
+        TLWHTMLFrame(AOwner.Components[i]).HTML.Text :=
+          Fix(TLWHTMLFrame(AOwner.Components[i]).HTML.Text);
+      { 控件通常 Owner 就是窗体，Parent 才是页/面板；这里对子容器再走一遍，
+        是为了把以后放进 Panel 里、Owner 跟着容器走的帧也一并兜住 }
+      if AOwner.Components[i].ComponentCount > 0 then
+        FixOwner(AOwner.Components[i]);
+    end;
+  end;
+
+begin
+  FixOwner(Self);
+
+  { 左边那个 TMemo 是"应用到面板"的源码来源，它带着字面量的话，用户一点
+    按钮就把刚修好的颜色又改回去了 }
+  s := Fix(mmHtml.Lines.Text);
+  if s <> mmHtml.Lines.Text then
+    mmHtml.Lines.Text := s;
 end;
 
 destructor TAwareForm.Destroy;

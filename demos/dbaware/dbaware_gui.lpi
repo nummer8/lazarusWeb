@@ -43,10 +43,12 @@
       <Unit>
         <Filename Value="uLogin.pas"/>
         <IsPartOfProject Value="True"/>
+        <HasResources Value="True"/>
       </Unit>
       <Unit>
         <Filename Value="uReport.pas"/>
         <IsPartOfProject Value="True"/>
+        <HasResources Value="True"/>
       </Unit>
       <Unit>
         <Filename Value="uAwareMain.pas"/>
@@ -73,7 +75,7 @@
       </Debugging>
     </Linking>
     <Other>
-      <CustomOptions Value="-WG -gh"/>
+      <CustomOptions Value="-WG"/>
     </Other>
   </CompilerOptions>
 </CONFIG>

@@ -232,4 +232,10 @@ begin
   TLWApp.AddAjax('echo', @GDemoAjax.Echo);
 end;
 
+finalization
+  { 这是个纯路由对象（只往 TLWApp 登记方法指针），进程活着就一直用；
+    但退出时该还回去，否则 -gh 构建会报 TDemoAjax 未释放（坑 162） }
+  GDemoAjax.Free;
+  GDemoAjax := nil;
+
 end.
