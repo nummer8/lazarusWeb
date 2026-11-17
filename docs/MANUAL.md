@@ -1,6 +1,6 @@
 # lazarusWeb 使用手册
 
-> 版本基准：LW_VERSION 0.9.0（`src/core/lwbase.pas`），2026-11-13 整理。
+> 版本基准：LW_VERSION 0.9.6（`src/core/lwbase.pas`），2026-11-17 更新。
 > 分两篇：**使用篇**（跑 demo、写程序、部署、排障）与**开发篇**（读码、
 > 调试、扩展、测试）。细节以各专题文档为准，本文负责把它们串成一条路。
 
@@ -113,6 +113,87 @@ tools\lwconvert_gui.exe                :: GUI 版：选目录→分析/转换→
 改写内容：`.pas` 基类与 uses、`.lpr` 启动代码、`.lpi` 重新生成为 nogui
 工程，附控件支持度报告。IDE 里也有向导：设计期包 `lwdesign`（New Project
 两个模板 + New Form + 组件面板）。
+
+### 用 IDE 向导新建工程（从头建一个）
+
+**前置：把设计期包装进 IDE**（只需一次，换新版包后要重做）
+
+```
+Package → Open Package File → src/design/lwdesign.lpk
+        → Use → Install → IDE 提示重建 → 重启 Lazarus
+```
+
+装好后 **文件 → 新建 → 项目** 里才会出现两个模板。没装（或装的是旧版）
+时新建对话框里根本看不到它们，或者看到的是旧行为。
+
+**1. 选模板**
+
+| 模板 | 档位 | 编出来的程序 |
+|---|---|---|
+| **lazarusWeb Application** | `$APPTYPE GUI`，默认 widgetset | IDE 里 F9 直接跑，**无**黑窗口、**无**服务端面板窗口（调试用） |
+| **lazarusWeb Application (nogui)** | `$APPTYPE CONSOLE` + `LCLWidgetType=nogui` | 纯控制台服务，只有**黑终端**，没有面板窗口（部署用） |
+
+选完模板**不弹任何对话框、也不写盘**：工程此刻是"虚拟"的，`.lpr` /
+`umain.pas` / `.lfm` 的源码全在内存里，标题栏是 `LWApp1 (*lpi)`。这与
+Lazarus 自带模板的流程完全一致。
+
+**2. Ctrl+S 才落盘**
+
+弹出的就是 Lazarus 标准的"保存项目"对话框：
+
+- **目录**默认取 IDE 选项里的"项目构建测试的目录"；如果上次存到过别处，
+  这里会显示上次的目录（例如 `C:\3`），直接在对话框里改成你要的目录即可，
+  改一次以后就默认用它；
+- **工程名**别用 `LWApp` —— 它和框架单元 `lwapp.pas` 同名，编译必报
+  `Duplicate identifier "LWAPP"`。默认给的是 `LWApp1`，是安全的；要改就用
+  `LWApp2` / `MyApp` 之类。
+
+**3. 落盘结果**
+
+```
+<目录>\LWApp1.lpr  LWApp1.lpi  umain.pas  umain.lfm
+       build.bat   build.sh    lw\        ← 前端资源（lw.js/lw.css/alpine.min.js…）
+```
+
+`build.bat` / `build.sh`、nogui 档的 `.lpi` 宏、以及 `lw\` 里的前端资源，
+IDE 的工程模型都写不出来，由向导在**保存后约 1 秒**补齐（运行期按
+`exe\lw\<文件>` 找静态资源，所以拷到工程目录下的 `lw\`）。
+
+**4. nogui 档：多一步"重新加载"，否则 F9 用错 widgetset**
+
+保存后约 1 秒会弹出：
+
+> **nogui 档：重新加载工程后生效** —— 已为工程写入 LCLWidgetType=nogui…
+
+点 **"是"**，IDE 立刻按新的 `.lpi` 重读工程，之后 F9 就是无窗口的控制台
+服务。点"否"也行：`.lpi` 已经是 nogui，用工程目录里的 `build.bat` 编译即可，
+下次打开工程自动生效。
+
+> **注意：保存后 1 秒内按 F9，用的还是 win32 widgetset** —— 宏刚写进
+> `.lpi` 文件，IDE 内存里的工程选项还没重读，编出来照样会弹服务端面板窗口。
+> 等那个询问框出现、点"是"之后再 F9 就对了。
+
+**5. 出问题时**
+
+- **弹"文件未找到 …\umain.pas"**：工程目录只剩半截文件（`.lpi`/`.lpr` 在、
+  `umain.pas` 没有）。这是早期版本在保存事务里重载工程留下的（详见
+  `NOTES.md` 坑 172），当前版本保存期间不弹框、不重载，不会再出现。
+  处理：**项目 → 关闭项目**，重新新建一个。
+- **F9 仍然弹出面板窗口**：确认弹"重新加载"时点了"是"，且工程不是改名后
+  又用旧 `.lpi`；也可直接用工程目录里的 `build.bat` 对比（nogui 档里是
+  `lazbuild -B --ws=nogui <工程名>.lpi`，GUI 档不带 `--ws`）。
+- **看日志**：`%TEMP%\lazarusweb-wizard.log` 每次补写记一行 —— `.lpi` 路径、
+  档位（`headless=gui|nogui`）、是否插入宏（`widgetset: inserted=True`）、
+  客户端资源拷了几个文件、有没有在等保存结束（`保存还没写完，等下一轮`）。
+  补没补上，看这个文件最直接。
+
+非 IDE 场景（CI、脚本化出工程）：
+
+```
+tools\lwnew.exe --name=CliDemo --dir=D:\proj\CliDemo --gui
+```
+
+同一套骨架，同样会把 `src/client` 拷到工程下的 `lw\`。
 
 ### 移动端：手机 / 窄窗口自适应（业务代码零改动）
 
@@ -305,12 +386,18 @@ end;
 ```
 --config=path  --port=  --root=  --form=  --client=alpine|ext  --ext=
 --extdir=  --theme=  --title=  --timeout=  --trust-proxy  --ajax-cors
+--ssl  --ssl-host=  --ssl-cert=  --ssl-key=
 --verbose  --nogui  --patch=1  --log=path  --help
 ```
 
 INI 配置（模板 `lazarusWeb.ini.sample`，放 exe 旁改名 `<exe名>.ini` 或
-`lazarusWeb.ini`）：`Port` / `Theme` / `ExtDir` / `Patch` / `Client`。
+`lazarusWeb.ini`）：`Port` / `Theme` / `ExtDir` / `Patch` / `Client` /
+`SSL` / `SSLHost` / `SSLCert` / `SSLKey`。
 优先级：**内置默认 < 配置文件 < 命令行**。编码须 UTF-8 或纯 ASCII。
+
+`--ssl-host` / INI `SSLHost` 是证书主机名，填浏览器地址栏中的域名或 IP，
+须与证书 SAN 一致；它不是监听地址。正式 CA / 私有 CA 的非自签证书命令行
+范例见 `deploy/README.md` §1.1。
 
 渲染层二选一（**默认 Alpine.js**：`--client` 不指定时自动探测——两套都
 可用优先 alpine，只有一套用在那套；alpine 文件内置恒可用，所以实际默认
@@ -321,20 +408,52 @@ INI 配置（模板 `lazarusWeb.ini.sample`，放 exe 旁改名 `<exe名>.ini` �
 - `ext`：Ext JS，需要 `ext-x.x.x/` 目录（约 75MB）；`--client=ext`、
   INI `Client=ext` 或 URL `?client=ext` 显式启用。协议两者完全一致。
 
-### 5.1 Alpine 渲染层的配色（亮色 / 深色 / 跟随系统）
+### 5.1 Alpine 渲染层的配色（7 套 + 跟随系统）
 
-只有 Alpine 渲染层有这一套（Ext 层仍用 `--theme=` 选 Ext 主题）：
+只有 Alpine 渲染层有这一套（Ext 层仍用 `--theme=` 选 Ext 主题）。
 
-- 窗体标题栏右侧有 ☀/☾/◐ 按钮，点开三选一：**亮色 / 深色 / 跟随系统**；
+**7 套配色，分两个色系**：
+
+| 配色 | 名称 | 适合 |
+|---|---|---|
+| `light` | 亮色 | 默认，蓝灰商务风 |
+| `paper` | 米黄纸张 | 长时间阅读表格/文档，暖色护眼 |
+| `mint` | 护眼绿 | 白底偏绿的护眼环境 |
+| `contrast` | 高对比 | 白底纯黑字+黑边框，强光/投屏/色弱 |
+| `dark` | 深色 | 通用深色 |
+| `midnight` | 深蓝夜色 | 更冷更蓝的企业后台夜色 |
+| `forest` | 墨绿夜色 | 深色里偏绿，长时间盯日志舒服 |
+
+外加 `auto`（跟随系统，解析成 light 或 dark）。
+
+- 窗体标题栏右侧的 ☀/☾/◐ 按钮，点开是这 8 项；**图标形状表示色系**
+  （太阳=浅色系、月牙=深色系、半圆=跟随系统），**填充色是当前主题的强调色**；
   选择存 `localStorage['lw-theme']`，刷新、多标签页保持一致；
 - "跟随系统" 监听 `prefers-color-scheme`，系统切深色时页面即时跟着变；
-- 设计期可在对象检查器设窗体属性 `LWTheme`（`twAuto`/`twLight`/`twDark`，
-  缺省 `twAuto`）作为**首次默认值**；用户手动选过之后以用户本地选择为准；
-- 代码里想强制切换：`LW.theme.set('dark')` / `$lwTheme.set('light')`
-  （`LW.theme.get()` 读偏好，`LW.theme.current()` 读实际生效值）；
+- 设计期可在对象检查器设窗体属性 `LWTheme`（`twAuto`/`twLight`/`twDark`/
+  `twPaper`/`twMint`/`twMidnight`/`twForest`/`twContrast`，缺省 `twAuto`）
+  作为**首次默认值**；用户手动选过之后以用户本地选择为准；
+- 代码里想强制切换：`LW.theme.set('midnight')` / `$lwTheme.set('paper')`
+  （`LW.theme.get()` 读偏好含 auto，`LW.theme.current()` 读实际生效值，
+  `LW.theme.dark()` 判断当前是不是深色系，`LW.theme.modes()` 列全部可选项）；
   不想显示标题栏按钮：`LW.theme.button(false)`；
-- 配色全在 `src/client/lw-alpine.css` 顶部两块 CSS 变量（`:root` 与
-  `html[data-lw-theme="dark"]`），改主题只改颜色值，不用动组件规则。
+- 换主题时会派发 `lw:themechange` 事件，`detail = { theme, pref, dark }`。
+  **判断深浅请用 `detail.dark`**，别写 `theme === 'dark'` —— 深色系有三套；
+  自己画 canvas 的业务代码应监听它重绘；
+- 配色全在 `src/client/lw-alpine.css` 顶部（`:root` 亮色 + 深色基准块 +
+  各变体覆盖块，共 61 个 `--lw-*` 变量），组件规则里没有颜色字面量。
+  新增主题的做法与约束见文件头注释和 `NOTES.md` 坑 174。
+
+> 用了旧工程、看不到新配色？前端资源在**工程目录的 `lw/`** 里，是拷贝副本。
+> 把新版 `src/client` 的三个文件重新拷进去即可：
+>
+> ```
+> copy /Y src\client\lw-alpine.css <你的工程>\lw\
+> copy /Y src\client\lw-alpine.js  <你的工程>\lw\
+> copy /Y src\client\alpine.min.js <你的工程>\lw\
+> ```
+>
+> 新建工程由向导自动拷，不用管。
 
 ## 6. 部署
 
@@ -343,9 +462,12 @@ INI 配置（模板 `lazarusWeb.ini.sample`，放 exe 旁改名 `<exe名>.ini` �
 ```
 yourapp.exe
 src\client\alpine.min.js    Alpine.js 本体（44KB，defer 加载，不走 CDN）
-src\client\lw-alpine.js     渲染/协调器（177KB）
-src\client\lw-alpine.css    样式，含亮/暗主题 CSS 变量（41KB）
+src\client\lw-alpine.js     渲染/协调器（205KB；模板/自适应唯一生效层）
+src\client\lw-alpine.css    样式，含 7 套配色的 CSS 变量（§5.1）
+tpl\                        （可选：桌面/移动窗体模板；仅 Alpine 层使用）
 favicon.ico                 （可选：浏览器标签图标）
+cert\                       （可选：开 SSL 且用自有 PEM 时放 server.crt/server.key/ca.crt）
+libssl-3-x64.dll + libcrypto-3-x64.dll  （可选：开 SSL 时必须放 exe 同目录）
 ```
 
 三个 alpine 文件**缺一不可**：少 `alpine.min.js`（或 `lw-alpine.js`）会被
@@ -375,9 +497,17 @@ Ext JS 渲染层为**可选**（默认不部署）：需要时把 `ext-x.x.x\` �
 **注意**：升级自旧版本时用户浏览器很可能缓存了旧 204 空响应，发布说明里
 提醒一次 Ctrl+F5。
 
-- 应用进程只说 HTTP（无 TLS）；HTTPS 由 nginx/Caddy 反代终结，完整示例
-  在 `deploy/nginx.conf`、`deploy/Caddyfile`（含 `/lw/ws` Upgrade、
-  `/lw/api/poll` 不缓冲、100MB 上传上限、`/ext/` 缓存）；
+- HTTPS 两种做法：① **FPC 自带**：业务 exe 或 lwhyper 加 `--ssl`，
+  证书不给就自动生成自签证书，随包带 `libssl-3-x64.dll` +
+  `libcrypto-3-x64.dll`（集群只在 lwhyper 外层开，worker 仍明文，见坑 160）；
+  用正式 CA 或私有 CA 证书时加 `--ssl-cert=/--ssl-key=`，`--ssl-host=` 填
+  证书 SAN 中的域名/IP，完整范例见 `deploy/README.md` §1.1；
+  ② nginx/Caddy 反代终结，示例在 `deploy/nginx.conf`、`deploy/Caddyfile`
+  （含 `/lw/ws` Upgrade、`/lw/api/poll` 不缓冲、100MB 上传上限、`/ext/` 缓存）；
+- TLS 安全基线：当前随包 OpenSSL 3.x 实测支持 **TLS 1.2 / TLS 1.3**，
+  应用内不提供最低版本、cipher suite、mTLS、HSTS 或证书热重载配置；需要
+  这些能力时在 nginx/Caddy 外层显式配置并终结 TLS。项目未显式启用 HTTP/2，
+  `TFPHttpServer.UseSSL` 不等于浏览器一定走 h2；
 - 反代后面加 `--trust-proxy`（日志里的 IP 才是真实客户端）；
 - 健康探针 `GET /lw/healthz`；
 - 单机多 worker：用自带负载器 `tools\lwhyper.exe`（对标 uniGUI Hyper
@@ -419,7 +549,7 @@ Ext JS 渲染层为**可选**（默认不部署）：需要时把 `ext-x.x.x\` �
 | 模板"半套"（部分控件跑版） | 占位符写了不存在的控件名会整体回退，不会半套；出现跑版多半是模板 CSS 层级写错（占位符 > .lw-n > .lw-body 隔层，见开发篇 16.3） |
 | 从 AI 终端/脚本启动的服务跑一会儿就消失、无日志 | 命令跑在 kill-on-job-close 的 Job Object 里被回收；后台任务方式也可能在轮次结束后被收走 → 用 `Start-Process`（脱离 Job）或真实用户终端启动（坑 108/145） |
 
-更多案例与调试方法论：`docs/DEBUGGING.md`；159 个坑按编号检索
+更多案例与调试方法论：`docs/DEBUGGING.md`；167 个坑按编号检索
 `docs/NOTES.md`（坑 23/66/108 等旧结论已被后续坑修订，以标注为准）。
 
 ## 9. 已知限制
@@ -568,27 +698,63 @@ python tests/run_with_server.py <exe路径> <测试脚本> [端口] [exe额外�
    `<窗体名>.m.html`（移动，单列流式）；文件已存在会逐份询问是否覆盖；
 3. 生成内容：文件头注释列出解析到的顶层控件清单（含类名与设计期几何）、
    每个控件的 `{%控件名%}` 占位符、基础 CSS（宽 100%/百分比宽、
-   **按设计期逐控件定高**——搬迁会清掉内联宽高，不定高容器会塌陷）；
+   **按设计期逐控件定高**——搬迁会清掉内联宽高，不定高容器会塌陷）。
+   两条尺寸规则值得先弄清楚，它们决定生成结果能不能直接用：
+   - **主区域按容器高度伸缩**：有个控件横向 ≥85% 窗体宽、纵向 ≥50% 纵向
+     占用（典型是铺满窗体的 `TPageControl` / 主 `TPanel`，如 gallery 的
+     `pcMain` 1800×900 / 窗体 1800×1110），生成的是
+     `height: calc(100% - 其它控件高度)` + `min-height:240px`，而不是
+     写死 900px —— 否则 720p 窗口里底部控件会被顶出可视区、手机上要多滚
+     一屏。只认最高的那一个，避免两个控件同时伸缩。
+     注意是**容器**（窗体客户区 `.lw-tpl`）不是视口：窗体开在浮窗里时
+     客户区比视口小（dbaware 主窗体实测 720 vs 900），用 `100vh` 会整块
+     溢出，见坑 164。「其它控件高度」在桌面端**按行**累计（同一行只占一份
+     高度，报表窗顶排 6 个控件 = 28px 而不是 6×28），移动端是单列直加；
+   - **百分比宽扣掉 gap**：桌面 `flex: 0 0 calc(50% - 10px)`。写成
+     `flex: 0 0 50%` 时 `50%+50%+gap` 超过一行，本该并排的控件会被换成
+     上下两行；
    带子控件的顶层容器（TPanel/TGroupBox 等）另生成两条兜底规则
    （`overflow:hidden` 裁剪 + 内部控件 `max-width:calc(100% - 16px)` 收宽，
-   避免容器被模板改窄后内部绝对定位控件溢出，坑 155）；
-4. 把两份文件拷到**运行根目录**的 `tpl\`（或工程目录就是运行根目录时
+   避免容器被模板改窄后内部绝对定位控件溢出，坑 155）。页签
+   （TPageControl/TTabControl）不生成兜底：客户端 `.lw-tabs` 自身
+   `height:100%` + flex 列、`.lw-tabcard` 绝对铺满并 `overflow:hidden`，
+   页内容已被裁剪；
+4. 生成时做自检并弹窗报告：跳过的非可视控件、非法/重复占位符名、缺少几何、
+   设计期宽度超过窗体宽、含嵌套子控件、主区域被改成视口伸缩等；同一份报告
+   也写进模板文件头（`自检提示` 段）；
+5. 把两份文件拷到**运行根目录**的 `tpl\`（或工程目录就是运行根目录时
    生成完即生效），刷新浏览器即见模板接管；之后按 16.2/16.3 精修。
 
 解析范围：窗体**顶层可视控件**（按 Top/Left 排成视觉顺序）；数据源、
-对话框、菜单、图片列表等非可视控件与状态栏自动跳过。解析是行级近似，
-多行字符串里恰有独立 `end` 行的 lfm 不支持（遇到即生成结果异常，手工
-修一下生成的模板即可）。
+对话框、菜单、图片列表等非可视控件与状态栏自动跳过。解析按“对象层级 +
+集合 item 块 + 括号字符串块”三态推进，`TListView.Columns` 这类集合中的
+`end`/`end>` 与多行字符串中的 `end` 不再误伤对象层级（坑 163，
+以 `demos/gallery/ugallery.lfm` 为回归样本）。模板 v1 仍只重排顶层，
+容器内部需要按 16.3 手工精修。
+
+回归分两层：`tests/tplgen_test.lpr` 对 mobile_demo、gallery、dbaware 三个
+demo 的 6 个窗体与 `tests/fixtures/tpl_two_cols.lfm`（两列等宽）做字符串断言；
+真实渲染盒由两个 CDP 探针量：
+`tests/cdp_tplgen_gallery.py`（桌面 1600×900 / 移动 / 手机 390×844 三档视口，
+主区域高度 = 客户区高 − 220、无横向溢出）与
+`tests/cdp_tplgen_dbaware.py`（登录页桌面与手机、主窗体桌面与手机；
+主区域 = 客户区高、页签容器不塌陷）。两者都断言
+`tpl.scrollHeight - tpl.clientHeight ≤ 1`，即模板内容不溢出客户区 ——
+这条判据正是"按 100vh 排版"的直接后果（坑 164）。均已接入
+`tests/run_fixed_regression.py --with-cdp`。
 
 ### 16.1 文件与路由
 
-- 模板路径：`<root>\tpl\<窗体名>.m.html`（移动）/ `<root>\tpl\<窗体名>.html`
-  （桌面）（`--root` 指定目录，缺省 exe 目录；在仓库根目录跑 demo 时即
-  `<仓库根>\tpl\`，mobile_demo 就是这样）；
-- 下发：`GET /lw/tpl/<窗体名>`（自动带对应后缀），响应带
-  `Cache-Control: no-store` —— **改模板刷新页面即生效，不用重编译**；
+- 模板路径：先查 `<root>\tpl\`，找不到再查 `<exe目录>\tpl\`；文件名分别是
+  `<窗体名>.m.html`（移动）与 `<窗体名>.html`（桌面）。`--root` 未指定时由
+  `LWResolveRoot` 从当前目录/exe 目录向上探测，不能简单等同于“永远是 exe 目录”；
+  `demos/mobile_demo` 的模板位于 `demos\mobile_demo\tpl\`，靠 exe 旁回退生效；
+- 下发：客户端按模式请求 `GET /lw/tpl/<窗体名>.m.html` 或
+  `GET /lw/tpl/<窗体名>.html`，响应带 `Cache-Control: no-store` —— **改模板内容
+  刷新页面即生效，不用重编译**；客户端还缓存 404，首次为窗体新增模板需重开页签；
 - 安全：文件名挡路径穿越（越界回 403）；模板不存在回 404，客户端
   静默回退设计期布局，页面不报错。
+- 注意：模板只在 Alpine 渲染层生效；`--client=ext` 时模板被忽略。
 
 ### 16.2 模板写法与搬迁语义
 
@@ -656,10 +822,26 @@ fetch 对应端的模板，把每个占位符替换成该控件的**既有 DOM �
 
 ### 16.5 测试
 
-统一跑法见第 14 节；模板相关 CDP 探针（需无头 Edge，调试端口 9239）：
+统一跑法见第 14 节；固定回归入口（文件/跟踪、模板生成器、TLS 参数校验与
+HTTPS healthz，不依赖浏览器）：
+
+```
+python tests/run_fixed_regression.py
+```
+
+模板相关 CDP 探针（需无头 Edge，调试端口 9239；也可用
+`python tests/run_fixed_regression.py --with-cdp` 一并执行）：
 
 ```
 python tests/cdp_desktop_tpl.py    # 桌面模板：套用/几何不变/三态切换/无模板回退 7 项
+python tests/cdp_tplgen_gallery.py # 生成器产物（gallery）：三档视口量主区域高度 7 项
+python tests/cdp_tplgen_dbaware.py # 生成器产物（dbaware）：登录页 + 浮窗主窗体 6 项
+python tests/cdp_dbaware_dark.py   # 深色主题帧内 HTML 可读性（坑 165）：
+                                   #   前提 dbaware.exe --port=8155 LW_CAPTCHA_DEBUG=1
+python tests/cdp_colorpicker.py    # 色块弹调色板锚点 + 选色回写链路（坑 166）：
+                                   #   前提同上（与深色主题探针共用 8155）
+python tests/cdp_dbaware_regress.py # 登录页竖线 + 关浏览器跳过登录（坑 167）：
+                                   #   前提 dbaware.exe --port=8156 LW_CAPTCHA_DEBUG=1
 python tests/cdp_mobile_demo.py    # 模板窗体：桌面/390/切回/硬覆盖/路由 19 项
 python tests/cdp_fit_scale.py      # 无模板回退平移模式 23 项
 python tests/cdp_device_probe.py   # 判定信号 8 场景

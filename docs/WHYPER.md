@@ -2,7 +2,8 @@
 
 lwhyper 是 lazarusWeb 的专用负载均衡器（对标 uniGUI Hyper Server）：一个进程
 托管 N 个业务 worker，对外单端口监听，自带 HTTP 反向代理 + sid 会话粘性 +
-WebSocket TCP 透传。HTTP 场景**不再需要 nginx**（HTTPS 仍需前置反代做 TLS 终结）。
+WebSocket TCP 透传。HTTP 场景**不再需要 nginx**；HTTPS 直接在 lwhyper 加
+`--ssl` 即可（FPC 自带 TLS，worker 之间仍走 HTTP，见 `NOTES.md` 坑 160）。
 
 - 控制台版：`tools\lwhyper.exe`（脚本/服务化部署）
 - GUI 版：`tools\lwhyper_gui.exe`（双击即用，无黑窗口）
@@ -61,7 +62,26 @@ curl --noproxy '*' http://127.0.0.1:8080/lw/hyper/status
 | `--worker-args="..."` | — | **原样追加**到 worker 命令行，空格分隔多个参数 |
 | `--logdir=目录` | `<TEMP>\lwhyper` | worker 日志目录（worker1.log…） |
 | `--verbose` | 关 | 打印每个代理请求 |
+| `--ssl` | 关 | **开 HTTPS（FPC 自带）**：只在外层终结，worker 间仍明文；自签证书零配置可用 |
+| `--ssl-host=名` | — | 证书主机名（浏览器访问的域名/IP，须与证书 SAN 一致；留空用于自动生成自签证书） |
+| `--ssl-cert=文件` / `--ssl-key=文件` | — | 指定 PEM 证书与私钥，须成对指定；相对路径以 `lwhyper.exe` 目录为基准 |
 | `--help` | — | 帮助 |
+
+`--ssl` 需随包带 `libssl-3-x64.dll` + `libcrypto-3-x64.dll`（放 `lwhyper.exe`
+同目录）。启动横幅的 Listen / Status / Health 地址会自动显示为 `https://`。
+
+正式 CA / 私有 CA 的非自签证书写法：
+
+```bat
+lwhyper.exe --port=8443 --ssl --ssl-host=app.example.com ^
+  --ssl-cert=C:\app\cert\fullchain.pem --ssl-key=C:\app\cert\privkey.pem ^
+  --workers=3 --exe=MyLWApp.exe
+```
+
+`--ssl-host` 不是监听端口，也不是 Windows 计算机名；客户端必须用证书 SAN
+里的名字访问，例如 `https://app.example.com:8443/`。局域网 IP/私有 CA 的
+证书生成与完整说明见 `deploy/README.md` §1.1。集群时只在 lwhyper 外层
+终结 HTTPS，worker 间仍明文。
 
 worker 还会自动带上 `--nogui`（不弹服务端面板）与 `--log=<logdir>\workerN.log`。
 
@@ -140,7 +160,7 @@ tools\lwhyper.exe --port=8080 --workers=2 --exe=demos\gallery\gallery.exe ^
 port=8096
 workers=2
 baseport=0
-exe=C:/lazarusWeb/demos/gallery/gallery.exe
+exe=C:/lazarusWeb/demos/gallery/gallery_nogui-x86_64-win64.exe
 root=
 theme=
 logdir=C:/Users/szlbz/AppData/Local/Temp/lwhyper_gui
@@ -148,6 +168,32 @@ extra=--patch=1
 verbose=0
 autostart=1
 ```
+
+**HTTPS**：面板「配置」区新增一行 `启用 HTTPS (TLS)` 复选框 + 证书主机名 +
+PEM 证书 / 私钥（各带「浏览...」按钮）。勾上复选框即可用自签证书起 HTTPS，
+PEM 两项留空就是自签；要指定自己的证书，两项必须**同时**填（只填一项会在
+点「启动」时就被拦下，报"证书与私钥必须同时指定"），且文件须存在。
+勾选后「打开浏览器」按钮和状态栏地址自动变成 `https://`。PEM 证书与私钥
+统一放在 exe 同级的 `cert\` 目录；两个「浏览...」按钮默认从该目录打开。
+
+「证书主机名」填浏览器地址栏里的域名或 IP，必须与证书 SAN 一致（例如
+`app.example.com` 或 `192.168.1.90`）；它不是监听地址。用正式 CA 证书时
+按证书域名填，用内网私有 CA 时按证书里的 IP/内网域名填。只开自签时可以留空。
+非自签证书的 OpenSSL 生成与启动范例见 `deploy/README.md` §1.1。
+
+对应的 cfg 键（与界面一一对应，界面改动会自动写回；下面是 HTTPS 示例，
+日常 HTTP 保持 `ssl=0` 且证书三项留空）：
+
+```ini
+ssl=1
+sslhost=app.example.com     ; 证书 SAN 中的域名/IP；留空 = 自动生成自签证书
+sslcert=C:/app/cert/cert.pem ; 与 sslkey 成对指定；都留空用自签
+sslkey=C:/app/cert/key.pem
+```
+
+同样要随包带 `libssl-3-x64.dll` + `libcrypto-3-x64.dll`（放 exe 同目录）。
+GUI 版与控制台版共用 `src/core/lwhyper.pas`，TLS 只在 lwhyper 外层终结，
+worker 之间仍是 HTTP。
 
 - `extra` 等价于控制台版的 `--worker-args`；
 - `autostart=1`：启动即自动点「启动」，拉起服务（无头部署/CI 冒烟用）；

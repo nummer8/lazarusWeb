@@ -3,7 +3,7 @@
 > 版本 0.9.6 · 更新日期 2026-11-16
 > 配套文档：`README.md`（快速上手）、`docs/COMPARISON_unigui.md`（与 uniGUI 对照）、
 > `docs/CONTROL_MATRIX.md` / `docs/DB_AWARE_MATRIX.md`（控件支持度实测矩阵）、
-> `docs/NOTES.md`（159 个坑的踩坑实录，坑 23/66/108 等旧结论已被后续坑修订）、`deploy/README.md`（HTTPS/反向代理/集群）。
+> `docs/NOTES.md`（163 个坑的踩坑实录，坑 23/66/108 等旧结论已被后续坑修订）、`deploy/README.md`（HTTPS/反向代理/集群）。
 
 ---
 
@@ -274,7 +274,7 @@ CSS 三件套是否存在回落 crisp → classic → neptune，都不再写死�
 | `lwdiff.pas` | 增量补丁（`--patch=1`）：两次 BuildPayload 的 forms 数组 diff 出 ops，客户端按 `tver` 自愈回全量（设计见 `docs/SCALE.md` §2） |
 | `lwui.pas` | `TLWGauge` / `TLWColorPicker` / 会话级遮罩 |
 | `lwweb.pas` | `TLWHTMLFrame` / `TLWPDFFrame` 富内容显示 |
-| `lw-alpine.js` | **第二渲染层**（Alpine.js 3.14.9）：`--client=alpine` 或 URL `?client=alpine` 启用，协议与 lw.js 完全一致，无需 ext-\<版本\> 目录（坑 89–97） |
+| `lw-alpine.js` | **默认渲染层**（Alpine.js 3.14.9）：无需 ext-\<版本\> 目录；Ext JS 为可选层，需 `--client=ext` 显式启用（坑 89–97） |
 | `lwajax.pas` | `TLWApp.AddAjax(name, handler)` 自定义端点；上下文给 Param/Header/JSONBody/Session；未注册名回 404 并自省列出全部端点 |
 | `lwwebsocket.pas` | `/lw/ws` 升级（RFC6455）：**只传事件请求/响应**；推送一律由长轮询游标下发（`OnPushCommand` WS 直推保留但默认不启用） |
 | `lwhyper.pas` | 专用负载均衡器（对标 uniGUI Hyper Server）：单进程拉起 N 个 worker（同 exe 多开）、崩溃自动重启、HTTP 反向代理 + sid 会话粘性、WebSocket TCP 级透传、healthz 巡检；`tools/lwhyper.exe` 是入口，自身端点 `/lw/healthz`（汇总）与 `/lw/hyper/status`（worker 明细） |
@@ -450,13 +450,15 @@ TMainForm = class(TLWForm)   // 原来是 class(TForm)
 ### 3.5 部署
 
 - **自包含部署（默认 Alpine 层）**：exe + `src/client/alpine.min.js`（约 44KB）
-  + `lw-alpine.js`（约 177KB）+ `lw-alpine.css`（约 41KB）；不需要 `ext-*` 目录。
+  + `lw-alpine.js`（约 205KB）+ `lw-alpine.css`（约 47KB）；不需要 `ext-*` 目录。
   三个 Alpine 文件缺一不可（缺 js 会回退探测 Ext，缺 css 页面无样式），
   启动横幅会打印实际采用的 `Client`；
   **可选 Ext 层**：另加 `ext-x.x.x/`（约 75MB）+ `lw.js` + `lw.css`，
   并用 `--client=ext` 显式启用；
-- **HTTPS**：fphttpserver 无 TLS，由 nginx/Caddy 反代终结
-  （现成配置 `deploy/nginx.conf`、`deploy/Caddyfile`）。反代后加 `--trust-proxy`；
+- **HTTPS**：FPC 自带 `TFPHttpServer.UseSSL`，业务 exe 或 lwhyper 加 `--ssl`
+  即可在同端口终结 TLS（自签证书零配置，随包带 OpenSSL DLL，见坑 160）；
+  也可由 nginx/Caddy 反代终结（现成配置 `deploy/nginx.conf`、`deploy/Caddyfile`，
+  反代后加 `--trust-proxy`）；
   nginx 的 `/lw/ws` location 必须带 `Upgrade/Connection` 头，否则 WS 静默退化成长轮询；
 - **集群**：两种方案。① **lwhyper 专用负载器**（对标 uniGUI Hyper Server）：
   `lwhyper.exe --port=8080 --workers=3 --exe=<业务exe>`，一个进程搞定
@@ -494,7 +496,7 @@ TMainForm = class(TLWForm)   // 原来是 class(TForm)
 
 ### 3.8 踩坑实录
 
-截至 2026-11-16 共 159 个坑全部沉淀在 `docs/NOTES.md`
+截至 2026-11-16 共 163 个坑全部沉淀在 `docs/NOTES.md`
 （nogui 基础设施 → fpjson/编码 → SQLite/WAL → 设计期包 → multipart 安全 →
 对话框钩子 → WebSocket → 多页签游标 → GUI 面板 → lfm 化改造 → 性能剖析 →
 压测排障），是这份框架最贵的资产——每个坑都带根因分析和验证手段。
