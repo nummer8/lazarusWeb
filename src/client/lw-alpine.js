@@ -2519,6 +2519,13 @@ var LW = (function () {
         applyHint(id, node);
         bindNodeEvents(id, node, w);
 
+        /* TLabeledEdit 的绑定标签：服务端摆位用的是"运行期边界"，而 nogui 下
+           TBoundLabel 的宽高没参与 LFM 的 PPI 折算（编辑框 Top 是折算后的
+           96 值、标签 Height 还是 144 的原始值），首屏位置必然带缝；渲染
+           后按真实矩形重贴一次。之前只在补丁轮（updateNode）里精修，首次
+           创建没挂 —— 首屏永远错，直到第一次事件往返才被纠正。 */
+        try { if (node.boundfor) fixBoundLabel(id); } catch (e) { }
+
         /* 容器：递归渲染子节点 */
         if (isContainer(node)) {
             var body = containerBody(w, k);
