@@ -15,10 +15,7 @@
       <Macro1 Name="LCLWidgetType" Value="nogui"/>
     </MacroValues>
     <BuildModes>
-      <Item Name="Default" Default="True">
-        <CompilerOptions>
-              </CompilerOptions>
-      </Item>
+      <Item Name="Default" Default="True"/>
       <SharedMatrixOptions Count="1">
         <Item1 ID="887263001544" Modes="Default" Type="IDEMacro" MacroName="LCLWidgetType" Value="nogui"/>
       </SharedMatrixOptions>
@@ -30,6 +27,12 @@
       <FormatVersion Value="2"/>
     </RunParams>
     <RequiredPackages>
+      <Item>
+        <PackageName Value="lwserver"/>
+      </Item>
+      <Item>
+        <PackageName Value="lwcore"/>
+      </Item>
       <Item>
         <PackageName Value="LCL"/>
       </Item>
@@ -62,15 +65,13 @@
     </Target>
     <SearchPaths>
       <IncludeFiles Value="$(ProjOutDir)"/>
-      <UnitOutputDirectory Value="lib/$(TargetCPU)-$(TargetOS)"/>
       <OtherUnitFiles Value="../../src/core"/>
+      <UnitOutputDirectory Value="lib/$(TargetCPU)-$(TargetOS)"/>
     </SearchPaths>
     <Linking>
-      <Options>
-        <Win32>
-          <GraphicApplication Value="False"/>
-        </Win32>
-      </Options>
+      <Debugging>
+        <DebugInfoType Value="dsDwarf3"/>
+      </Debugging>
     </Linking>
   </CompilerOptions>
 </CONFIG>

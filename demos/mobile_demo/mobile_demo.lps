@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CONFIG>
+  <ProjectSession>
+    <PathDelim Value="\"/>
+    <Version Value="12"/>
+    <BuildModes Active="Default"/>
+    <Units>
+      <Unit>
+        <Filename Value="mobile_demo.lpr"/>
+        <IsPartOfProject Value="True"/>
+        <EditorIndex Value="1"/>
+        <CursorPos X="16" Y="15"/>
+        <UsageCount Value="22"/>
+        <Loaded Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="uMobileMain.pas"/>
+        <IsPartOfProject Value="True"/>
+        <ComponentName Value="MobileMainForm"/>
+        <HasResources Value="True"/>
+        <ResourceBaseClass Value="Form"/>
+        <IsVisibleTab Value="True"/>
+        <TopLine Value="31"/>
+        <CursorPos X="20" Y="38"/>
+        <UsageCount Value="22"/>
+        <Loaded Value="True"/>
+        <LoadedDesigner Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="tpl\MobileMainForm.html"/>
+        <EditorIndex Value="-1"/>
+        <UsageCount Value="10"/>
+        <DefaultSyntaxHighlighter Value="HTML"/>
+      </Unit>
+    </Units>
+    <JumpHistory HistoryIndex="3">
+      <Position>
+        <Filename Value="uMobileMain.pas"/>
+      </Position>
+      <Position>
+        <Filename Value="mobile_demo.lpr"/>
+        <Caret Line="15" Column="7"/>
+      </Position>
+      <Position>
+        <Filename Value="uMobileMain.pas"/>
+        <Caret Line="35" Column="34" TopLine="31"/>
+      </Position>
+      <Position>
+        <Filename Value="uMobileMain.pas"/>
+        <Caret Line="38" Column="20" TopLine="31"/>
+      </Position>
+    </JumpHistory>
+    <RunParams>
+      <FormatVersion Value="2"/>
+      <Modes ActiveMode=""/>
+    </RunParams>
+  </ProjectSession>
+</CONFIG>

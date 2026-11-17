@@ -1,0 +1,265 @@
+object MenuHtmlForm: TMenuHtmlForm
+  Left = 200
+  Height = 1050
+  Top = 80
+  Width = 1620
+  Caption = 'lazarusWeb · HTML 菜单 + LCL 控件联动（Alpine.js）'
+  ClientHeight = 1050
+  ClientWidth = 1620
+  Color = clBtnFace
+  DesignTimePPI = 144
+  Font.CharSet = GB2312_CHARSET
+  Font.Color = clWindowText
+  Font.Height = -20
+  Font.Name = 'Microsoft YaHei'
+  LCLVersion = '4.8.0.0'
+  OnCreate = FormCreate
+  object pnlTop: TPanel
+    Left = 0
+    Height = 66
+    Top = 0
+    Width = 1620
+    Align = alTop
+    BevelOuter = bvNone
+    ClientHeight = 66
+    ClientWidth = 1620
+    ParentBackground = False
+    TabOrder = 0
+    object lblGreeting: TLabel
+      Left = 24
+      Height = 31
+      Top = 18
+      Width = 282
+      Caption = '深圳市xxx管理员晚上好！'
+      Font.Height = -24
+      Font.Style = [fsBold]
+      ParentFont = False
+    end
+  end
+  object hfMenu: TLWHTMLFrame
+    Left = 0
+    Height = 984
+    Top = 66
+    Width = 348
+    Align = alLeft
+    BevelOuter = bvNone
+    TabOrder = 1
+  end
+  object pcMain: TPageControl
+    Left = 348
+    Height = 984
+    Top = 66
+    Width = 1272
+    ActivePage = tsSignup
+    Align = alClient
+    TabIndex = 0
+    TabOrder = 2
+    OnChange = pcMainChange
+    object tsSignup: TTabSheet
+      Caption = '报名查询'
+      ClientHeight = 944
+      ClientWidth = 1264
+      object lblName: TLabel
+        Left = 30
+        Height = 27
+        Top = 39
+        Width = 100
+        Caption = '考生姓名：'
+      end
+      object lblYear: TLabel
+        Left = 450
+        Height = 27
+        Top = 39
+        Width = 140
+        Caption = '计划考试年份：'
+      end
+      object edtName: TEdit
+        Left = 150
+        Height = 35
+        Top = 33
+        Width = 270
+        TabOrder = 0
+      end
+      object cboYear: TComboBox
+        Left = 606
+        Height = 35
+        Top = 33
+        Width = 180
+        ItemHeight = 27
+        ItemIndex = 2
+        Items.Strings = (
+          '2024'
+          '2025'
+          '2026'
+          '2027'
+        )
+        TabOrder = 1
+        Text = '2026'
+      end
+      object btnSignupQuery: TButton
+        Left = 30
+        Height = 45
+        Top = 105
+        Width = 135
+        Caption = '查询'
+        TabOrder = 2
+        OnClick = btnSignupQueryClick
+      end
+      object lblSignupStatus: TLabel
+        Left = 195
+        Height = 24
+        Top = 114
+        Width = 108
+        Caption = '（等待查询）'
+        Font.Color = clGray
+        ParentFont = False
+      end
+      object sgSignup: TStringGrid
+        Left = 30
+        Height = 660
+        Top = 174
+        Width = 1185
+        ColCount = 6
+        FixedCols = 0
+        RowCount = 2
+        TabOrder = 3
+      end
+    end
+    object tsScore: TTabSheet
+      Caption = '成绩查询'
+      ClientHeight = 944
+      ClientWidth = 1264
+      object lblScoreName: TLabel
+        Left = 30
+        Height = 27
+        Top = 39
+        Width = 100
+        Caption = '考生姓名：'
+      end
+      object edtScoreName: TEdit
+        Left = 150
+        Height = 35
+        Top = 33
+        Width = 270
+        TabOrder = 0
+      end
+      object btnScoreQuery: TButton
+        Left = 450
+        Height = 45
+        Top = 30
+        Width = 135
+        Caption = '查询'
+        TabOrder = 1
+        OnClick = btnScoreQueryClick
+      end
+      object lblScoreStatus: TLabel
+        Left = 615
+        Height = 24
+        Top = 42
+        Width = 108
+        Caption = '（等待查询）'
+        Font.Color = clGray
+        ParentFont = False
+      end
+      object sgScore: TStringGrid
+        Left = 30
+        Height = 729
+        Top = 105
+        Width = 1185
+        FixedCols = 0
+        RowCount = 2
+        TabOrder = 2
+      end
+    end
+    object tsStat: TTabSheet
+      Caption = '成绩统计'
+      ClientHeight = 944
+      ClientWidth = 1264
+      object btnStat: TButton
+        Left = 30
+        Height = 45
+        Top = 30
+        Width = 135
+        Caption = '统计'
+        TabOrder = 0
+        OnClick = btnStatClick
+      end
+      object lblStatStatus: TLabel
+        Left = 195
+        Height = 24
+        Top = 42
+        Width = 108
+        Caption = '（等待统计）'
+        Font.Color = clGray
+        ParentFont = False
+      end
+      object sgStat: TStringGrid
+        Left = 30
+        Height = 729
+        Top = 105
+        Width = 1185
+        ColCount = 4
+        FixedCols = 0
+        RowCount = 2
+        TabOrder = 1
+      end
+    end
+    object tsSchedule: TTabSheet
+      Caption = '考试安排表下载'
+      ClientHeight = 944
+      ClientWidth = 1264
+      object mmoNotice: TMemo
+        Left = 30
+        Height = 645
+        Top = 24
+        Width = 1185
+        Lines.Strings = (
+          '考生须知'
+        )
+        ReadOnly = True
+        ScrollBars = ssVertical
+        TabOrder = 0
+      end
+      object btnDownload: TButton
+        Left = 30
+        Height = 48
+        Top = 690
+        Width = 240
+        Caption = '下载考试安排表'
+        TabOrder = 1
+        OnClick = btnDownloadClick
+      end
+      object lblDlStatus: TLabel
+        Left = 300
+        Height = 24
+        Top = 702
+        Width = 363
+        Caption = '（服务端生成 CSV，走框架的令牌下载通道）'
+        Font.Color = clGray
+        ParentFont = False
+      end
+    end
+    object tsOther: TTabSheet
+      Caption = '其他功能'
+      ClientHeight = 944
+      ClientWidth = 1264
+      object lblOther: TLabel
+        Left = 36
+        Height = 27
+        Top = 42
+        Width = 661
+        Caption = '该菜单项在本 demo 中未实现，仅演示「HTML 菜单 → LCL 页签」联动。'
+      end
+    end
+  end
+  object edtMenuKey: TEdit
+    Left = 0
+    Height = 35
+    Top = 0
+    Width = 180
+    TabOrder = 3
+    Text = 'theory.signup'
+    Visible = False
+    OnChange = edtMenuKeyChange
+  end
+end

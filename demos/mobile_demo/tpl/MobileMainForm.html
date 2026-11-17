@@ -1,0 +1,68 @@
+<!--
+  MobileMainForm 的桌面布局模板 —— 由 lwdesign 的 IDE
+  Tools 菜单「生成 lazarusWeb 窗体模板」自动生成（起始骨架）。
+  {%控件名%} 由浏览器端替换成该控件的既有 DOM 节点：搬迁不重建，
+  事件与增量补丁照旧。占位符引用不存在的控件名时整体回退设计期布局。
+  本文件由 /lw/tpl/ 路由按文件名静态下发（no-store），
+  改动刷新即生效，无需重编译。放置目录：<运行根目录>\tpl\。
+  模板 v1 只重排窗体顶层控件；容器内部仍是绝对定位，精修方法见
+  docs/MANUAL.md 第二篇 16.3（常用 CSS 钩子表）。
+  顶层控件清单（lfm 解析，按视觉顺序）：
+    lblTitle : TLabel  (24,16 417x34)
+    lblName : TLabel  (24,62 80x27)
+    edName : TEdit  (120,58 200x35)
+    btnHello : TButton  (336,58 110x34)
+    camPhoto : TLWCamera  (456,58 130x34)
+    pnlInfo : TPanel  (24,108 560x96)
+    imgPhoto : TImage  (592,108 204x96)
+    memLog : TMemo  (24,216 772x300)
+    btnClear : TButton  (24,516 110x34)
+  桌面模板宽度比例基准：窗体 Width=820
+-->
+
+<style>
+  /* 流式换行：每个占位符按设计期宽度比例（Width/820）取百分比宽，
+     近似保持横向布局关系；可自由改成双栏/卡片等 */
+  .tpl-mobilemainform { display: flex; flex-wrap: wrap; gap: 10px;
+              align-items: flex-start; }
+  .tpl-mobilemainform > .lw-ph { margin: 0; box-sizing: border-box; }
+  .tpl-mobilemainform > .lw-ph > .lw-n { width: 100% !important; }
+  /* 面板/页签内容层随包装层撑满 */
+  .tpl-mobilemainform > .lw-ph > .lw-n > .lw-body,
+  .tpl-mobilemainform > .lw-ph > .lw-n > .lw-memo {
+      width: 100% !important; height: 100% !important; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="lblTitle"] { flex: 0 0 51%; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="lblTitle"] > .lw-n { height: 34px !important; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="lblName"] { flex: 0 0 10%; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="lblName"] > .lw-n { height: 27px !important; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="edName"] { flex: 0 0 24%; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="edName"] > .lw-n { height: 35px !important; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="btnHello"] { flex: 0 0 13%; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="btnHello"] > .lw-n { height: 34px !important; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="camPhoto"] { flex: 0 0 18%; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="camPhoto"] > .lw-n { height: 34px !important; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="pnlInfo"] { flex: 0 0 66%; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="pnlInfo"] > .lw-n { height: 96px !important; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="imgPhoto"] { flex: 0 0 25%; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="imgPhoto"] > .lw-n { height: 96px !important; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="memLog"] { flex: 0 0 94%; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="memLog"] > .lw-n { height: 300px !important; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="btnClear"] { flex: 0 0 13%; }
+  .tpl-mobilemainform > .lw-ph[data-lw-ph="btnClear"] > .lw-n { height: 34px !important; }
+  /* 容器 pnlInfo (TPanel) 内部仍是设计期绝对定位
+     （模板 v1 只重排顶层）；容器被模板改宽后内部控件可能溢出，
+     这里按 LCL 语义（容器裁剪子控件）兜底，重排内部见手册 16.3 */
+  .tpl-mobilemainform [data-lw-ph="pnlInfo"] > .lw-n > .lw-body { overflow: hidden; }
+  .tpl-mobilemainform [data-lw-ph="pnlInfo"] .lw-body .lw-n { max-width: calc(100% - 16px); }
+</style>
+<div class="tpl-mobilemainform">
+  {%lblTitle%} <!-- TLabel -->
+  {%lblName%} <!-- TLabel -->
+  {%edName%} <!-- TEdit -->
+  {%btnHello%} <!-- TButton -->
+  {%camPhoto%} <!-- TLWCamera：点了唤起系统相机 -->
+  {%pnlInfo%} <!-- TPanel -->
+  {%imgPhoto%} <!-- TImage：浏览器本地回显拍到的照片 -->
+  {%memLog%} <!-- TMemo -->
+  {%btnClear%} <!-- TButton -->
+</div>
