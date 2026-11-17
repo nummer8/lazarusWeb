@@ -116,7 +116,7 @@ type
 implementation
 
 uses
-  lr_e_fclpdf, LR_E_IMG;
+  lr_e_fclpdf, LR_E_IMG, LR_progr;
 
 { ---------------- TLazReportCwd ---------------- }
 
@@ -149,6 +149,26 @@ begin
   FOwner := TComponent.Create(nil);
   FReport := TfrReport.Create(FOwner);
   FReport.OnGetValue := @DoGetValue;
+  { 服务端渲染必须关掉 LazReport 的进度窗体。
+    那是 TfrProgressForm：一个模态窗体 + 一个 LCL TTimer（Timer1）。在
+    服务端它有两个致命问题：
+      1) 模态窗体没有意义（没人点"取消"，也没有主消息循环去转它）；
+      2) Timer1.Enabled := True 要靠 widgetset 分配系统定时器：nogui 的实现
+         永远返回 0，win32 的服务工作线程也可能分配不到 → 一律抛
+         EOutOfResources「No timers available」（NOTES 坑 48 / 坑 177）。
+    关掉后 DoPrepareReport 走 BuildBeforeModal 的非模态分支，纯内存排版。 }
+  FReport.ShowProgress := False;
+  { 但 ShowProgress=False 还不够。非模态分支最后还是会执行
+    `if FinalPass then frProgressForm.ModalDone(mrOk)`，而 ModalDone 里
+    第一件事就是 Timer1.Enabled := True —— 依旧 CreateTimer（nogui 返回 0）
+    → 抛 EOutOfResources。第一次点"生成"必失败，第二次反而好了：SetEnabled
+    在异常前已经把 FEnabled 置成 True，之后就不再重试。
+    这个定时器唯一的活是「250ms 后把 Enabled 置回 False」（给模态窗收尾），
+    无头渲染完全用不到它，所以直接把 OnTimer 摘掉：TCustomTimer.UpdateTimer
+    只在 OnTimer 已赋值时才真的去 CreateTimer，等于让它彻底不碰 widgetset。
+    （同一个套路见 lwdispatch 里对 TTreeView 内部 FChangeTimer 的处理。） }
+  if Assigned(frProgressForm) then
+    frProgressForm.Timer1.OnTimer := nil;
 end;
 
 destructor TLazReportDemo.Destroy;
@@ -709,6 +729,14 @@ begin
   guard := TLazReportCwd.Create(ExtractFilePath(ParamStr(0)));
   try
     try
+      { 上一次生成留下的数据集组件必须先释放。BuildSampleData 每次都建一个
+        名为 HntphbTable 的 TBufDataset，Prepare 又建一个 TfrDBDataset ——
+        它们都挂在同一个 FOwner 下，不释放就重名，TComponent 直接抛
+        EComponentError「Duplicate name」（第二次点"生成报表"必崩）。 }
+      FReport.Dataset := nil;
+      FreeAndNil(FDB);
+      FreeAndNil(FData);
+
       FReport.Pages.Clear;
       FReport.LoadFromFile(FTemplate);
       FixFonts;

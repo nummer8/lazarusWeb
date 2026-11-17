@@ -27,6 +27,15 @@
     </RunParams>
     <RequiredPackages>
       <Item>
+        <PackageName Value="lr_extexp"/>
+      </Item>
+      <Item>
+        <PackageName Value="lr_pdfexport"/>
+      </Item>
+      <Item>
+        <PackageName Value="lazreport"/>
+      </Item>
+      <Item>
         <PackageName Value="LCL"/>
       </Item>
     </RequiredPackages>
@@ -65,7 +74,7 @@
     </SearchPaths>
     <CodeGeneration>
       <SmartLinkUnit Value="True"/>
-                  <SmallerCode Value="True"/>
+      <SmallerCode Value="True"/>
     </CodeGeneration>
     <Linking>
       <Debugging>

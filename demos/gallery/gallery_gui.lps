@@ -8,7 +8,7 @@
       <Unit>
         <Filename Value="gallery_gui.lpr"/>
         <IsPartOfProject Value="True"/>
-        <EditorIndex Value="1"/>
+        <EditorIndex Value="2"/>
         <CursorPos X="52" Y="5"/>
         <UsageCount Value="23"/>
         <Loaded Value="True"/>
@@ -20,7 +20,6 @@
         <HasResources Value="True"/>
         <ResourceBaseClass Value="Form"/>
         <UnitName Value="uGallery"/>
-        <IsVisibleTab Value="True"/>
         <CursorPos Y="5"/>
         <UsageCount Value="23"/>
         <Loaded Value="True"/>
@@ -49,8 +48,30 @@
         <UsageCount Value="10"/>
         <DefaultSyntaxHighlighter Value="Delphi"/>
       </Unit>
+      <Unit>
+        <Filename Value="uLazReportDemo.pas"/>
+        <IsVisibleTab Value="True"/>
+        <EditorIndex Value="1"/>
+        <TopLine Value="102"/>
+        <CursorPos X="16" Y="119"/>
+        <UsageCount Value="10"/>
+        <Loaded Value="True"/>
+      </Unit>
     </Units>
-    <JumpHistory HistoryIndex="-1"/>
+    <JumpHistory HistoryIndex="2">
+      <Position>
+        <Filename Value="ugallery.pas"/>
+        <Caret Line="5"/>
+      </Position>
+      <Position>
+        <Filename Value="uLazReportDemo.pas"/>
+        <Caret Line="48" Column="77" TopLine="25"/>
+      </Position>
+      <Position>
+        <Filename Value="uLazReportDemo.pas"/>
+        <Caret Line="119" Column="16" TopLine="102"/>
+      </Position>
+    </JumpHistory>
     <RunParams>
       <FormatVersion Value="2"/>
       <Modes ActiveMode=""/>
