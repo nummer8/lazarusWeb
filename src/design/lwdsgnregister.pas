@@ -1132,6 +1132,25 @@ begin
     end;
   end;
 
+  { 站点图标 favicon.ico 放**工程根目录**（不是 lw/）：lwhttp 按
+    <root>/favicon.ico → <exe 目录>/favicon.ico 找，exe 就在工程目录里。
+    没有它浏览器标签页是空白图标。放在客户端资源外面单独判一次，因为上面
+    的 client 拷贝只在"lw/lw.js 还不存在"时跑，而图标可能被用户删掉了。 }
+  if not FileExists(IncludeTrailingPathDelimiter(dir) + 'favicon.ico') then
+  begin
+    if srcClient = '' then
+    begin
+      how := '';
+      srcClient := LWFindClientSourceDir(how);
+    end;
+    if srcClient <> '' then
+      LwWizardLog(Format('  favicon: src=%s -> %s, ok=%s',
+        [srcClient, dir + 'favicon.ico',
+         BoolToStr(LWCopyFavicon(srcClient, dir), True)]))
+    else
+      LwWizardLog('  favicon: 没找到 src/client，跳过（' + how + '）');
+  end;
+
   { .lpi 万一还没落盘，EnsureWidgetsetXml 读不到文件会自带返回，不算错 }
   inserted := False;
   EnsureWidgetsetXml(P.ProjectInfoFile, O, inserted);
