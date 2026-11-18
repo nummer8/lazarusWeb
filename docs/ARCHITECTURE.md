@@ -72,12 +72,13 @@ lazarusWeb 是 **Lazarus 桌面程序的 Web 化运行时**：把真实运行的
 1. **判定三量分离，只在前端做**：`layout`（视口宽 + 回滞：≤834 进 /
    ≥1100 出）、`input`（触屏能力）、`capability`（兜底）各判各的，
    根标记挂 `html`；服务端从头到尾不知道设备是什么；
-2. **模板借鉴"占位符"思想自研**：移动模板 `<root>\tpl\<窗体名>.m.html`、
-   桌面模板 `<窗体名>.html`，同用 `{%控件名%}` 占位，客户端 fetch 后把
-   **已构建的 DOM 节点搬迁**进占位符（不重建、不重挂事件）；服务端只做
-   静态文件下发，不解析模板内容；
-3. **搬迁不改逻辑父级**：占位符只是视觉容器，`S.P[id]` 不变，增量补丁
-   机制完全不受影响（坑 149）；占位符对不上控件名就整体回退，绝不半套；
+2. **模板按端分文件 + 模式标记**：桌面窗口与平面模式共用
+   `<root>\tpl\<窗体名>.html`，移动端用 `<窗体名>.m.html`（两文件都只作
+   背景/装饰层）。文件头写 `lw-tpl-mode:window|flat`（两标记并存时 flat 优先）。
+   模板**不重排控件**；控件始终按 LFM 的 `Left/Top` 绝对定位，服务端只做
+   静态文件下发；
+3. **不搬迁、不改逻辑父级**：`S.P[id]` 与 DOM 父级都不变，增量补丁机制
+   完全不受影响；模板缺失/解析失败时整体回退设计期布局，绝不半套；
 4. **无模板也是一等公民**：没配模板的窗体两端都保持设计期所见即所得
    （桌面=绝对定位原样；移动=平移模式，设计尺寸原样、`#lw-root` 滚动、
    字号不缩），保证任何老程序开箱可用、行为与历来完全一致。
@@ -90,11 +91,11 @@ lazarusWeb 是 **Lazarus 桌面程序的 Web 化运行时**：把真实运行的
    结果挂根标记 `html[data-lw-layout]` / `html[data-lw-input]`，
    `matchMedia` 现读 + rAF 去重；硬覆盖 `?layout=` →
    `sessionStorage['lw-layout']` → `LW.layout.set()`，优先级最高；
-2. **配了模板 → 流式重排（DOM 搬迁）**：客户端按当前模式 fetch 对应端
-   模板，把控件**已构建的 DOM 节点整体搬迁**进 `{%控件名%}` 占位符——
-   不重建、事件 id 与增量补丁照旧；移动端窗体贴满视口，桌面端**窗体
-   几何保持设计期**（只有客户区内容变流式，超高滚动）；切到另一端
-   按建树原序搬回再套另一份模板；
+2. **配了模板 → 背景装饰层**：客户端 fetch 同名 `.html`，按文件头标记
+   决定浮窗或整页平面模式；模板作为 `.lw-tpl` 背景层插到客户区最前，
+   `pointer-events:none`；控件 DOM 不动，按设计期绝对坐标绘制；
+   平面模式无标题栏/边框/拖动/缩放，宽高取 max(设计值, 视口)（窄屏保持
+   设计宽、超出部分平移查看，压到视口宽会把右侧控件裁掉），窗口模式保持原几何；
 3. **没配模板 → 设计期所见即所得**：桌面绝对定位原样；移动平移模式
    （设计尺寸原样、贴左、禁拖动、`#lw-root` 滚动，`html[data-lw-pan]`）；
 4. **个别控件换形态**：CSS 按 `data-lw-layout`/`data-lw-input` 切换，
@@ -133,8 +134,9 @@ nogui widgetset 缺显示器、缺画布，直接 `TForm.Create` 就 AV（坑 1�
   含 grid/tree/chart 的 SVG 渲染）；`alpine.min.js` 随包内置下发，不走 CDN；
 - **reconcile**：新树到达后按 id 对账，未变的 DOM 实例不动（保留输入焦点）；
 - 事件捕获：DOM 事件带上 `id/ev/val`（连着 WS 时走 WS 帧，否则 `POST /lw/api/event`）；
-- **窗体模板与移动端适配只在本层实现**（见 2.14）：模板 DOM 搬迁、视口/触屏判定、
-  单列流式排布均在客户端完成；未配模板时仍保持设计期所见即所得；
+- **窗体模板（与 Ext 层共用同一份文件，见 2.14）与移动端适配**：模式判定、
+  背景装饰层与整页/浮窗渲染均在客户端完成；未配模板时仍保持设计期所见即所得；
+  移动端断点/平移回退为本层独有；
 - **长轮询 `/lw/api/poll` 是唯一推送通道**：推送统一入会话队列带序号（模态/消息框/遮罩/下载指令），各页签带 `after` 游标各取各的；
 - **WebSocket `/lw/ws` 只传事件请求/响应**：连上后事件走 WS 帧（长轮询不停），断了自动退回 HTTP `/lw/api/event`；
 - 会话归属：sid 存 **sessionStorage**（页签级）。刷新留在同一会话；
@@ -145,8 +147,9 @@ nogui widgetset 缺显示器、缺画布，直接 `TForm.Create` 就 AV（坑 1�
 
 **可选 Ext 渲染层**：`lw.js` + `ext-<版本>/` 把同一份 JSON 映射到 Ext 组件树，
 需 `--client=ext`（或 `?client=ext`）显式启用并自备 Ext 分发包。两层共用上面的
-reconcile、事件、推送与会话协议；差别只在 DOM 构建方式与样式体系，以及
-Alpine 层独有的窗体模板/移动端适配（Ext 层回退设计期布局）。
+reconcile、事件、推送与会话协议；差别只在 DOM 构建方式与样式体系。
+两层共用同一套窗体模板（`lw-tpl-mode:window|flat`、控件保持设计期绝对坐标、
+平面模式宽高不小于设计值），移动端 `.m.html` 加载与断点/平移回退仅 Alpine 层有。
 
 ### 2.4 lwsession.pas —— 会话与同步模态（976 行）
 
@@ -187,7 +190,7 @@ fphttpserver 多线程服务器，路由表：
 | `GET /lw/download?t=` | 一次性令牌下载（URL 不出现服务端路径） |
 | `GET /lw/ajax/<名字>` | 自定义 AJAX 端点（lwajax 注册） |
 | `GET /lw/healthz` | 健康探针 `{"ok":true,"sessions":..,"uptime":..}` |
-| `GET /lw/tpl/<名称>.m.html、<名称>.html` | 窗体布局模板（方案 B，移动 `.m.html` / 桌面 `.html`）：`<root>\tpl\` → `<exe目录>\tpl\` 两级回退，挡路径穿越（403），响应 no-store（改模板刷新即生效）；占位符对不上时客户端整体回退设计期布局（坑 149） |
+| `GET /lw/tpl/<名称>.html`、`.m.html` | 窗体布局模板（桌面 `.html` 为窗口/平面共用单文件，移动只读 `.m.html`；文件头 `lw-tpl-mode` 标记）：`<root>\tpl\` → `<exe目录>\tpl\` 两级回退，挡路径穿越（403），响应 no-store（改模板刷新即生效）；另兼容探测旧 `.flat.html`（存在即平面优先）；模板缺失时整体回退设计期布局 |
 | `GET /lw/lw-alpine.js、/lw/alpine.min.js…` | 默认 Alpine 层脚本/样式（lw-alpine.js / lw-alpine.css / alpine.min.js） |
 | `GET /lw/lw.js、/lw/lw.css` | 可选 Ext 层脚本/样式（`--client=ext` 时才加载） |
 | `GET /ext/<版本>/...` | 可选 Ext JS 静态资源（任意版本目录，见下；未部署 Ext 时不请求） |
@@ -280,7 +283,7 @@ CSS 三件套是否存在回落 crisp → classic → neptune，都不再写死�
 | `lwhyper.pas` | 专用负载均衡器（对标 uniGUI Hyper Server）：单进程拉起 N 个 worker（同 exe 多开）、崩溃自动重启、HTTP 反向代理 + sid 会话粘性、WebSocket TCP 级透传、healthz 巡检；`tools/lwhyper.exe` 是入口，自身端点 `/lw/healthz`（汇总）与 `/lw/hyper/status`（worker 明细） |
 | `lwpanel.pas` + `lwrlog.pas` | GUI 服务端面板（对标 uniGUI 独立服务器窗口）与统一日志（见下） |
 | `lwconfig.pas` | 服务端配置文件（INI）：`Port` / `Theme` / `ExtDir` 三项，命令行优先级最高（见 3.2.1） |
-| `lwnewproject.pas` + `src/design/lwdesign.lpk` | IDE 向导（New Project 两个模板：默认 widgetset 与 nogui，差别只在 .lpi 的 `LCLWidgetType`）/ New Form / 组件面板，与 `tools/lwnew.exe` 命令行共用同一模板；lwdesign 把全部自定义控件注册进 IDE，带它们的窗体才能在设计器里打开；另在 Tools 菜单注册「生成 lazarusWeb 窗体模板」（`lwdsgntplcore` 解析 .lfm + `lwdsgntplgen` 写盘，一次生成桌面/移动两份模板骨架，见 2.14 与坑 154） |
+| `lwnewproject.pas` + `src/design/lwdesign.lpk` | IDE 向导（New Project 两个模板：默认 widgetset 与 nogui，差别只在 .lpi 的 `LCLWidgetType`）/ New Form / 组件面板，与 `tools/lwnew.exe` 命令行共用同一模板；lwdesign 把全部自定义控件注册进 IDE，带它们的窗体才能在设计器里打开；另在 Tools 菜单注册「生成 lazarusWeb 窗体模板」（`lwdsgntplcore` 解析 .lfm + `lwdsgntplgen` 写盘；选窗口/平面模式，只生成带模式标记的 `<窗体名>.html`，见 2.14 与坑 154） |
 | `lwconvert.exe` | **LCL → Web 转换器**：`.pas` 基类与 uses 改写、`.lpr` 启动代码改写、`.lpi` 重新生成为 nogui 工程，附支持度报告 |
 
 ### 2.12 GUI 服务端面板（lwpanel + lwrlog，对标 uniGUI 独立服务器）
@@ -321,26 +324,29 @@ fphttpserver（每请求一线程）
   `capability`（visualViewport / orientation，兜底不参与判定）；
   硬覆盖 `?layout=` / `sessionStorage['lw-layout']` / `LW.layout.set()`。
   根标记：`html[data-lw-layout]`、`html[data-lw-input]`；
-- **窗体模板（两端同机制）**：窗体级 HTML 模板 `<root>\tpl\<窗体名>.m.html`
-  （移动）/ `<窗体名>.html`（桌面）由 `lwhttp.pas` 静态路由 `/lw/tpl/<名称>`
-  下发（挡路径穿越 403、缺失 404、`no-store` 改动即生效），服务端不解析
-  内容；客户端 `lwFetchTpl`/`lwApplyFormTpl` fetch 后把 `{%控件名%}`
-  占位符替换成该控件的既有 DOM 节点（**搬迁不重建**：事件 id、Alpine
-  指令、增量补丁照旧；换端按建树原序搬回再套另一份）。关键不变式：
-  搬迁**不改 `S.P[id]`**（逻辑父级不变，`syncChildren` 才能继续走
-  patch 而不是整棵重建，坑 149）；占位符对不上控件名 → `tplFallback`
-  整体回退。窗体级门控判 `fm.tplApplied || fm.tplPending`（等待模板
-  回包期间顶层也暂走流式路径，回包按序号丢弃过期响应）——移动端
-  接管窗体几何（贴满视口），桌面端**保持设计期位置尺寸**、客户区
-  内容流式（超高 `lw-kids-tpl` 滚动）；
+- **窗体模板（窗口/平面同机制）**：桌面模板 `<root>\tpl\<窗体名>.html`
+  （两模式共用这一个文件）与移动模板 `<root>\tpl\<窗体名>.m.html` 由
+  `lwhttp.pas` 静态路由 `/lw/tpl/<名称>` 下发（挡路径穿越 403、
+  缺失 404、`no-store` 改动即生效），服务端不解析内容；客户端
+  `lwFetchTpl`/`lwApplyFormTpl` fetch 后读文件头 `lw-tpl-mode`：
+  `window` → 浮窗背景层，`flat` → 整页平面模式（两者并存 flat 优先）。
+  桌面读 `.html`，无模板回 LCL 布局；移动端只读 `.m.html`，有模板用移动
+  模板布局，无模板直接回 LCL 布局（与桌面端一致，不读桌面 `.html`）。
+  模板作为 `.lw-tpl.lw-tpl-backdrop` 插到客户区最前，控件 DOM 与
+  `S.P[id]` 都不变，仍按 LFM 绝对坐标绘制（坑 149 的不变式继续成立）。
+  模板缺失/解析失败 → `tplFallback` 整体回退设计期布局。异步回包按
+  `fm.tplSeq` 序号丢弃过期响应；`lwApplyFlatTpl` 隐藏标题栏/拖角，
+  宽高取 `max(设计值, 视口)`（窄屏不压窄，超出由 `#lw-root` 平移），
+  窗口模式保持设计期几何；
 - **模板骨架一键生成（设计期包，坑 154）**：`lwdesign.lpk` 在 IDE **Tools
   菜单**注册「生成 lazarusWeb 窗体模板（当前单元 LFM）」——`lwdsgntplgen`
-  挂菜单/写盘，`lwdsgntplcore` 行级解析 .lfm 顶层可视控件（非可视控件
-  跳过、按 Top/Left 视觉排序），一次生成桌面 + 移动两份模板骨架到
-  `<工程目录>\tpl\`：每控件 `{%控件名%}` 占位符 + **按设计期逐控件
-  `height` 定高的基础 CSS**（搬迁清内联宽高，不定高容器会塌陷，如
-  PageControl 塌到只剩页签），桌面按设计期宽度百分比给流式宽。生成件
-  可直接用，再按 16.2/16.3 精修；
+  挂菜单/写盘；点击后先弹「窗口模式 / 平面模式 / 取消」，
+  `lwdsgntplcore` 行级解析 .lfm 顶层可视控件（非可视控件跳过、按
+  Top/Left 视觉排序），生成桌面 `<窗体名>.html` 与移动 `<窗体名>.m.html`
+  两份到 `<工程目录>\tpl\`（桌面两模式共用同一个 `.html`）：
+  文件头写 `lw-tpl-mode` 标记与控件设计期坐标
+  清单，正文是 `<style>` + 空 `<div>` 装饰层，不写占位符、不改控件
+  定位。改包源码后需在 IDE 里 Compile/Install lwdesign 并重启；
 - **无模板回退 = 设计期所见即所得**：桌面绝对定位原样（历来行为）；
   移动端窗体保持设计尺寸（字号原大）、固定贴左、禁拖动，超出视口由
   `#lw-root` 滚动（`html[data-lw-pan]`）；不做整体等比缩放（390 屏
@@ -443,9 +449,9 @@ TMainForm = class(TLWForm)   // 原来是 class(TForm)
 | Toast | `Self.ShowToast('已保存')` |
 | DB 网格分页 | `TLWDBGrid.PageSize := 20; ShowFilter := True; SummaryType := gsSum;` |
 | 确认/切换渲染层 | 默认 Alpine.js（内置，无需配置）；可选 Ext 需自备 `ext-<版本>/` 并 `--client=ext`；启动横幅 `Client:` 行显示实际生效层 |
-| 手机/窄窗口单列排布 | 写移动模板 `<root>\tpl\<窗体名>.m.html`（`{%控件名%}` 占位符），零 Pascal 改动；见 `MANUAL.md` 第二篇 16 |
-| 桌面窗体自定义排布（卡片/双栏等） | 写桌面模板 `<root>\tpl\<窗体名>.html`，机制同上，窗体几何保持设计期；见 `MANUAL.md` 第二篇 16 |
-| 从既有窗体快速得到模板骨架 | IDE Tools 菜单「生成 lazarusWeb 窗体模板（当前单元 LFM）」（lwdesign 设计期包），按 .lfm 一次生成桌面 + 移动两份，生成完按 16.2/16.3 精修；见 `MANUAL.md` 16.0 |
+| 手机/窄窗口整页平面排布 | 写 `<root>\tpl\<窗体名>.html`，文件头 `lw-tpl-mode:flat`；控件仍按设计期绝对坐标，页面自身滚动；见 `MANUAL.md` 第二篇 16 |
+| 窗口模式背景装饰 | 同一个 `<窗体名>.html`，文件头 `lw-tpl-mode:window`；窗体几何保持设计期，模板只作背景层；见 `MANUAL.md` 第二篇 16 |
+| 从既有窗体快速得到模板骨架 | IDE Tools 菜单「生成 lazarusWeb 窗体模板（当前单元 LFM）」（lwdesign 设计期包），选模式后按 .lfm 生成一个 `<窗体名>.html`，按 16.2 精修；见 `MANUAL.md` 16.0 |
 
 ### 3.5 部署
 
@@ -488,7 +494,7 @@ TMainForm = class(TLWForm)   // 原来是 class(TForm)
 
 - 模态超时 180 秒；同一会话同时只允许一个对话框；
 - `TOpenDialog` 不能浏览服务端磁盘（只能上传）；`TSplitter` 不支持拖动；
-  `TUpDown/TProgressBar/TTrackBar` 单向；未适配控件浏览器端灰框占位；
+  `TUpDown/TProgressBar/TTrackBar` 浏览器端回写 `Position`；未适配控件浏览器端灰框占位；
 - 高 DPI 按虚拟显示器 96 DPI 处理，125%/150% 设计的 lfm 自动缩回 96；
 - 端口被强杀后可能残留孤儿 socket（`LISTENING PID 0`），换端口最省事；
 - PDF 直出暂以浏览器"另存为 PDF"代替（fcl-pdf 的 ToUnicode 尚不稳）；

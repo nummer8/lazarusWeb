@@ -256,9 +256,11 @@ LCL 是**绝对坐标 + `Align`/`Anchors`**，没有 CSS 的流式排版。所�
 这是"像素级还原设计器"的代价。
 
 与可选 Ext 层不同，**默认 Alpine 层在此之上提供前端自适应**：按视口宽/触屏
-能力判定布局模式，配合窗体级 HTML 模板做 DOM 搬迁，零 Pascal 改动即可得到
-手机单列排布；未配模板时保持设计期所见即所得（移动端为平移模式）。
-机制见 `ARCHITECTURE.md` 2.14，使用见 `MOBILE.md`。
+能力判定布局模式，配合窗体模板（桌面 `<窗体名>.html`、移动 `<窗体名>.m.html`，
+文件头 `lw-tpl-mode` 标记）得到浮窗或整页平面视图；模板只作背景层，
+**不重排控件**，控件始终按设计期绝对坐标绘制。移动端优先读 `.m.html`，
+未配模板时保持设计期所见即所得（移动端为平移模式）。
+机制见 `ARCHITECTURE.md` 2.14，使用见 `MANUAL.md` 第 16 章。
 
 ### 4.3 推送通道
 
@@ -348,7 +350,7 @@ fphttpserver（每请求一线程）
 
 - 模态超时 180 秒；同一会话同时只允许一个对话框；
 - `TOpenDialog` 不能浏览服务端磁盘（只能"选文件→上传"）；
-- `TSplitter` 不支持拖动；`TUpDown/TProgressBar/TTrackBar` 单向；
+- `TSplitter` 不支持拖动；`TUpDown/TProgressBar/TTrackBar` 浏览器端回写 `Position`；
 - 高 DPI 按虚拟显示器 96 DPI 处理，125%/150% 设计的 `.lfm` 会被缩回 96；
 - 未适配控件在浏览器端是灰框占位（支持度见 `CONTROL_MATRIX.md`）；
 - PDF 直出暂以浏览器"另存为 PDF"代替。

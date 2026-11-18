@@ -8,7 +8,8 @@
 > **两层说明**：默认层是 Alpine.js，把下表 `kind` 渲染成原生 HTML/CSS
 > （复杂控件如 grid/tree/chart 由 `lw-alpine.js` 自建 DOM/SVG）；表中出现的
 > `Ext.*` 名称指**可选 Ext 层**的对应组件（`--client=ext` + `ext-<版本>/` 才启用）。
-> `kind`、回写属性与事件在两层一致；窗体模板与移动端适配仅默认 Alpine 层具备。
+> `kind`、回写属性与事件在两层一致；窗体模板两层都支持（桌面 `.html` + 移动 `.m.html`、`lw-tpl-mode:window|flat`、
+> 控件保持设计期绝对坐标），移动端断点/平移回退仅默认 Alpine 层具备。
 
 ## 图例
 
@@ -72,9 +73,9 @@
 | TDrawGrid | drawgrid | 只读展示（TDrawGrid 无 Cells/Objects 字符串存储）。2026-11-13 起支持**自绘单元格**：`LWSetDrawCellText(G, c, r, '@bar(72,#dc2626)')`（lwui）写标记，writer 从挂靠仓库下发，浏览器端 `$lwDrawCell` 渲染成进度条/徽章/迷你图/星级。标记：`@bar(0-100[,#色])`、`@chip(文本[,#色])`、`@spark(v1,v2,…[,#色])`、`@stars(0-5)`。表头取固定行 0（`LWSetDrawCellText(G, c, 0, …)` + FixedRows≥1）。nogui 是无头 widgetset，LCL 级 OnDrawCell 画不出像素，浏览器端 DSL 是唯一自绘路径；纯文本格直接可用（TStringGrid 的 grid 渲染不受影响） |
 | TTreeView | tree | 原生 tree（Alpine 默认）/ Ext.tree.Panel（可选），nodes 下发 |
 | TListView | listview | 复用表格渲染（`buildGrid`）：`cols` 来自 `Columns[].Caption`，行 = `Caption` + `SubItems`；**设计期至少加一列**，否则列数为 0、看起来是空表 |
-| TProgressBar | progress | pos/min/max/orientation，单向（服务端 → 浏览器） |
-| TTrackBar | trackbar | range input（Alpine 默认）/ Ext.slider.Single（可选），pos/min/max/frequency，单向 |
-| TUpDown | updown | 上下箭头的数字框，value/min/max，单向（`TUpDown.Position` 下发） |
+| TProgressBar | progress | pos/min/max/orientation，浏览器端回写 `Position` |
+| TTrackBar | trackbar | range input（Alpine 默认）/ Ext.slider.Single（可选），pos/min/max/frequency，浏览器端回写 `Position` |
+| TUpDown | updown | 上下箭头的数字框，value/min/max，浏览器端回写 `Position` 并联动 `Associate` 编辑框 |
 | TImage | image | 占位图（不传输二进制图片内容） |
 | TBevel | bevel | 纯 CSS 边框/留白（`.lw-bevel`） |
 | TShape | shape | 方框/圆/椭圆（`.lw-shape`） |
@@ -223,7 +224,7 @@ SQLite + SQLdb 的三条硬规则（TEXT→ftMemo、sqoAutoApplyUpdates、编辑
 | LCL | 说明 |
 |---|---|
 | TMainMenu / TMenuItem | 独立于控件树序列化进 form.menu，浏览器端原生菜单（Alpine 默认）/ Ext.menu.Menu（可选）；支持 Caption、Shortcut（ShortCutToText）、Checked、Enabled、分隔线、OnClick |
-| TPopupMenu | 同上（右键上下文按 kind 预留） |
+| TPopupMenu | 挂在 `TControl.PopupMenu` 上的右键上下文菜单：菜单项结构/事件与主菜单同套（writer 下发 `popup`），浏览器端 `contextmenu` 弹出 |
 | TToolBar | 绝对定位容器 + 按钮项 |
 | TStatusBar | 文本走 form.status 面板数组；外观走 form.sb（高度 / 每格 Width、Alignment、Bevel / SimplePanel+SimpleText）。前端按 LCL 规则画：最后一格延到右边缘，高度按 DesignTimePPI 折算。服务端改 Panels[i].Text 后随下次响应同步 |
 

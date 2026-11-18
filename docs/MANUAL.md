@@ -72,7 +72,7 @@ demo 一览（可执行入口全在 `demos/`，框架本体是库不是 exe）�
 | login | 登录/权限框架 |
 | gallery | 全功能画廊（压测基线，附 lwperf/lwdump） |
 | audit | lfm 链路审计演示（auditdemo） |
-| mobile_demo | 窗体模板示例（同一窗体配桌面卡片双栏 + 手机单列两份模板，无模板窗体对照 gallery；配 `tpl/MobileMainForm.html` 与 `.m.html`） |
+| mobile_demo | 移动端对照示例（无模板窗体回退平移模式；`tpl/` 内的旧占位符模板属历史机制，新版本只作背景层，不重排控件；新写法见 16.2） |
 
 ## 4. 写你自己的程序
 
@@ -102,6 +102,20 @@ TLWApp.Run;                         // 起 HTTP 服务
   /`TLWPDFFrame`、仪表 `TLWGauge`、取色器 `TLWColorPicker` 都是框架自带控件；
 - 定时器用 **TFPTimer**（必须 `UseTimerThread=True`）——nogui 下 TTimer
   不可用。
+- 功能做成插件：页面与 AJAX 放 `plugins/umod_*.pas`，单元里声明
+  `procedure RegisterModule;`，跑 `python tools/lwplugins.py` 生成注册汇总，
+  主程序只调 `RegisterAllModules`——以后加功能不再改主程序。窗体界面照常用
+  **`.lfm` 设计**（单元里写 `{$R *.lfm}`，字段与事件方法放类声明的默认段；
+  `.lpi` 不用单独登记资源），不想用 `.lfm` 也可以纯代码建窗。示例
+  `demos/plugindemo`（主程序零业务窗体，`umod_notes.lfm` 与
+  `umod_dashboard.pas` 分别示范两种写法）。**操作步骤见 `docs/PLUGIN_GUIDE.md`**
+  （含在自己工程里接入、`.lfm` 注意点、常见问题），原理与方案对比见
+  `docs/PLUGIN_FEASIBILITY.md`，回归 `tests/t_plugin.py`。
+
+> **安全 / SQL 注入**：框架层不碰 SQL、没有 SQL 端点，浏览器只送控件值；
+> 注入风险在业务代码——凡是来自控件/AJAX/URL 的值，进 SQL 前一律用
+> `ParamByName`（`ORDER BY`/`LIMIT` 用白名单或数值化）。完整信任边界、
+> demo 范例与自检清单见 `docs/SECURITY.md`。
 
 现有工程一键迁移：
 
@@ -116,15 +130,31 @@ tools\lwconvert_gui.exe                :: GUI 版：选目录→分析/转换→
 
 ### 用 IDE 向导新建工程（从头建一个）
 
-**前置：把设计期包装进 IDE**（只需一次，换新版包后要重做）
+**前置：按顺序把三个包装进 IDE**（只需一次，换新版包后要重做）
 
-```
-Package → Open Package File → src/design/lwdesign.lpk
-        → Use → Install → IDE 提示重建 → 重启 Lazarus
-```
+三个包有依赖链，**顺序不能颠倒**：`lwcore` → `lwserver` → `lwdesign`
+（`lwserver` 依赖 `lwcore`，`lwdesign` 依赖前两者 + IDEIntf）。跳步会在
+Install `lwdesign` 时报 `Can't find unit lwcore / lwserver`。
+
+| 顺序 | 包 | 类型 | IDE 操作 |
+|---|---|---|---|
+| 1 | `src\lwcore.lpk` | RunAndDesignTime | 只 **Compile**，不 Install |
+| 2 | `src\lwserver.lpk` | RunAndDesignTime | 只 **Compile**，不 Install |
+| 3 | `src\design\lwdesign.lpk` | DesignTime | **Compile → Use → Install** → 重建 → 重启 |
+
+0. 先命令行登记三包（否则新建工程报「找不到包」）：
+   `tools\install_design.bat`。`--add-package-link` 只登记不安装，正常。
+1. 打开 Lazarus，**按上表顺序**逐包 `Package → Open Package File → <包>.lpk`：
+   前两个只点 **Compile**；第三个点 **Compile → Use → Install**，弹窗问
+   是否重建 IDE 时选「是」，等重建完**重启 Lazarus**。
+2. 注意：不要在 IDE 里 Compile `lwserver.lpk`（nogui 单元不在 IDE 搜索路径，
+   报 `Can't find unit noguiint`，见 `NOTES.md` 坑 15）；交给命令行
+   `lazbuild` 即可。设计期包安装弹 `Descriptor.Name empty` 见坑 16。
 
 装好后 **文件 → 新建 → 项目** 里才会出现两个模板。没装（或装的是旧版）
-时新建对话框里根本看不到它们，或者看到的是旧行为。
+时新建对话框里根本看不到它们，或者看到的是旧行为。Tools 菜单里的
+「生成 lazarusWeb 窗体模板」同样来自 `lwdesign` 包；改过包源码后必须重新
+Compile → Install → 重启 IDE，否则菜单仍执行旧逻辑。
 
 **1. 选模板**
 
@@ -152,12 +182,18 @@ Lazarus 自带模板的流程完全一致。
 
 ```
 <目录>\LWApp1.lpr  LWApp1.lpi  umain.pas  umain.lfm
-       build.bat   build.sh    lw\        ← 前端资源（lw.js/lw.css/alpine.min.js…）
+       build.bat   build.sh    favicon.ico
+       lw\        ← 前端资源（lw.js/lw.css/alpine.min.js…）
 ```
 
-`build.bat` / `build.sh`、nogui 档的 `.lpi` 宏、以及 `lw\` 里的前端资源，
-IDE 的工程模型都写不出来，由向导在**保存后约 1 秒**补齐（运行期按
+`build.bat` / `build.sh`、nogui 档的 `.lpi` 宏、`favicon.ico`、以及 `lw\` 里的
+前端资源，IDE 的工程模型都写不出来，由向导在**保存后约 1 秒**补齐（运行期按
 `exe\lw\<文件>` 找静态资源，所以拷到工程目录下的 `lw\`）。
+
+`favicon.ico` 放在**工程根目录**（不是 `lw\`）：服务端取图标的顺序是
+`<root>\favicon.ico` → `<exe 目录>\favicon.ico`，而 exe 就在工程目录里。
+少了它浏览器标签页是空白图标（`/favicon.ico` 直接 404）。想换成自己的图标，
+直接覆盖工程目录里的 `favicon.ico` —— 已经有了向导就不再动它。
 
 **4. nogui 档：多一步"重新加载"，否则 F9 用错 widgetset**
 
@@ -206,17 +242,15 @@ Alpine 渲染层（默认）内置移动端自适应，判定在浏览器端完�
 - **没配模板的窗体（两端一致：设计期所见即所得）**：移动端按设计尺寸
   原样渲染（**字号不缩小**），超出屏幕的部分由页面滚动平移查看——能用，
   但不是为小屏优化的排布；桌面端是绝对定位原样（历来行为，完全不变）；
-- **配了模板的窗体**：浏览器把窗体顶层控件搬进模板的流式排布，同一棵
-  控件树、同一套事件与增量补丁；移动模板（`.m.html`）做单列自适应、
-  桌面模板（`.html`）做自定义排布（居中卡片、双栏等，**窗体几何保持
-  设计期**）；拖宽/拖窄窗口跨过断点自动换端来回切换，不丢状态；
+- **配了模板的窗体**：模板只是背景/装饰层，控件始终按 LFM 的绝对坐标
+  渲染，事件与增量补丁不变；`<窗体名>.html` 文件头的 `lw-tpl-mode`
+  决定是浮窗还是整页平面模式（flat 优先）。两种模式都不重排控件；
 - **手动切换**（演示 / 排障）：URL 加 `?layout=mobile` 或 `?layout=desktop`；
   控制台 `LW.layout.set('mobile'|'desktop'|'auto')`、`LW.layout.get()`；
   选择存 `sessionStorage['lw-layout']`，只影响当前标签页；
-- 写模板的方法与完整范例见第二篇「16. 窗体模板开发指南（桌面 + 移动）」；
-  可跑的对照 demo 是 `demos/mobile_demo`（`--port=8106`，同一窗体配了
-  桌面 + 移动两份模板，手机打开即见单列排布，模板改动刷新即生效，
-  无需重编）。
+- 写模板的方法与完整范例见第二篇「16. 窗体模板开发指南（窗口 + 平面）」；
+  一键生成用 IDE Tools 菜单（选窗口/平面模式，桌面写 `<窗体名>.html`、
+  移动写 `<窗体名>.m.html`），模板改动刷新即生效，无需重编。
 
 ### 拍照：TLWCamera（手机唤起系统相机，桌面页面内取景）
 
@@ -387,6 +421,7 @@ end;
 --config=path  --port=  --root=  --form=  --client=alpine|ext  --ext=
 --extdir=  --theme=  --title=  --timeout=  --trust-proxy  --ajax-cors
 --ssl  --ssl-host=  --ssl-cert=  --ssl-key=
+       （--tls-cert= / --tls-key= 是后两个的别名；给了证书或私钥即自动开 HTTPS）
 --verbose  --nogui  --patch=1  --log=path  --help
 ```
 
@@ -462,9 +497,9 @@ INI 配置（模板 `lazarusWeb.ini.sample`，放 exe 旁改名 `<exe名>.ini` �
 ```
 yourapp.exe
 src\client\alpine.min.js    Alpine.js 本体（44KB，defer 加载，不走 CDN）
-src\client\lw-alpine.js     渲染/协调器（205KB；模板/自适应唯一生效层）
+src\client\lw-alpine.js     渲染/协调器（模板两层共用；自适应仅本层）
 src\client\lw-alpine.css    样式，含 7 套配色的 CSS 变量（§5.1）
-tpl\                        （可选：桌面/移动窗体模板；仅 Alpine 层使用）
+tpl\                        （可选：窗口/平面窗体模板 <窗体名>.html；Alpine/Ext 两层都读取）
 favicon.ico                 （可选：浏览器标签图标）
 cert\                       （可选：开 SSL 且用自有 PEM 时放 server.crt/server.key/ca.crt）
 libssl-3-x64.dll + libcrypto-3-x64.dll  （可选：开 SSL 时必须放 exe 同目录）
@@ -544,9 +579,9 @@ Ext JS 渲染层为**可选**（默认不部署）：需要时把 `ext-x.x.x\` �
 | 浏览器标签没图标（还是默认地球） | exe 同目录或 `--root` 没有 favicon.ico → 放一个；或浏览器缓存了旧 204 空响应 → Ctrl+F5 强刷（坑 144） |
 | **本机 127.0.0.1 能开、所有手机/平板同时打不开**（换 Wi-Fi 或重启后突然全挂） | 先查本机入站，不用翻代码：`Get-NetConnectionProfile` 看当前是 Private 还是 Public，再 `Get-NetFirewallRule -DisplayName 'mobile_demo' \| select Profile` 看放行规则落在哪个 Profile —— **两者不一致时入站全被丢**，回环不受影响，所以"本机能开、设备全挂"。管理员运行 `tools\allow-firewall.bat`（写 `profile=any` 的 TCP/UDP + 端口兜底），不用重启服务（坑 159） |
 | 手机/平板打不开网页（"已丢失网络连接"/无法访问），但某个设备能开 | ① **URL 必须带端口**（`http://192.168.x.x:8090/`），只写 IP 会走 80 端口，服务端没监听；横幅 `LAN:` 行给的就是该用的完整地址。② iOS：设置 → 隐私与安全性 → **本地网络** → 允许 Safari（被拒一次会一直静默失败）。③ 确认三台设备在同一 Wi-Fi/同一网段，不是访客网络或 5G 独立 SSID。④ 关掉 VPN / 代理 / iCloud 专用代理。⑤ 用 `/lw/healthz` 单独验证：能返回 ok 说明网络通、问题在页面层 |
-| 手机打开后布局没变成单列 | 该窗体没配移动模板（回退平移模式，属正常）；或视口宽在 835~1099 回滞区；确认 URL 没带 `?layout=desktop` 覆盖 |
-| 改了模板没生效 | 模板路径不对（移动 `<root>\tpl\<窗体名>.m.html`、桌面 `<root>\tpl\<窗体名>.html`）；或浏览器缓存 → 模板是 no-store 下发，普通刷新即应生效，强刷一次排查中间层缓存 |
-| 模板"半套"（部分控件跑版） | 占位符写了不存在的控件名会整体回退，不会半套；出现跑版多半是模板 CSS 层级写错（占位符 > .lw-n > .lw-body 隔层，见开发篇 16.3） |
+| 手机打开后控件没重排 | 新机制下模板不重排控件，控件始终按 LFM 绝对坐标；超出视口由平移滚动查看 |
+| 改了模板没生效 | 模板应是 `<root>\tpl\<窗体名>.html`，文件头要有 `lw-tpl-mode:window|flat`；客户端脚本有缓存 → `Ctrl+F5` 强刷排查；若同时存在旧 `.flat.html`，会因兼容规则继续走平面模式 |
+| 选了窗口模式却仍整页显示 | `tpl\` 里残留旧 `<窗体名>.flat.html`，删除它后强刷；或 `.html` 文件头写的是 `lw-tpl-mode:flat` |
 | 从 AI 终端/脚本启动的服务跑一会儿就消失、无日志 | 命令跑在 kill-on-job-close 的 Job Object 里被回收；后台任务方式也可能在轮次结束后被收走 → 用 `Start-Process`（脱离 Job）或真实用户终端启动（坑 108/145） |
 
 更多案例与调试方法论：`docs/DEBUGGING.md`；167 个坑按编号检索
@@ -672,20 +707,24 @@ python tests/run_with_server.py <exe路径> <测试脚本> [端口] [exe额外�
 `docs/HOW_IT_WORKS.md`；改 lwproxyws 相关内容必须走 `gen_proxyws.py`
 重新生成。
 
-## 16. 窗体模板开发指南（桌面 + 移动）
+## 16. 窗体模板开发指南（窗口 + 平面）
 
-布局由「客户端 DOM 搬迁 + 窗体级 HTML 模板」实现：业务窗体一行代码不改，
-只需为要自定义排布的窗体多写一份模板 HTML。**桌面与移动是同一套机制、
-同一套占位符语法**，只是文件名与窗体几何规则不同：
+模板**不再重排控件**：控件始终按 LFM 的 `Left/Top` 绝对定位，事件、增量
+补丁、容器内部结构全部保持原样。模板只是一层背景/装饰 HTML，业务窗体
+一行代码不改。窗口模式与平面模式**共用一个模板文件**
+`<root>\tpl\<窗体名>.html`，由文件头的模式标记决定渲染方式：
 
-| 端 | 模板文件 | 窗体几何 | 无模板时 |
-|---|---|---|---|
-| 移动 | `<root>\tpl\<窗体名>.m.html` | 客户端接管：贴满视口 | 设计期所见即所得（平移模式） |
-| 桌面 | `<root>\tpl\<窗体名>.html` | **保持设计期位置尺寸不动**，只有客户区内容变流式 | 设计期所见即所得（绝对定位原样） |
+模板按端分两个文件，**桌面端窗口/平面两种模式共用同一个 `.html`**：
 
-判定机制与实测数据见 `docs/MOBILE.md` §8，本节是动手指南；可跑的完整
-范例是 `demos/mobile_demo` + `tpl/MobileMainForm.m.html`（移动）+
-`tpl/MobileMainForm.html`（桌面，同一窗体双模板演示）。
+| 端 | 模板文件 | 文件头标记 | 页面表现 | 无模板时 |
+|---|---|---|---|---|
+| 桌面·窗口 | `<root>\tpl\<窗体名>.html` | `lw-tpl-mode:window` | 现有浮窗，可移动/缩放，模板作客户区背景 | 设计期所见即所得 |
+| 桌面·平面 | 同名 `.html` | `lw-tpl-mode:flat` | 整页网页：无标题栏/边框/拖动/缩放，页面自身滚动 | 同上 |
+| 移动 | `<root>\tpl\<窗体名>.m.html` | 同上二选一 | 移动端只读这份模板（同为装饰层、控件不重排；窗体保持设计宽高，超出视口的部分左右滑动查看） | 直接 LCL 布局（不读桌面 `.html`） |
+
+同一文件若同时出现两种标记，**flat 优先**。生成器窗口/平面两模式都各写
+桌面 `.html` 与移动 `.m.html` 两份（模式靠文件头标记区分）；旧 `.flat.html`
+仍保留兼容探测（存在即按平面模式），需要切换回窗口模式时请删除它。
 
 ### 16.0 一键生成：IDE Tools 菜单（lwdesign）
 
@@ -693,120 +732,100 @@ python tests/run_with_server.py <exe路径> <测试脚本> [端口] [exe额外�
 「**生成 lazarusWeb 窗体模板（当前单元 LFM）**」：
 
 1. 打开窗体单元（.pas，自动找同名 .lfm）或直接打开 .lfm；
-2. 点该菜单 → 在 `<工程目录>\tpl\` 下生成两份模板骨架：
-   `<窗体名>.html`（桌面，按设计期宽度比例的流式换行）与
-   `<窗体名>.m.html`（移动，单列流式）；文件已存在会逐份询问是否覆盖；
-3. 生成内容：文件头注释列出解析到的顶层控件清单（含类名与设计期几何）、
-   每个控件的 `{%控件名%}` 占位符、基础 CSS（宽 100%/百分比宽、
-   **按设计期逐控件定高**——搬迁会清掉内联宽高，不定高容器会塌陷）。
-   两条尺寸规则值得先弄清楚，它们决定生成结果能不能直接用：
-   - **主区域按容器高度伸缩**：有个控件横向 ≥85% 窗体宽、纵向 ≥50% 纵向
-     占用（典型是铺满窗体的 `TPageControl` / 主 `TPanel`，如 gallery 的
-     `pcMain` 1800×900 / 窗体 1800×1110），生成的是
-     `height: calc(100% - 其它控件高度)` + `min-height:240px`，而不是
-     写死 900px —— 否则 720p 窗口里底部控件会被顶出可视区、手机上要多滚
-     一屏。只认最高的那一个，避免两个控件同时伸缩。
-     注意是**容器**（窗体客户区 `.lw-tpl`）不是视口：窗体开在浮窗里时
-     客户区比视口小（dbaware 主窗体实测 720 vs 900），用 `100vh` 会整块
-     溢出，见坑 164。「其它控件高度」在桌面端**按行**累计（同一行只占一份
-     高度，报表窗顶排 6 个控件 = 28px 而不是 6×28），移动端是单列直加；
-   - **百分比宽扣掉 gap**：桌面 `flex: 0 0 calc(50% - 10px)`。写成
-     `flex: 0 0 50%` 时 `50%+50%+gap` 超过一行，本该并排的控件会被换成
-     上下两行；
-   带子控件的顶层容器（TPanel/TGroupBox 等）另生成两条兜底规则
-   （`overflow:hidden` 裁剪 + 内部控件 `max-width:calc(100% - 16px)` 收宽，
-   避免容器被模板改窄后内部绝对定位控件溢出，坑 155）。页签
-   （TPageControl/TTabControl）不生成兜底：客户端 `.lw-tabs` 自身
-   `height:100%` + flex 列、`.lw-tabcard` 绝对铺满并 `overflow:hidden`，
-   页内容已被裁剪；
-4. 生成时做自检并弹窗报告：跳过的非可视控件、非法/重复占位符名、缺少几何、
-   设计期宽度超过窗体宽、含嵌套子控件、主区域被改成视口伸缩等；同一份报告
-   也写进模板文件头（`自检提示` 段）；
+2. 点该菜单 → 弹出「窗口模式 / 平面模式 / 取消」选择；
+3. 选完后在 `<工程目录>\tpl\` 下生成**两份**：桌面 `<窗体名>.html` 与
+   移动 `<窗体名>.m.html`；两份都按所选模式写文件头标记（窗口写
+   `lw-tpl-mode:window`，平面写 `lw-tpl-mode:flat`）。**桌面两种模式共用
+   同一个 `.html`，不会生成第二份桌面文件**；文件已存在时逐份询问是否覆盖
+   （覆盖后原模式标记一并替换）；
+4. 生成内容：文件头注释列出解析到的顶层控件清单（类名 + 设计期
+   `Left/Top/宽高`）、自检报告，以及一段 `<style>` + 空 `<div>` 装饰层。
+   **没有** `{%控件名%}` 占位符，也没有流式/百分比宽/主区域伸缩 CSS；
+   控件位置完全由框架按 LFM 绘制；
 5. 把两份文件拷到**运行根目录**的 `tpl\`（或工程目录就是运行根目录时
-   生成完即生效），刷新浏览器即见模板接管；之后按 16.2/16.3 精修。
+   生成完即生效），强刷浏览器（`Ctrl+F5`，客户端脚本有缓存）即见效果；
+   移动端只读 `.m.html`，删掉它则用 LCL 布局（不读桌面 `.html`）；
+6. 设计期包改动后必须 **Package → Open Package File → lwdesign.lpk →
+   Compile → Install → 重启 IDE**，否则菜单仍执行旧的一键生成逻辑。
 
 解析范围：窗体**顶层可视控件**（按 Top/Left 排成视觉顺序）；数据源、
 对话框、菜单、图片列表等非可视控件与状态栏自动跳过。解析按“对象层级 +
 集合 item 块 + 括号字符串块”三态推进，`TListView.Columns` 这类集合中的
 `end`/`end>` 与多行字符串中的 `end` 不再误伤对象层级（坑 163，
-以 `demos/gallery/ugallery.lfm` 为回归样本）。模板 v1 仍只重排顶层，
-容器内部需要按 16.3 手工精修。
+以 `demos/gallery/ugallery.lfm` 为回归样本）。空窗体也能生成空装饰层，
+提示中会说明没有顶层可视控件。
 
-回归分两层：`tests/tplgen_test.lpr` 对 mobile_demo、gallery、dbaware 三个
-demo 的 6 个窗体与 `tests/fixtures/tpl_two_cols.lfm`（两列等宽）做字符串断言；
-真实渲染盒由两个 CDP 探针量：
-`tests/cdp_tplgen_gallery.py`（桌面 1600×900 / 移动 / 手机 390×844 三档视口，
-主区域高度 = 客户区高 − 220、无横向溢出）与
-`tests/cdp_tplgen_dbaware.py`（登录页桌面与手机、主窗体桌面与手机；
-主区域 = 客户区高、页签容器不塌陷）。两者都断言
-`tpl.scrollHeight - tpl.clientHeight ≤ 1`，即模板内容不溢出客户区 ——
-这条判据正是"按 100vh 排版"的直接后果（坑 164）。均已接入
-`tests/run_fixed_regression.py --with-cdp`。
+回归：`tests/tplgen_test.lpr` 对 mobile_demo、gallery、dbaware 六个窗体与
+`tests/fixtures/tpl_two_cols.lfm` 做字符串断言（含新断言：桌面单文件 +
+移动 `.m.html` 两份、模式标记、无占位符、保留设计坐标），并保留旧流式
+生成器的历史回归；`tests/run_fixed_regression.py` 为固定入口。
 
 ### 16.1 文件与路由
 
-- 模板路径：先查 `<root>\tpl\`，找不到再查 `<exe目录>\tpl\`；文件名分别是
-  `<窗体名>.m.html`（移动）与 `<窗体名>.html`（桌面）。`--root` 未指定时由
-  `LWResolveRoot` 从当前目录/exe 目录向上探测，不能简单等同于“永远是 exe 目录”；
-  `demos/mobile_demo` 的模板位于 `demos\mobile_demo\tpl\`，靠 exe 旁回退生效；
-- 下发：客户端按模式请求 `GET /lw/tpl/<窗体名>.m.html` 或
-  `GET /lw/tpl/<窗体名>.html`，响应带 `Cache-Control: no-store` —— **改模板内容
-  刷新页面即生效，不用重编译**；客户端还缓存 404，首次为窗体新增模板需重开页签；
+- 模板路径：先查 `<root>\tpl\`，找不到再查 `<exe目录>\tpl\`；桌面读
+  `<窗体名>.html`（窗口/平面两模式共用这一个文件），移动端优先读
+  `<窗体名>.m.html`。`--root` 未指定时由 `LWResolveRoot` 从当前目录/exe
+  目录向上探测，不能简单等同于“永远是 exe 目录”；
+- 下发：桌面请求 `GET /lw/tpl/<窗体名>.html`，移动端只请求
+  `GET /lw/tpl/<窗体名>.m.html`（无模板不再读桌面 `.html`，回 LCL 布局），
+  响应带 `Cache-Control: no-store` ——
+  **改模板内容刷新页面即生效，不用重编译**；另外为兼容旧版本仍会探测
+  同名 `.flat.html`，命中即按平面模式处理；
 - 安全：文件名挡路径穿越（越界回 403）；模板不存在回 404，客户端
-  静默回退设计期布局，页面不报错。
-- 注意：模板只在 Alpine 渲染层生效；`--client=ext` 时模板被忽略。
+  静默回退设计期布局，页面不报错；
+- 两层都支持：Alpine（`lw-alpine.js`）与 Ext（`lw.js`，`--client=ext`）走同一
+  套模板机制——同一套 `lw-tpl-mode` 标记、同样兼容旧 `.flat.html`。两层的
+  模板都只作背景装饰层，控件一律保持设计期绝对坐标，不重排；Ext 层在探测
+  到 `flat` 时去掉标题栏/边框/拖动/缩放，宽高取 max(设计宽高, 视口)（窄屏
+  保持设计宽、超出平移查看）。移动端 `.m.html` 的加载
+  与回退由 Alpine 层负责（Ext 层无移动端布局机制，始终只读 `.html`）。
 
-### 16.2 模板写法与搬迁语义
+### 16.2 模板写法
 
-模板 = 一段普通 HTML + 一段 `<style>`，占位符 `{%控件名%}` 引用窗体上
-控件的 **Name**（设计期名字，区分大小写）。浏览器端按当前布局模式
-fetch 对应端的模板，把每个占位符替换成该控件的**既有 DOM 节点**：
-
-- 是**搬迁不是重建**：控件节点原样搬进占位符，事件 id、Alpine 指令、
-  增量补丁全部照旧；切到另一端（或回退）再按建树原序搬回原位，
-  状态不丢；
-- 只写**窗体顶层控件**：模板 v1 只重排窗体顶层；容器（TPanel/
-  TGroupBox/TPageControl）内部仍是绝对定位，适配要在模板 CSS 里对
-  容器内控件单独贴边/定高（16.3 有现成写法）；
-- 模板没引用到的顶层控件仍按桌面坐标渲染（谁被引用谁进流式）；
-- **回退语义**：模板缺失、fetch 失败或占位符引用了不存在的控件名 →
-  整体回退设计期所见即所得（不会半套），不影响其他窗体。
-
-`MobileMainForm.m.html` 骨架（完整文件见 `tpl/`）：
+模板 = 文件头模式标记 + 一段 `<style>` + 一个空 `<div>` 装饰层。
+客户端把整段模板作为背景层挂进窗体客户区（插在最前、`pointer-events:none`），
+控件 DOM 仍在客户区里按绝对坐标绘制，不存在 DOM 搬迁：
 
 ```html
+<!DOCTYPE html>                       <!-- 仅平面模式需要 -->
+<!-- lw-tpl-mode:flat -->             <!-- 或 window -->
+<!--
+  MainForm 的平面模式模板（起始骨架）
+  顶层控件（设计期坐标供参考）：
+    Button1 : TButton  (left=163, top=225, 113x38)
+    ...
+-->
+<head>
 <style>
-  /* 模板自带样式，建议包一层自定义类避免与其他窗体的模板互相影响 */
-  .tpl-mdemo .row { display: flex; gap: 8px; align-items: center; }
-  .tpl-mdemo [data-lw-ph="edName"] > .lw-n { width: 100% !important; }
-  .tpl-mdemo [data-lw-ph="memLog"]  > .lw-n { width: 100% !important;
-                                              height: 220px !important; }
+  .tpl-mainform-flat { position: absolute; left: 0; top: 0; right: 0;
+    bottom: 0; box-sizing: border-box; pointer-events: none; }
+  /* 在这里加背景色/渐变/花纹/说明文字等装饰 */
 </style>
-<div class="tpl-mdemo">
-  {%lblTitle%}
-  <div class="row">{%lblName%}{%edName%}{%btnHello%}</div>
-  {%pnlInfo%}
-  {%memLog%}
-  <div class="row">{%btnClear%}</div>
-</div>
+</head>
+<body>
+<div class="tpl-mainform-flat"></div>
+</body>
+</html>
 ```
 
-业务侧的全部工作量就是这一份 HTML；`.pas`/`.lfm` 与桌面版完全共用
-（对照 `demos/mobile_demo/uMobileMain.pas`，与普通窗体无异）。
+窗口模式是 HTML 片段（无 doctype/head/body），结构相同：模式标记 +
+`<style>` + `<div>`。业务侧的工作量就是这一份 HTML；`.pas`/`.lfm`
+完全不用动。**旧版 `{%控件名%}` 占位符模板不再驱动流式排布**：
+其中的占位符会被替换成空 `<span>`，控件仍按设计期坐标显示，如需流式
+排布请改回旧版客户端或手工重写业务布局。
 
 ### 16.3 常用 CSS 钩子
 
 | 钩子 | 说明 |
 |---|---|
-| `.lw-ph` / `[data-lw-ph="控件名"]` | 占位符容器（搬迁后控件 DOM 的父级） |
-| `.lw-ph > .lw-n` | 控件包装层：**桌面的定宽定高都挂在这一层**，流式布局里通常要 `width:100% !important`、需要时改 `height` |
-| `.lw-ph > .lw-n > .lw-body` | Panel/GroupBox/页签的内容层，随包装层一起撑满 |
-| `html[data-lw-layout="mobile"]` | 移动布局根标记（框架自动维护），模板/业务 CSS 可据此做精细适配 |
-| `html[data-lw-input="touch"]` | 触屏标记（与宽度无关），触控细节用它区分 |
+| `.lw-tpl` / `.lw-tpl-backdrop` | 模板背景层（框架自动添加，铺满客户区、`pointer-events:none`） |
+| `.lw-win.lw-flat-form` | 平面模式窗体根：无边框/标题栏/拖角，宽高不小于设计值（窄屏可平移） |
+| `.lw-theme-fab` | 配色浮钮（圆形，平面模式与移动布局的窗口模式自动挂；可拖动、位置记忆；框架按布局自动挂/摘，标题栏图标同时隐藏） |
+| `html[data-lw-layout="mobile"]` | 移动布局根标记（框架自动维护） |
+| `html[data-lw-input="touch"]` | 触屏标记（与宽度无关） |
 
-**层级注意**：占位符 > 面板 `.lw-n` > `.lw-body` > 子控件 `.lw-n`
-中间隔了包装层，选中面板**内部**控件要用后代选择器（空格），不能
-`>` 直连 —— 这是模板 CSS 最常见的跑版原因。
+模板自己的类（例中的 `.tpl-mainform-flat`）只作用于装饰层；控件仍由
+框架的 `.lw-n` 按 LFM 坐标定位，模板 CSS 不应再去改它们的 `left/top`。
 
 ### 16.4 断点、硬覆盖与回退（无模板窗体）
 
@@ -818,7 +837,21 @@ fetch 对应端的模板，把每个占位符替换成该控件的**既有 DOM �
   原样（与历来行为完全相同）；移动端保持设计尺寸（字号原大），固定
   贴左、禁标题栏拖动，超出视口由 `#lw-root` 滚动平移
   （`html[data-lw-pan]`）；**不做整体等比缩放**（缩到 390 屏字号只剩
-  0.3 倍不可读，实测后否决）。
+  0.3 倍不可读，实测后否决）；
+- 有模板的窗体也遵循同一套几何规则：窗口模式不改窗体位置尺寸，
+  平面模式宽高取 max(设计值, 视口)（窄屏保持设计宽、可平移查看，不压窄）；
+  两种模式都不移动控件。
+- **平面模式的底色跟随主题**：模板装饰层的背景/文字色请写
+  `var(--lw-win-bg)` / `var(--lw-fg)`（生成器默认如此）。写死固定色会让
+  所有主题都显示同一块底色。
+- **主题入口按布局/模式自动切换形态**：桌面窗口模式用标题栏里的配色按钮
+  （☀/☾/◐）；**平面模式**（标题栏整条被隐藏）与**移动布局的窗口模式**
+  （标题栏只有 28px 高，22px 图标手指点不准）改用右下角的半透明圆形浮钮
+  `.lw-theme-fab`。浮钮**可拖动**（位置记在 localStorage，刷新后仍在原处；
+  平面模式与窗口模式各自记忆），点一下展开同一份配色菜单（按上下空间自动
+  选展开方向）；移动布局下标题栏那个图标由 CSS 隐藏，桌面布局下浮钮会被
+  自动摘掉 —— 两者不会同时出现。服务端 `LWThemeButton = False` 与模态
+  窗体不挂。手机上没有 Alt 键，所以不能只提供快捷键。
 
 ### 16.5 测试
 
@@ -830,7 +863,10 @@ python tests/run_fixed_regression.py
 ```
 
 模板相关 CDP 探针（需无头 Edge，调试端口 9239；也可用
-`python tests/run_fixed_regression.py --with-cdp` 一并执行）：
+`python tests/run_fixed_regression.py --with-cdp` 一并执行）。
+注意：`cdp_desktop_tpl.py`、`cdp_tplgen_gallery.py`、`cdp_tplgen_dbaware.py`
+针对旧的「占位符 + DOM 搬迁」流式模板，新版本已改为不重排控件的背景装饰层，
+这三项仅作历史回归参考，不再作为新模板机制的验收依据：
 
 ```
 python tests/cdp_desktop_tpl.py    # 桌面模板：套用/几何不变/三态切换/无模板回退 7 项
