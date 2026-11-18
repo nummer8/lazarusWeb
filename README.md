@@ -14,12 +14,49 @@ Lazarus 桌面程序的 Web 化运行时 —— 参考 uniGUI 的思路，但用
 - Ext JS 7.0.0（GPLv3 版，**可选**：发布包不包含，需自行从 Sencha 官方渠道获取后放入 `ext-7.0.0\`；不放置时默认使用内置的 Alpine.js 渲染层）  
 - **Ext 支持为可选功能，ext-js 文件由用户自行获取，其授权合规由使用者自行负责。**  
 
-## 控件安装  
-  
-1、src\lwcore.lpk                   --->只编译  
-2、src\lwserver.lpk                --->只编译  
-3、src\design\lwdesign.lpk    --->编译及安装  
-  
+## 控件安装（Lazarus IDE 设计期包）
+
+要在 IDE 设计器里打开带 lazarusWeb 控件的窗体、用「新建工程向导」和
+「生成 lazarusWeb 窗体模板」Tools 菜单，必须先按**固定顺序**处理三个包。
+顺序不能颠倒：`lwserver` 依赖 `lwcore`，`lwdesign`（设计期包）又依赖
+前两者，跳步会在 Install 时报 `Can't find unit lwcore / lwserver`。
+
+| 顺序 | 包 | 类型 | 依赖 | 在 IDE 里做什么 |
+|---|---|---|---|---|
+| 1 | `src\lwcore.lpk` | RunAndDesignTime | LCL / FCL / fcl-image | **只编译**（Compile），不 Install |
+| 2 | `src\lwserver.lpk` | RunAndDesignTime | LCL / FCL / **lwcore** | **只编译**（Compile），不 Install |
+| 3 | `src\design\lwdesign.lpk` | DesignTime | LCL / IDEIntf / **lwcore** / **lwserver** | **Compile → Install**（会重建 `lazarus.exe`，然后重启 IDE） |
+
+具体步骤：
+
+1. 命令行先注册三个包（让 IDE 认识它们，否则新建工程报「找不到包」）：
+
+   ```
+   tools\install_design.bat
+   ```
+   等价手工命令（把 `C:/111/lazarus` 换成你的 Lazarus 目录）：
+   ```
+   lazbuild --add-package-link=src\lwcore.lpk
+   lazbuild --add-package-link=src\lwserver.lpk
+   lazbuild --add-package-link=src\design\lwdesign.lpk
+   ```
+   注意 `--add-package-link` 只是「登记/最近打开」，**不等于安装**；
+   `--add-package` 参数形式在本机 Lazarus 上会报 `does not allow an argument`，属正常现象。
+
+2. 打开 Lazarus，按上表顺序逐包 `Package → Open Package File → <包>.lpk`，
+   前两个点 **Compile**（只编译出 ppu，不 Install）；第三个 `lwdesign.lpk`
+   点 **Compile → Use → Install**，弹窗问是否重建 IDE 时选「是」，等重建完
+   **重启 Lazarus**。
+
+3. 重启后验证：`文件 → 新建 → 项目` 里出现两个 lazarusWeb 模板、
+   组件面板出现 **lazarusWeb** 页、Tools 菜单出现「生成 lazarusWeb 窗体模板」。
+
+> 换新版框架或改过设计期包源码后，必须重做第 2 步里 `lwdesign.lpk` 的
+> Compile → Install → 重启 IDE，否则设计器与 Tools 菜单仍跑旧代码。
+> 不要在 IDE 里编译 `lwserver.lpk`（nogui widgetset 单元不在 IDE 搜索路径，
+> 会报 `Can't find unit noguiint`），该包交给命令行 `lazbuild` 或新建工程即可。
+> 完整踩坑记录见 `docs/NOTES.md` 坑 15 / 坑 16。
+
 ## 跨平台构建矩阵（宿主 → 目标）
 
 全部源码（`src/`、`tools/`、`demos/`）均为跨平台代码：核心单元的平台差异
@@ -231,9 +268,9 @@ TMainForm = class(TLWForm)   // 原来是 class(TForm)
 MyApp/
   MyApp.exe
   src/client/alpine.min.js   44 KB   Alpine.js 本体（defer 加载，不走 CDN）
-  src/client/lw-alpine.js    205 KB  渲染/协调器（也是模板/自适应唯一生效层）
+  src/client/lw-alpine.js    205 KB  渲染/协调器（自适应仅本层；模板两层共用）
   src/client/lw-alpine.css    59 KB  样式：7 套配色（亮色/米黄/护眼绿/高对比/深色/深蓝/墨绿）的 CSS 变量都在这里
-  tpl/                              可选：窗体模板；仅 Alpine 层使用，缺失时静默回退设计期布局
+  tpl/                              可选：窗体模板；Alpine/Ext 两层都读取，缺失时静默回退设计期布局
   favicon.ico                       可选：浏览器标签图标（放 exe 同目录或 --root 目录皆可）
   ext-<版本>/                       可选：Ext JS 渲染层（约 75MB，需 --client=ext 显式切换）
   cert/                             可选：开 SSL 且使用自有 PEM 时放 server.crt/server.key/ca.crt
