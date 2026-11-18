@@ -10,7 +10,8 @@ interface
 uses
   lwapp, lwwriter, lwsession, lwdispatch, lwhttp, lwws, lwupload, lwajax, 
   lwchart, lwconfig, lwdbgrid, lwdbnav, lwhyper, lwlogin, lwpanel, lwreport, 
-  lwrlog, lwui, lwweb, lwwebsocket, lwabout, lwsidemenu, LazarusPackageIntf;
+  lwrlog, lwui, lwweb, lwwebsocket, lwabout, lwsidemenu, lwpluginutil, 
+  lwroute, LazarusPackageIntf;
 
 implementation
 

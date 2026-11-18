@@ -7,7 +7,7 @@
     <License Value="LGPL"/>
     <Description Value="lazarusWeb 服务端：序列化 / 会话 / HTTP / 上传（nogui 下自动装 widgetset 补丁；其它 widgetset 下补丁为空实现，包本身任意 widgetset 都能编译）"/>
     <Version Major="1" Minor="0"/>
-    <Files Count="22">
+    <Files Count="24">
       <Item1>
         <Filename Value="core/lwapp.pas"/>
         <UnitName Value="lwapp"/>
@@ -97,6 +97,14 @@
         <Filename Value="core/lwsidemenu.pas"/>
         <UnitName Value="lwsidemenu"/>
       </Item22>
+      <Item23>
+        <Filename Value="core/lwpluginutil.pas"/>
+        <UnitName Value="lwpluginutil"/>
+      </Item23>
+      <Item24>
+        <Filename Value="core/lwroute.pas"/>
+        <UnitName Value="lwroute"/>
+      </Item24>
     </Files>
     <CompatibilityMode Value="True"/>
     <RequiredPkgs Count="3">
