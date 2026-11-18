@@ -14,6 +14,11 @@ Lazarus 桌面程序的 Web 化运行时 —— 参考 uniGUI 的思路，但用
 - Ext JS 7.0.0（GPLv3 版，**可选**：发布包不包含，需自行从 Sencha 官方渠道获取后放入 `ext-7.0.0\`；不放置时默认使用内置的 Alpine.js 渲染层）  
 - **Ext 支持为可选功能，ext-js 文件由用户自行获取，其授权合规由使用者自行负责。**  
 
+## 控件安装
+1、src\lwcore.lpk                   --->只编译
+2、src\lwserver.lpk                --->只编译
+3、src\design\lwdesign.lpk    --->编译及安装
+
 ## 跨平台构建矩阵（宿主 → 目标）
 
 全部源码（`src/`、`tools/`、`demos/`）均为跨平台代码：核心单元的平台差异
@@ -77,12 +82,18 @@ Linux 宿主上直接 `lazbuild` 各 demo 的 `.lpi` 即可；`build.sh` 与
 | `demos/dbaware` | **DB 感知控件全家桶**（TDBText/TDBListBox/TDBRadioGroup/TDBLookup*/TDBImage 数据感知实测；主窗体 87 个对象，`uAwareMain.lfm` 866 行） |
 | `demos/dialogs` | **对话框示例**（ShowMessage/MessageDlg/InputQuery/QuestionDlg/MessageBox/OpenDialog/SaveDialog） |
 | `demos/gallery` | **全功能画廊**（对标 uniGUI 全功能 Demo：12 页 60+ 控件 —— 标准控件/按钮/扩展输入/容器/网格/工具条/图表/HTML·PDF·上传/对话框/定时器/DB 感知/大表分页，`tests/t_gallery.py` 50 项回归） |
+| `plugins/` + `demos/plugindemo` | **插件化示例（阶段 0）**：主程序零业务窗体，页面与 AJAX 全部来自 `plugins/umod_*.pas`；界面用 `.lfm` 设计（`umod_notes.lfm`）或纯代码建（`umod_dashboard.pas`）都行；两个页面用 `TLWApp.OpenForm` 互跳；`plugins/template/` 是新插件起点；`python tools/lwplugins.py` 生成注册汇总并登记进 `.lpi`，回归 `tests/t_plugin.py`；**用法见 `docs/PLUGIN_GUIDE.md`** |
+| `demos/procdemo` | **进程级插件示例（阶段 1）**：插件 = 独立 exe（notesplug/dashplug 各自监听），宿主 `hostdemo` 不链接任何插件单元，`lwroute` 把 `/p/<名>/...` 反向代理过去；`TLWForm.RunJS` 导航；回归 `tests/t_route.py` |
 | `docs/MAPPING.md` | 控件/属性映射表 |
 | `docs/CONTROL_MATRIX.md` | **66 个可视控件的实测支持度矩阵**（自动生成） |
 | `docs/DB_AWARE_MATRIX.md` | **12 个 DB 感知控件的实测矩阵**（绑定/显示/同步/回写，自动生成） |
+| `docs/SECURITY.md` | **安全说明**：SQL 注入与信任边界（框架无 SQL 通道、demo 参数化范例、业务代码自检清单） |
+| `docs/PLUGIN_GUIDE.md` | **插件使用说明（手把手）**：跑 demo、加新页面、在自己工程接入、`.lfm` 注意点、AJAX、常见问题 |
+| `docs/PLUGIN_FEASIBILITY.md` | 插件化为什么这么做：跨 DLL 类身份实测、四方案对比、推荐路线 |
 | `docs/NOTES.md` | nogui 移植踩坑记录，坑 1–108 按时间累积（重点；坑 23/66 等旧结论已被后续坑修订，以标注为准） |
 | `docs/HOW_IT_WORKS.md` | **工作原理详解**（给第一次读代码的人：一次点击的完整回路、为什么不能全量 RTTI dump） |
 | `docs/MANUAL.md` | **使用手册**（使用篇 + 开发篇） |
+| `docs/FEATURES.md` | **特点与亮点**（一页看懂强在哪、边界在哪：十一个能力 / 七个做对了的决定 / 数字速览 / 与 uniGUI 对照） |
 | `docs/INDEX.md` | 文档导航索引（按场景找文档） |
 
 ## 快速开始
@@ -117,7 +128,9 @@ start-gui.bat           :: 双击启动 GUI 版（dbaware_gui.exe，见下节）
 --ssl                 开 HTTPS（FPC 自带；不给证书则自动生成自签证书）
 --ssl-host=名         证书主机名/SAN 域名或 IP，不是监听地址
 --ssl-cert=文件       指定 PEM 证书（与 --ssl-key 成对；相对路径按 exe 目录解析）
+                      给了证书/私钥即自动开 HTTPS，不必再写 --ssl
 --ssl-key=文件        指定 PEM 私钥（与 --ssl-cert 成对）
+--tls-cert= / --tls-key=  上面两个的别名（给了同样自动开 HTTPS）
 --ajax-cors           /lw/ajax/* 允许跨域调用（给第三方页面集成用）
 --verbose             打印每个请求与异常栈
 --nogui               GUI 构建下也不弹服务端面板（服务化部署）
@@ -296,7 +309,7 @@ tools/build.sh hyper_gui          # GUI 工具用宿主 widgetset 编
 
 | 位置 | 内容 |
 |---|---|
-| File → New → Project | **lazarusWeb Application**（默认 widgetset，`$APPTYPE GUI`，IDE 里 F9 直接跑，无黑窗口）与 **lazarusWeb Application (nogui)**（`LCLWidgetType=nogui` 控制台服务，部署档）两个模板。落盘时机与 Lazarus 自带模板一致：选完模板不弹对话框、不写盘（工程是"虚拟"的），按保存（Ctrl+S）时才弹"保存项目"对话框，目录默认取 IDE 选项里的"项目构建测试的目录"，这一步生成 `.lpr/.lpi/umain.pas/.lfm/build.bat/build.sh`，并把框架的 `src/client` 拷到工程目录下的 `lw/`（运行期按 `exe/lw/<文件>` 找静态资源）。nogui 档的 `.lpi` 宏在**保存事务真正结束之后**才补写（`.lpi` 与所有单元都落盘、连续两轮稳定才动手；保存过程中绝不弹框、不重载工程，见 NOTES 坑 172），所以**保存后约 1 秒**才补齐，补完弹一句「nogui 档：重新加载工程后生效」——点"是"重开工程，F9 就是无窗口控制台服务 |
+| File → New → Project | **lazarusWeb Application**（默认 widgetset，`$APPTYPE GUI`，IDE 里 F9 直接跑，无黑窗口）与 **lazarusWeb Application (nogui)**（`LCLWidgetType=nogui` 控制台服务，部署档）两个模板。落盘时机与 Lazarus 自带模板一致：选完模板不弹对话框、不写盘（工程是"虚拟"的），按保存（Ctrl+S）时才弹"保存项目"对话框，目录默认取 IDE 选项里的"项目构建测试的目录"，这一步生成 `.lpr/.lpi/umain.pas/.lfm/build.bat/build.sh/favicon.ico`，并把框架的 `src/client` 拷到工程目录下的 `lw/`（运行期按 `exe/lw/<文件>` 找静态资源；站点图标 `favicon.ico` 则放工程根目录，服务端按 `<root>` → `<exe 目录>` 顺序找）。nogui 档的 `.lpi` 宏在**保存事务真正结束之后**才补写（`.lpi` 与所有单元都落盘、连续两轮稳定才动手；保存过程中绝不弹框、不重载工程，见 NOTES 坑 172），所以**保存后约 1 秒**才补齐，补完弹一句「nogui 档：重新加载工程后生效」——点"是"重开工程，F9 就是无窗口控制台服务 |
 | File → New → File | **lazarusWeb Form** —— 一个 `TLWForm` 窗体单元，直接进设计器 |
 | 组件面板 | **lazarusWeb** 页：`TLWFileUpload` / `TLWCamera` 等 |
 
@@ -528,31 +541,28 @@ Alpine 渲染层内置移动端自适应，**业务代码零改动**：视口 �
 
 - **不配模板**：窗体按设计尺寸渲染（字号不缩小），超出屏幕的部分滚动
   平移查看——能用，但不是小屏优化的排布；
-- **配模板**：为窗体写一份 HTML 模板（`{%控件名%}` 占位符引用控件 Name，
-  浏览器把既有控件 DOM 搬进模板流式排布），事件与增量补丁照旧，跨断点
-  两端自动切换、不丢状态；改模板刷新即生效，无需重编：
-  - 移动 `<root>\tpl\<窗体名>.m.html` —— 手机单列排布，窗体贴满视口；
-  - 桌面 `<root>\tpl\<窗体名>.html` —— 自定义桌面排布（居中卡片、
-    双栏等），**窗体位置尺寸保持设计期**，只有客户区内容变流式；
+- **配模板**：为窗体写一份 `<root>\tpl\<窗体名>.html`，文件头用
+  `lw-tpl-mode:window|flat` 选择模式（两者同存时 flat 优先）。模板只作
+  背景/装饰层，**不重排控件**——控件始终按 LFM 的 `Left/Top` 绝对定位，
+  事件与增量补丁照旧；改模板刷新即生效，无需重编：
+  - `lw-tpl-mode:window` —— 现有浮窗，可移动/缩放；
+  - `lw-tpl-mode:flat` —— 标准网页整页，无标题栏/边框/拖动/缩放，页面自身滚动；
 - 手动切换：URL `?layout=mobile|desktop` 或 `LW.layout.set()`；
 - **一键生成模板骨架**：装了设计期包 `lwdesign` 后，IDE 的 **Tools 菜单**
   多一项「生成 lazarusWeb 窗体模板（当前单元 LFM）」——按当前打开窗体的
-  .lfm 一次生成**桌面 + 移动**两份模板骨架到 `<工程目录>\tpl\`（含
-  `{%控件名%}` 占位符、按设计期逐控件定高的基础 CSS，铺满窗体的主区域
-  按**容器**高度伸缩 `calc(100% - 其它控件)`（桌面按行累计，移动单列直加；
-  不是 `100vh` —— 窗体开进浮窗时客户区比视口小），已存在逐份询问覆盖），
-  生成时附自检报告（跳过的非可视控件、重复/非法占位符名、嵌套容器、主区域
-  改动）；生成完拷到运行根目录（或工程目录即运行根目录时直接生效），刷新即见；
-  详见 `MANUAL.md` 16.0；现成范例 `demos\mobile_demo\tpl\`（手工调过比例），
-  生成器本身拿 `demos\gallery` 与 `demos\dbaware` 的真实窗体做解析与尺寸
-  回归（后者覆盖浮窗里的主窗体、无主区域的登录页、顶部工具行 + PDF 主区域）；
+  .lfm 先弹「窗口模式 / 平面模式 / 取消」，再只生成**一个**
+  `<窗体名>.html` 到 `<工程目录>\tpl\`（文件头写对应模式标记；文件头注释
+  列出顶层控件的设计期坐标与自检报告；不再生成 `{%控件名%}` 占位符、
+  `.m.html` 或 `.flat.html`；已存在询问覆盖）。生成完拷到运行根目录
+  （或工程目录即运行根目录时直接生效），`Ctrl+F5` 强刷即见；
+  详见 `MANUAL.md` 16.0。旧 `.flat.html` 仍按兼容规则触发平面模式，
+  想切回窗口模式请删除它；
 - **拍照上传**：`TLWCamera` 控件（组件面板拖上即用）——手机点按钮唤起
   系统相机，拍完自动传回服务端（`OnCapture`），浏览器本地即时预览；
   局域网 http 可用（不需要 HTTPS），见 README「拍照（TLWCamera）」节；
 - 使用说明见 `docs/MANUAL.md` 使用篇「移动端」节，模板开发指南见
-  `MANUAL.md` 第二篇「16. 窗体模板开发指南（桌面 + 移动）」，机制与
-  实测见 `docs/MOBILE.md` §8，可跑范例 `demos/mobile_demo`
-  （同一窗体配了桌面 + 移动两份模板）。
+  `MANUAL.md` 第二篇「16. 窗体模板开发指南（窗口 + 平面）」；
+  机制原始记录见 `docs/MOBILE.md` §8（旧占位符方案的历史存档）。
 
 ## 已知限制
 
@@ -563,8 +573,8 @@ Alpine 渲染层内置移动端自适应，**业务代码零改动**：视口 �
   想在服务端选文件请自己用 `TListView`/`TShellListView` 之类拼一个界面；
 - 未适配的控件浏览器端是灰框占位（服务端照常活着），不影响别的控件；
   具体清单见 `docs/CONTROL_MATRIX.md`；
-- `TSplitter` 只画分隔条，**不支持拖动**；`TProgressBar` / `TTrackBar`
-  浏览器端的调整不会回写服务端（`TUpDown` 上下箭头会回写并联动
+- `TSplitter` 只画分隔条，**不支持拖动**；`TProgressBar` / `TTrackBar` /
+  `TUpDown` 浏览器端的调整都会回写服务端（`TUpDown` 上下箭头还会联动
   Associate 编辑框，见 `docs/NOTES.md` 坑 152）；
 - 高 DPI 只按虚拟显示器 96 DPI 处理（`lwws.pas` 常量可改）；
   在 125%/150% 缩放的 Windows 上设计的窗体（lfm 里 `DesignTimePPI=120/144`）
@@ -746,10 +756,20 @@ GUI 版与控制台版共用 `src/core/lwhyper.pas`，代理行为完全一致�
 --logdir=目录        worker 日志目录（缺省 <TEMP>\lwhyper）
 --ssl                外层开 HTTPS；worker 之间仍走 HTTP
 --ssl-host=名        证书主机名/SAN 域名或 IP；留空用自签证书
---ssl-cert=文件      指定 PEM 证书（与 --ssl-key 成对）
+--ssl-cert=文件      指定 PEM 证书（与 --ssl-key 成对）；给了即自动开 HTTPS
 --ssl-key=文件       指定 PEM 私钥（与 --ssl-cert 成对）
+--tls-cert= / --tls-key=  上面两个的别名（给了同样自动开 HTTPS）
+--hot-update         热更新（缺省开）：监听新版本 exe，换壳后逐个滚动重启 worker
+--no-hot-update      关热更新
+--update-dir=目录    新版本投放目录（放与业务 exe 同名的文件；缺省看 <exe>.new）
 --verbose            打印每个代理请求与探针
 ```
+
+**热更新（零停机换版）**：编译好后把新 exe 拷成 `<业务exe>.new`（或扔进
+`--update-dir`），lwhyper 会在约 4 秒落定判定后换壳，并**逐个**重启 worker
+（任一时刻至少 N-1 个在服务）；新版本起不来会自动回滚并留存 `.bad-<时间>`。
+停 worker 走的是优雅退出（worker 侧 `POST /lw/shutdown` + 令牌），不是强杀。
+机制与用法见 `docs/WHYPER.md` §5.1（用法）/ §5.2（实现）。
 
 自身端点：`/lw/healthz`（汇总探针）、`/lw/hyper/status`（worker 明细：
 端口/pid/存活/会话数/重启次数/粘性会话数）。
@@ -766,6 +786,9 @@ GUI 版与控制台版共用 `src/core/lwhyper.pas`，代理行为完全一致�
   但反代配置不再需要 `ip_hash` / worker 清单（粘性由 lwhyper 管）；
 - 回归：`tests/t_hyper.py`（20 项，需先手动起 lwhyper）+
   `tests/t_hyper_ws.py`（6 项 WS 隧道，run_with_server 全自动）。
+
+分发机制（为什么必须应用层粘性、sid 表怎么维护、探针/热身闸门/重试语义、
+WebSocket 为什么 TCP 级透传、单点故障边界）见 **`docs/LOADBALANCE.md`**。
 
 ## 路线图
 
