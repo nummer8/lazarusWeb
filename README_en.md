@@ -15,6 +15,12 @@ Browser (Alpine.js by default / Ext JS optional) — Server (Lazarus, nogui widg
 - Ext JS 7.0.0 (GPLv3 edition, **optional**: not included in the release package; obtain it yourself from Sencha's official channel and place it into `ext-7.0.0\`; when absent, the built-in Alpine.js rendering layer is used by default)
 - **Ext support is an optional feature; the ext-js files must be obtained by the user, and the user is responsible for license compliance.**
 
+## Component Installation
+1、src\lwcore.lpk —> compile only
+2、src\lwserver.lpk —> compile only
+3、src\design\lwdesign.lpk —> compile and install
+
+
 ## Cross-platform build matrix (host → target)
 
 All source code (`src/`, `tools/`, `demos/`) is cross-platform: platform differences in the core units (timestamp precision / critical-section reentrancy / path style, etc.) are isolated with `$IFDEF MSWINDOWS/LCLGTK2/LCLQT5` and all have non-Windows branches; no Windows-only units are referenced. All `.lpi`/`.lpk` paths use forward slashes and never hard-code the target CPU/OS (artifact names use the `$(TargetCPU)-$(TargetOS)` variables).
@@ -470,7 +476,7 @@ The Alpine rendering layer has built-in mobile adaptation, **with zero changes t
 - Only one dialog at a time: a nested second dialog in the same session is ignored (the browser cannot stack two modals);
 - `TOpenDialog` does not read server directory listings — the browser picker can only "upload a file", not browse the server disk; to pick files on the server, build your own UI with `TListView`/`TShellListView` or similar;
 - Unsupported controls appear as gray placeholder boxes in the browser (the server side is alive as usual) and don't affect other controls; the specific list is in `docs/CONTROL_MATRIX.md`;
-- `TSplitter` only draws the divider, **dragging is not supported**; adjustments to `TProgressBar` / `TTrackBar` in the browser are not written back to the server (`TUpDown` arrow buttons do write back and link to the Associate edit box, see `docs/NOTES.md` pitfall 152);
+- `TSplitter` only draws the divider, **dragging is not supported**; adjustments to `TProgressBar` / `TTrackBar` / `TUpDown` in the browser are all written back to the server (`TUpDown` arrow buttons also link to the Associate edit box, see `docs/NOTES.md` pitfall 152);
 - High DPI is handled only at the virtual display's 96 DPI (the constant in `lwws.pas` can be changed); forms designed on Windows at 125%/150% scaling (`DesignTimePPI=120/144` in the lfm) are automatically scaled back to 96 DPI at creation time (geometry and fonts together, driven by `Application.Scaled`, see `docs/NOTES.md` pitfall 18).
 
 ## Database applications (TDBGrid / TDBEdit + SQLite)
