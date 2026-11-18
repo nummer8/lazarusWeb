@@ -3,9 +3,11 @@
   设计期 IDE 集成：Tools 菜单「生成 lazarusWeb 窗体模板（当前单元 LFM）」。
 
   行为：取当前源码编辑器文件——.lfm 直接用；.pas/.pp 按同名 .lfm 找——
-  解析顶层控件（lwdsgntplcore），在 <工程目录>\tpl\ 下生成两份模板骨架：
-    <窗体名>.html    桌面（按设计期宽度比例流式）
-    <窗体名>.m.html  移动（单列流式）
+  点击菜单先弹模式选择，再解析顶层控件（lwdsgntplcore）写入 <工程目录>\tpl\：
+    窗口模式：浮窗可移动/缩放；平面模式：标准网页整页布局（无浮窗标题/边框）。
+    两种模式都只生成 <窗体名>.html，文件头写 lw-tpl-mode:window|flat 标记，
+    由客户端按标记决定渲染方式；同名文件不会两种模式共存。
+    模板只作背景/装饰层，控件始终按 LFM 的 Left/Top 绝对定位。
   文件已存在时询问是否覆盖。无工程时写到单元文件旁边的 tpl\。
   生成后弹窗告知路径（模板 no-store 下发，放进运行根目录的 tpl\ 即生效）。
 
@@ -25,7 +27,7 @@ implementation
 
 uses
   MenuIntf, LazIDEIntf, ProjectIntf, SrcEditorIntf,
-  Dialogs, Controls, LazFileUtils, lwdsgntplcore;
+  Dialogs, Controls, LazFileUtils, StrUtils, lwdsgntplcore;
 
 type
   { RegisterIDEMenuCommand 的回调是 method 指针，处理逻辑挂在这个
@@ -83,7 +85,8 @@ var
   Kids: TObjectList;
   SL, Warnings: TStringList;
   Prj: TLazProject;
-  FMobile, FDesktop: string;
+  FOut: string;
+  Flat: Boolean;
 begin
   LfmPath := CurrentLfmFile;
   if LfmPath = '' then
@@ -91,6 +94,19 @@ begin
     ShowMessage('lazarusWeb 模板生成：' + sLineBreak +
       '请先打开窗体单元（.pas）或窗体文件（.lfm）。' + sLineBreak +
       '当前编辑器里没有可识别的单元文件。');
+    Exit;
+  end;
+
+  { 模式选择：两种模式都写同一个 <窗体名>.html，靠文件头标记区分 }
+  case QuestionDlg('lazarusWeb 模板生成',
+    '请选择要生成的模板模式：' + sLineBreak +
+    '  窗口模式：现有浮窗（可移动、调整大小）；' + sLineBreak +
+    '  平面模式：标准网页整页布局（无标题栏、不可拖动缩放）；' + sLineBreak +
+    '两者都只生成 <窗体名>.html，控件始终保持设计期绝对位置。',
+    mtConfirmation, [mrYes, '窗口模式', mrNo, '平面模式', mrCancel, '取消'], 0) of
+    mrYes: Flat := False;
+    mrNo: Flat := True;
+  else
     Exit;
   end;
 
@@ -106,12 +122,8 @@ begin
       Exit;
     end;
     if Kids.Count = 0 then
-    begin
-      ShowMessage('lazarusWeb 模板生成：' + sLineBreak +
-        '窗体 ' + FormName + ' 没有可进模板的顶层控件' + sLineBreak +
-        '（非可视控件与状态栏会被跳过）。');
-      Exit;
-    end;
+      Warnings.Add('窗体 ' + FormName +
+        ' 没有顶层可视控件（非可视控件与状态栏会被跳过），本次生成空容器骨架');
 
     { 输出目录：<工程目录>\tpl\（工程目录取 .lpi 所在目录），无工程时退回 lfm 旁边 }
     OutDir := '';
@@ -128,40 +140,41 @@ begin
     if not DirectoryExistsUTF8(OutDir) then
       ForceDirectoriesUTF8(OutDir);
 
-    FMobile := OutDir + PathDelim + FormName + '.m.html';
-    FDesktop := OutDir + PathDelim + FormName + '.html';
-    if FileExistsUTF8(FMobile) and
-       (QuestionDlg('lazarusWeb', '移动模板已存在，覆盖？' + sLineBreak +
-        FMobile, mtConfirmation, [mrYes, '覆盖', mrNo, '跳过'], 0) <> mrYes) then
-      FMobile := '';
-    if FileExistsUTF8(FDesktop) and
-       (QuestionDlg('lazarusWeb', '桌面模板已存在，覆盖？' + sLineBreak +
-        FDesktop, mtConfirmation, [mrYes, '覆盖', mrNo, '跳过'], 0) <> mrYes) then
-      FDesktop := '';
+    { 两种模式共用同一个文件名；文件头标记决定渲染方式 }
+    FOut := OutDir + PathDelim + FormName + '.html';
+    if FileExistsUTF8(FOut) and
+       (QuestionDlg('lazarusWeb', '模板已存在，覆盖？' + sLineBreak +
+        FOut, mtConfirmation, [mrYes, '覆盖', mrNo, '跳过'], 0) <> mrYes) then
+      FOut := '';
 
-    if FMobile <> '' then
-      SaveUtf8File(FMobile, GenMobileTplEx(FormName, Kids, FormWidth, Warnings));
-    if FDesktop <> '' then
-      SaveUtf8File(FDesktop, GenDesktopTplEx(FormName, Kids, FormWidth, Warnings));
+    if FOut <> '' then
+      SaveUtf8File(FOut, GenUnifiedTplEx(FormName, Kids, FormWidth, Flat, Warnings));
 
-    if (FMobile = '') and (FDesktop = '') then
-      ShowMessage('lazarusWeb 窗体模板：两份模板都已存在且未覆盖，未做改动。')
+    if FOut = '' then
+      sMsg := 'lazarusWeb 窗体模板：模板已存在且未覆盖，未做改动。'
     else
     begin
-      sMsg := 'lazarusWeb 窗体模板已生成（窗体 ' + FormName + '，' +
-        IntToStr(Kids.Count) + ' 个顶层控件）：';
-      if FDesktop <> '' then
-        sMsg := sMsg + sLineBreak + '  桌面：' + FDesktop;
-      if FMobile <> '' then
-        sMsg := sMsg + sLineBreak + '  移动：' + FMobile;
-      sMsg := sMsg + sLineBreak + sLineBreak +
+      if Flat then
+        sMsg := 'lazarusWeb 平面模板已生成（窗体 ' + FormName + '，' +
+          IntToStr(Kids.Count) + ' 个顶层控件）：'
+      else
+        sMsg := 'lazarusWeb 窗口模板已生成（窗体 ' + FormName + '，' +
+          IntToStr(Kids.Count) + ' 个顶层控件）：';
+      sMsg := sMsg + sLineBreak + '  ' + FOut + sLineBreak + sLineBreak +
         '放进运行根目录的 tpl\ 下即被 /lw/tpl/ 下发（no-store，改动刷新即生效）；' +
-        sLineBreak + '骨架只含占位符与基础 CSS，可按手册第二篇 16 精修。';
+        sLineBreak + '模板只作背景装饰层，控件保持设计期 Left/Top 绝对位置；' +
+        sLineBreak + '文件头 lw-tpl-mode:' +
+        IfThen(Flat, 'flat', 'window') + ' 决定浮窗或整页渲染。';
+    end;
+
+    if FOut <> '' then
+    begin
       if Warnings.Count > 0 then
       begin
         sMsg := sMsg + sLineBreak + sLineBreak + '自检提示（也已写入模板文件头）：';
         for i := 0 to Warnings.Count - 1 do
-          sMsg := sMsg + sLineBreak + '  - ' + Warnings[i];
+          if Pos('生成占位符', Warnings[i]) = 0 then   { 统一模板不用占位符 }
+            sMsg := sMsg + sLineBreak + '  - ' + Warnings[i];
       end;
       ShowMessage(sMsg);
     end;

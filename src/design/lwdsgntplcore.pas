@@ -63,6 +63,19 @@ function GenDesktopTpl(const FormName: string; Children: TObjectList;
 function GenDesktopTplEx(const FormName: string; Children: TObjectList;
   FormWidth: Integer; Warnings: TStrings): string;
 
+{ 生成平面模板（标准网页整页）：完整 HTML5 文档，body 普通文档流，
+  无浮窗标题/边框/拖动/缩放；控件按设计期高度定高，避免搬迁后容器塌陷。
+  与桌面/移动模板共用同名占位符语法（花括号包控件名）。 }
+function GenFlatTplEx(const FormName: string; Children: TObjectList;
+  FormWidth: Integer; Warnings: TStrings): string;
+
+{ 统一模板：窗口/平面两种模式只生成一个 <窗体名>.html，文件头写
+  `lw-tpl-mode:window|flat` 标记，客户端按标记决定浮窗或整页渲染。
+  模板只作背景装饰层，不再用 {%控件名%} 重排控件；控件始终按 LFM 的
+  Left/Top 绝对定位。若文件里同时出现两种标记，flat 优先。 }
+function GenUnifiedTplEx(const FormName: string; Children: TObjectList;
+  FormWidth: Integer; Flat: Boolean; Warnings: TStrings): string;
+
 implementation
 
 { 尺寸策略辅助（定义在 Gen* 之前，解析阶段的自检也要用它们判定主区域） }
@@ -754,6 +767,169 @@ function GenDesktopTpl(const FormName: string; Children: TObjectList;
   FormWidth: Integer): string;
 begin
   Result := GenDesktopTplEx(FormName, Children, FormWidth, nil);
+end;
+
+function GenFlatTplEx(const FormName: string; Children: TObjectList;
+  FormWidth: Integer; Warnings: TStrings): string;
+var
+  i: Integer;
+  c: TTplChild;
+  K: string;
+begin
+  K := 'tpl-flat-' + LowerCase(FormName);
+  if FormWidth <= 0 then
+    FormWidth := 800;
+
+  Result :=
+    '<!DOCTYPE html>' + sLineBreak +
+    '<!--' + sLineBreak +
+    '  ' + FormName + ' 的平面（整页网页）布局模板 —— 由 lwdesign 的 IDE' + sLineBreak +
+    '  Tools 菜单「生成 lazarusWeb 窗体模板」选择平面模式后生成（起始骨架）。' + sLineBreak +
+    '  独立 HTML5 文档：body 普通文档流、页面自身滚动，不带窗口标题/边框，' + sLineBreak +
+    '  不可拖动或调整大小（如需浮窗请改用窗口模式生成的桌面/移动模板）。' + sLineBreak +
+    '  {%控件名%} 与现有模板一致：浏览器端把它换成该控件的既有 DOM 节点，' + sLineBreak +
+    '  事件与增量补丁照旧；占位符引用不存在的控件名时无法完成替换。' + sLineBreak +
+    '  设计期窗体宽 ' + IntToStr(FormWidth) + 'px 仅作参考：整页宽度由 CSS 的' + sLineBreak +
+    '  max-width 控制，控件高度沿用设计期值以防搬迁后容器塌陷。' + sLineBreak +
+    '  顶层控件清单（lfm 解析，按视觉顺序）：';
+  for i := 0 to Children.Count - 1 do
+  begin
+    c := TTplChild(Children[i]);
+    Result := Result + sLineBreak + '    ' + c.Name + ' : ' + c.Cls +
+      '  (' + IntToStr(c.Left) + ',' + IntToStr(c.Top) + ' ' +
+      IntToStr(c.Width) + 'x' + IntToStr(c.Height) + ')';
+  end;
+  if Warnings <> nil then
+  begin
+    Result := Result + sLineBreak +
+      '  自检提示（IDE 菜单同步显示；其中主区域伸缩一句只针对窗口模板，' + sLineBreak +
+      '  平面模板一律沿用设计期高度）：';
+    for i := 0 to Warnings.Count - 1 do
+      Result := Result + sLineBreak + '  ! ' + Warnings[i];
+  end;
+  Result := Result + sLineBreak + '-->' + sLineBreak;
+
+  Result := Result +
+    '<html lang="zh-CN">' + sLineBreak +
+    '<head>' + sLineBreak +
+    '  <meta charset="utf-8">' + sLineBreak +
+    '  <meta name="viewport" content="width=device-width, initial-scale=1">' + sLineBreak +
+    '  <title>' + FormName + ' · lazarusWeb 平面模板</title>' + sLineBreak +
+    '  <style>' + sLineBreak +
+    '    /* 平面模式：普通网页布局，内容超过视口时由页面自身滚动；' + sLineBreak +
+    '       不依赖浮窗客户区高度，也不用 calc(100% - ...) 抢高度。 */' + sLineBreak +
+    '    html, body { margin: 0; padding: 0; min-height: 100%; }' + sLineBreak +
+    '    body { background: #f5f7fa; color: #2b3a49;' + sLineBreak +
+    '           font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", Arial, sans-serif; }' + sLineBreak +
+    '    .' + K + ' { max-width: 1080px; margin: 0 auto; padding: 16px 24px 32px;' + sLineBreak +
+    '                box-sizing: border-box; display: flex; flex-direction: column;' + sLineBreak +
+    '                gap: 12px; }' + sLineBreak +
+    '    .' + K + ' > .lw-ph { margin: 0; flex: 0 0 auto; box-sizing: border-box; }' + sLineBreak +
+    '    .' + K + ' > .lw-ph > .lw-n { width: 100% !important; }' + sLineBreak +
+    '    /* 面板/页签/备忘录的内容层随包装层撑满 */' + sLineBreak +
+    '    .' + K + ' > .lw-ph > .lw-n > .lw-body,' + sLineBreak +
+    '    .' + K + ' > .lw-ph > .lw-n > .lw-memo {' + sLineBreak +
+    '      width: 100% !important; height: 100% !important; }' + sLineBreak;
+  for i := 0 to Children.Count - 1 do
+  begin
+    c := TTplChild(Children[i]);
+    if c.Height > 0 then
+      Result := Result + '    .' + K + ' > .lw-ph[data-lw-ph="' + c.Name +
+        '"] > .lw-n { height: ' + IntToStr(c.Height) + 'px !important; }' + sLineBreak;
+  end;
+  Result := Result + ContainerRules('.' + K, Children) +
+    '  </style>' + sLineBreak +
+    '</head>' + sLineBreak +
+    '<body>' + sLineBreak +
+    '<div class="' + K + '">' + sLineBreak;
+  for i := 0 to Children.Count - 1 do
+  begin
+    c := TTplChild(Children[i]);
+    Result := Result + '  {%' + c.Name + '%}' +
+      ' <!-- ' + c.Cls + ' -->' + sLineBreak;
+  end;
+  Result := Result + '</div>' + sLineBreak +
+    '</body>' + sLineBreak +
+    '</html>' + sLineBreak;
+end;
+
+function GenUnifiedTplEx(const FormName: string; Children: TObjectList;
+  FormWidth: Integer; Flat: Boolean; Warnings: TStrings): string;
+var
+  i: Integer;
+  c: TTplChild;
+  K, ModeName, ModeText, Note: string;
+begin
+  if Flat then
+  begin
+    ModeName := 'flat';
+    ModeText := '平面模式（整页网页：无标题栏/边框/拖动/缩放）';
+    Note := '整页宽高由浏览器视口决定，页面自身滚动';
+  end
+  else
+  begin
+    ModeName := 'window';
+    ModeText := '窗口模式（现有浮窗：可移动、可调整大小）';
+    Note := '窗体几何仍由框架按设计期保持';
+  end;
+  K := 'tpl-' + LowerCase(FormName) + '-' + ModeName;
+  if FormWidth <= 0 then
+    FormWidth := 800;
+
+  Result := '';
+  if Flat then
+    Result := '<!DOCTYPE html>' + sLineBreak;
+  Result := Result +
+    '<!-- lw-tpl-mode:' + ModeName + ' -->' + sLineBreak +
+    '<!--' + sLineBreak +
+    '  ' + FormName + ' 的' + ModeText + '模板 —— 由 lwdesign 的 IDE' + sLineBreak +
+    '  Tools 菜单「生成 lazarusWeb 窗体模板」生成（起始骨架）。' + sLineBreak +
+    '  窗口/平面统一使用 <窗体名>.html 这一个文件名；文件头的 lw-tpl-mode' + sLineBreak +
+    '  决定浏览器按浮窗还是整页渲染。若文件里同时出现两种标记，flat 优先。' + sLineBreak +
+    '  本模板只作背景/装饰层：不重排控件、不使用花括号控件名占位符。' + sLineBreak +
+    '  控件继续由框架按 LFM 的 Left/Top 绝对定位，' + Note + '。' + sLineBreak +
+    '  可在下面 <style> 与 <div> 里加背景、花纹、说明文字等装饰；' + sLineBreak +
+    '  装饰层 pointer-events:none，不拦截控件事件。' + sLineBreak +
+    '  设计期窗体宽 ' + IntToStr(FormWidth) + 'px。' + sLineBreak +
+    '  顶层控件清单（lfm 解析，设计期坐标供参考）：';
+  for i := 0 to Children.Count - 1 do
+  begin
+    c := TTplChild(Children[i]);
+    Result := Result + sLineBreak + '    ' + c.Name + ' : ' + c.Cls +
+      '  (left=' + IntToStr(c.Left) + ', top=' + IntToStr(c.Top) +
+      ', ' + IntToStr(c.Width) + 'x' + IntToStr(c.Height) + ')';
+  end;
+  if Children.Count = 0 then
+    Result := Result + sLineBreak + '    （空窗体：只有装饰层，没有顶层可视控件）';
+  if Warnings <> nil then
+  begin
+    Result := Result + sLineBreak + '  自检提示（IDE 菜单同步显示）：';
+    for i := 0 to Warnings.Count - 1 do
+      if Pos('生成占位符', Warnings[i]) = 0 then   { 统一模板不用占位符 }
+        Result := Result + sLineBreak + '  ! ' + Warnings[i];
+  end;
+  Result := Result + sLineBreak + '-->' + sLineBreak;
+
+  if Flat then
+    Result := Result + '<head>' + sLineBreak;
+  Result := Result + '<style>' + sLineBreak +
+    '  /* 装饰层：铺满窗体客户区/整页，控件仍是客户的绝对定位子节点。 */' + sLineBreak;
+  if Flat then
+  begin
+    Result := Result +
+      '  html, body { margin: 0; padding: 0; min-height: 100%; }' + sLineBreak +
+      '  body { background: #f5f7fa; color: #2b3a49;' + sLineBreak +
+      '         font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", Arial, sans-serif; }' + sLineBreak;
+  end;
+  Result := Result +
+    '  .' + K + ' { position: absolute; left: 0; top: 0; right: 0; bottom: 0;' + sLineBreak +
+    '              box-sizing: border-box; pointer-events: none; }' + sLineBreak +
+    '  </style>' + sLineBreak;
+  if Flat then
+    Result := Result + '</head>' + sLineBreak + '<body>' + sLineBreak;
+  Result := Result + '<div class="' + K + '"></div>' + sLineBreak;
+  if Flat then
+    Result := Result + '</body>' + sLineBreak + '</html>' + sLineBreak;
 end;
 
 end.
