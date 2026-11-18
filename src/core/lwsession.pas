@@ -165,6 +165,7 @@ type
     function SessionIsModal(AForm: TCustomForm): Boolean; override;
     procedure SessionShowForm(AForm: TCustomForm); override;
     procedure SessionHideForm(AForm: TCustomForm); override;
+    procedure SessionHideOthers(AKeep: TCustomForm); override;
     function SessionFindForm(const AName: string): TCustomForm; override;
     procedure SessionForgetForm(AForm: TCustomForm); override;
     function SessionGetVar(const AName: string): string; override;
@@ -437,6 +438,38 @@ begin
     cmd.Free;
   end;
   SessionNotify('Hide: ' + AForm.Name);
+end;
+
+{ 页面切换支撑：撤下除 AKeep 之外的所有可见窗体。
+  只翻 WebVisible + 推 closeform，不动 FForms 清单 —— 服务端实例保留，
+  业务代码下次还能再开（多窗体切换就靠这个）。
+  FModal 不碰：模态窗体的生死由 ShowModalInSession/SessionEndModal 管，
+  在这里隐藏它会让模态等待永久挂起。 }
+procedure TLWSession.SessionHideOthers(AKeep: TCustomForm);
+var
+  i: Integer;
+  f: TCustomForm;
+  victims: TList;
+begin
+  victims := TList.Create;
+  try
+    FLock.Enter;
+    try
+      for i := 0 to FForms.Count - 1 do
+      begin
+        f := TCustomForm(FForms[i]);
+        if (f = AKeep) or (f = FModal) then Continue;
+        if (f is TLWForm) and TLWForm(f).WebVisible then
+          victims.Add(f);
+      end;
+    finally
+      FLock.Leave;
+    end;
+    for i := 0 to victims.Count - 1 do
+      SessionHideForm(TCustomForm(victims[i]));
+  finally
+    victims.Free;
+  end;
 end;
 
 function TLWSession.VisibleWebFormCount: Integer;

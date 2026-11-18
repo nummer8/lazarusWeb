@@ -71,6 +71,10 @@ type
       对应 uniGUI 的 UniSession.AddJS / uniToast；比 ShowMessage 轻：
       不挂起线程、不需要用户点确定。 }
     procedure ShowToast(const AMsg: string; const ATitle: string = '');
+    { 服务端推一段 JS 到浏览器执行（对标 uniGUI 的 UniSession.AddJS）。
+      与组件树同一信任层级：代码来自服务端业务代码，不来自浏览器。
+      典型用法：进程级插件导航 —— RunJS('window.open(''/p/notes/'')') }
+    procedure RunJS(const AJS: string);
   published
     { 浏览器端默认配色（Alpine 渲染层）。
       twAuto（缺省）= 跟随系统；twLight / twPaper / twMint / twContrast
@@ -205,6 +209,24 @@ begin
     cmd.Add('type', 'toast');
     cmd.Add('title', ATitle);
     cmd.Add('text', AMsg);
+    S.SessionPushCommand(cmd.AsJSON);
+  finally
+    cmd.Free;
+  end;
+end;
+
+procedure TLWForm.RunJS(const AJS: string);
+var
+  S: TLWSessionBase;
+  cmd: TJSONObject;
+begin
+  S := LWCurrentSession;
+  if S = nil then Exit;   { 设计期/本地模式：没有浏览器可推 }
+  if AJS = '' then Exit;
+  cmd := TJSONObject.Create;
+  try
+    cmd.Add('type', 'js');
+    cmd.Add('code', AJS);
     S.SessionPushCommand(cmd.AsJSON);
   finally
     cmd.Free;

@@ -46,6 +46,10 @@ type
     function Has(const AKeys: array of string): Boolean;
     function Str(const AKeys: array of string; const ADef: string): string;
     function Int(const AKeys: array of string; ADef: Integer): Integer;
+    { 取出所有键名以 APrefix 开头（归一化后）的项，追加到 AList：
+      每项 'name=value'（name 为去掉前缀后的原始键）。插件清单
+      plugin.<名>=host:port 这类"同名多键"场景用 }
+    procedure ItemsWithPrefix(const APrefix: string; AList: TStrings);
     property Path: string read FPath;
     property Notes: TStringList read FNotes;
   end;
@@ -382,6 +386,21 @@ begin
     if RawGet(AKeys[i], v) then
       Exit(StrToIntDef(Trim(v), ADef));
   Result := ADef;
+end;
+
+procedure TLWConfig.ItemsWithPrefix(const APrefix: string; AList: TStrings);
+var
+  p: string;
+  i, cut: Integer;
+begin
+  if AList = nil then Exit;
+  p := NormKey(APrefix);
+  if p = '' then Exit;
+  cut := Length(p);
+  for i := 0 to FItems.Count - 1 do
+    if Copy(FItems.Names[i], 1, cut) = p then
+      AList.Add(Copy(FItems.Names[i], cut + 1, MaxInt) + '=' +
+        FItems.ValueFromIndex[i]);
 end;
 
 end.

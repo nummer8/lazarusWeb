@@ -45,7 +45,7 @@ interface
 uses
   Classes, SysUtils, DateUtils, fphttpserver, httpdefs, httpprotocol, fpjson, jsonparser,
   ssockets, Sockets, Forms, Controls, lwbase, lwsession, lwdispatch, lwform, lwupload, lwdownload,
-  lwajax, lwwebsocket, lwrlog, lwcaptcha, opensslsockets;
+  lwajax, lwwebsocket, lwrlog, lwcaptcha, lwroute, opensslsockets;
 
 type
   TLWServerConfig = record
@@ -177,10 +177,10 @@ type
     procedure HandleRequest(Sender: TObject; var ARequest: TFPHTTPConnectionRequest;
       var AResponse: TFPHTTPConnectionResponse);
     procedure Route(var ARequest: TFPHTTPConnectionRequest; var AResponse: TFPHTTPConnectionResponse);
-    procedure ServeIndex(const AExtVer, AForm, ATheme: string; var AResponse: TFPHTTPConnectionResponse);
+    procedure ServeIndex(const AExtVer, AForm, ATheme, ABase: string; var AResponse: TFPHTTPConnectionResponse);
     { Alpine.js 客户端外壳（?client=alpine）：与 Ext 版同协议，渲染层换 Alpine }
-    function BuildAlpineHtml(const AForm: string): string;
-    procedure ServeAlpineIndex(const AForm: string; var AResponse: TFPHTTPConnectionResponse);
+    function BuildAlpineHtml(const AForm, ABase: string): string;
+    procedure ServeAlpineIndex(const AForm, ABase: string; var AResponse: TFPHTTPConnectionResponse);
     procedure ServeFile(const AFullPath: string; var AResponse: TFPHTTPConnectionResponse);
     procedure ServeExt(const APath: string; var AResponse: TFPHTTPConnectionResponse);
     procedure Reply(const AText, AMime: string; ACode: Integer; var AResponse: TFPHTTPConnectionResponse);
@@ -247,7 +247,7 @@ type
     function SessionCount: Integer;
     procedure SetVerbose(AValue: Boolean);
     function ExtRootFor(const AVer: string): string;
-    function BuildIndexHtml(const AExtVer, AForm, ATheme: string): string;
+    function BuildIndexHtml(const AExtVer, AForm, ATheme, ABase: string): string;
     { WebSocket（/lw/ws）}
     procedure WSHandlesUpgrade(aRequest: TFPHTTPConnectionRequest;
       var aHandles: Boolean);
@@ -1214,7 +1214,7 @@ begin
   ServeFile(full, AResponse);
 end;
 
-function TLWServer.BuildIndexHtml(const AExtVer, AForm, ATheme: string): string;
+function TLWServer.BuildIndexHtml(const AExtVer, AForm, ATheme, ABase: string): string;
 var
   ver, th: string;
   hasChartCss, hasChartJs: Boolean;
@@ -1240,19 +1240,22 @@ begin
   Result := Result + LineEnding + '<html><head><meta charset="utf-8">';
   Result := Result + LineEnding + '<meta name="viewport" content="width=device-width, initial-scale=1">';
   Result := Result + LineEnding + '<title>' + FCfg.Title + '</title>';
-  Result := Result + LineEnding + '<link rel="icon" href="/favicon.ico" type="image/x-icon">';
-  Result := Result + LineEnding + '<link rel="stylesheet" href="/ext/' + ver + '/build/classic/theme-' + th + '/resources/theme-' + th + '-all.css">';
+  { ABase：外壳资源的前缀。直接访问为 '/'（与旧行为逐字节一致）；
+    经 lwroute 代理时为 /p/<插件名>/（X-Forwarded-Prefix），
+    资源 URL 落在代理前缀下再被剥前缀转发回本进程 }
+  Result := Result + LineEnding + '<link rel="icon" href="' + ABase + 'favicon.ico" type="image/x-icon">';
+  Result := Result + LineEnding + '<link rel="stylesheet" href="' + ABase + 'ext/' + ver + '/build/classic/theme-' + th + '/resources/theme-' + th + '-all.css">';
   if hasChartCss then
   begin
-    Result := Result + LineEnding + '<link rel="stylesheet" href="/ext/' + ver + '/build/packages/charts/classic/crisp/resources/charts-all.css">';
+    Result := Result + LineEnding + '<link rel="stylesheet" href="' + ABase + 'ext/' + ver + '/build/packages/charts/classic/crisp/resources/charts-all.css">';
   end;
-  Result := Result + LineEnding + '<link rel="stylesheet" href="/lw/lw.css?v=' + LW_VERSION + '">';
-  Result := Result + LineEnding + '<script src="/ext/' + ver + '/build/ext-all.js"></script>';
+  Result := Result + LineEnding + '<link rel="stylesheet" href="' + ABase + 'lw/lw.css?v=' + LW_VERSION + '">';
+  Result := Result + LineEnding + '<script src="' + ABase + 'ext/' + ver + '/build/ext-all.js"></script>';
   if hasChartJs then
   begin
-    Result := Result + LineEnding + '<script src="/ext/' + ver + '/build/packages/charts/classic/charts.js"></script>';
+    Result := Result + LineEnding + '<script src="' + ABase + 'ext/' + ver + '/build/packages/charts/classic/charts.js"></script>';
   end;
-  Result := Result + LineEnding + '<script src="/lw/lw.js?v=' + LW_VERSION + '"></script>';
+  Result := Result + LineEnding + '<script src="' + ABase + 'lw/lw.js?v=' + LW_VERSION + '"></script>';
   Result := Result + LineEnding + '</head><body>';
   Result := Result + LineEnding + '<div id="lw-busy"></div>';
   Result := Result + LineEnding + '<div id="lw-splash"><div class="lw-splash-box">正在连接 lazarusWeb 服务端…</div></div>';
@@ -1260,10 +1263,10 @@ begin
   Result := Result + LineEnding + '</body></html>';
 end;
 
-procedure TLWServer.ServeIndex(const AExtVer, AForm, ATheme: string;
+procedure TLWServer.ServeIndex(const AExtVer, AForm, ATheme, ABase: string;
   var AResponse: TFPHTTPConnectionResponse);
 begin
-  Reply(BuildIndexHtml(AExtVer, AForm, ATheme), 'text/html; charset=utf-8', 200, AResponse);
+  Reply(BuildIndexHtml(AExtVer, AForm, ATheme, ABase), 'text/html; charset=utf-8', 200, AResponse);
 end;
 
 { ---------------- Alpine.js 客户端外壳（?client=alpine） ----------------
@@ -1271,7 +1274,7 @@ end;
     alpine.min.js（defer，本地文件，不走 CDN）+ lw-alpine.js/lw-alpine.css。
   外壳 UI（遮罩/对话框/toast/忙条）用 Alpine store + 指令声明在静态标记里，
   业务控件树由 lw-alpine.js 动态渲染。注意坑 22：分步拼接，别折叠成长链。 }
-function TLWServer.BuildAlpineHtml(const AForm: string): string;
+function TLWServer.BuildAlpineHtml(const AForm, ABase: string): string;
 var
   s: string;
 begin
@@ -1279,11 +1282,11 @@ begin
   s := s + LineEnding + '<html><head><meta charset="utf-8">';
   s := s + LineEnding + '<meta name="viewport" content="width=device-width, initial-scale=1">';
   s := s + LineEnding + '<title>' + FCfg.Title + '</title>';
-  s := s + LineEnding + '<link rel="icon" href="/favicon.ico" type="image/x-icon">';
-  s := s + LineEnding + '<link rel="stylesheet" href="/lw/lw.css?v=' + LW_VERSION + '">';
-  s := s + LineEnding + '<link rel="stylesheet" href="/lw/lw-alpine.css?v=' + LW_VERSION + '">';
-  s := s + LineEnding + '<script src="/lw/alpine.min.js" defer></script>';
-  s := s + LineEnding + '<script src="/lw/lw-alpine.js?v=' + LW_VERSION + '"></script>';
+  s := s + LineEnding + '<link rel="icon" href="' + ABase + 'favicon.ico" type="image/x-icon">';
+  s := s + LineEnding + '<link rel="stylesheet" href="' + ABase + 'lw/lw.css?v=' + LW_VERSION + '">';
+  s := s + LineEnding + '<link rel="stylesheet" href="' + ABase + 'lw/lw-alpine.css?v=' + LW_VERSION + '">';
+  s := s + LineEnding + '<script src="' + ABase + 'lw/alpine.min.js" defer></script>';
+  s := s + LineEnding + '<script src="' + ABase + 'lw/lw-alpine.js?v=' + LW_VERSION + '"></script>';
   s := s + LineEnding + '</head><body>';
   s := s + LineEnding + '<div id="lw-busy" x-data x-show="$store.lw.busy > 0" style="display:none"></div>';
   s := s + LineEnding + '<div id="lw-splash" x-data x-show="$store.lw.splash">';
@@ -1347,10 +1350,10 @@ begin
   Result := s;
 end;
 
-procedure TLWServer.ServeAlpineIndex(const AForm: string;
+procedure TLWServer.ServeAlpineIndex(const AForm, ABase: string;
   var AResponse: TFPHTTPConnectionResponse);
 begin
-  Reply(BuildAlpineHtml(AForm), 'text/html; charset=utf-8', 200, AResponse);
+  Reply(BuildAlpineHtml(AForm, ABase), 'text/html; charset=utf-8', 200, AResponse);
 end;
 
 function TLWServer.QueryP(const ARequest: TFPHTTPConnectionRequest; const AName, ADef: string): string;
@@ -2132,6 +2135,7 @@ procedure TLWServer.Route(var ARequest: TFPHTTPConnectionRequest;
   var AResponse: TFPHTTPConnectionResponse);
 var
   p, method, lf, tname, tfull: string;
+  base, lp: string;
   q: Integer;
 begin
   method := UpperCase(ARequest.Method);
@@ -2143,17 +2147,38 @@ begin
   if FCfg.Verbose then
     LWLog(Format('[lw] %s %s', [method, p]));
 
+  { 进程级插件：/p/<名>/... 反向代理到独立 exe 上游（lwroute）。
+    放在所有自身路由之前 —— /p/ 前缀不与任何现有路径冲突。
+    Dispatch 未命中（rrNotPlugin，理论上只有 /p/ 单独出现）落到自身路由。
+    例外：框架静态资源（客户端 JS/CSS、alpine.min.js、favicon、Ext 资源）
+    改写成本地路径由宿主直出 —— 插件只负责业务，非业务功能由主程序处理，
+    升级客户端运行时只换宿主一处 }
+  if Copy(p, 1, 3) = '/p/' then
+  begin
+    lp := LWRouteStaticLocal(p);
+    if lp <> '' then
+      p := lp
+    else if LWRouteDispatch(ARequest, AResponse, p) <> rrNotPlugin then
+      Exit;
+  end;
+
   if (p = '/') or (p = '/index.html') then
   begin
     { ?client= 选渲染层：'alpine' 走 Alpine.js 外壳，其余走 Ext 版。
       默认取 GCfg.DefaultClient（配置文件 client= / --client=），
-      两个客户端协议完全一致、可并存切换 }
+      两个客户端协议完全一致、可并存切换。
+      base：外壳资源前缀。经代理（X-Forwarded-Prefix: /p/<名>/）时
+      资源 URL 生成到代理前缀下；直接访问为 '/'，与旧行为一致 }
+    base := Trim(ARequest.GetCustomHeader('X-Forwarded-Prefix'));
+    if (Length(base) < 2) or (base[1] <> '/') or
+       (base[Length(base)] <> '/') or (Pos('..', base) > 0) then
+      base := '/';
     if SameText(QueryP(ARequest, 'client', FCfg.DefaultClient), 'alpine') then
-      ServeAlpineIndex(QueryP(ARequest, 'form', FCfg.DefaultForm), AResponse)
+      ServeAlpineIndex(QueryP(ARequest, 'form', FCfg.DefaultForm), base, AResponse)
     else
       ServeIndex(QueryP(ARequest, 'ext', FCfg.DefaultExt),
         QueryP(ARequest, 'form', FCfg.DefaultForm),
-        QueryP(ARequest, 'theme', FCfg.Theme), AResponse);
+        QueryP(ARequest, 'theme', FCfg.Theme), base, AResponse);
     Exit;
   end;
 
@@ -2257,6 +2282,16 @@ begin
       { 交给 lwapp 生成清单 }
     end;
     Reply('{"ok":true,"ver":"' + LW_VERSION + '","form":"' + FCfg.DefaultForm + '"}',
+      'application/json; charset=utf-8', 200, AResponse);
+    Exit;
+  end;
+
+  { 进程级插件清单（lwroute 登记表）：测试与主页面导航用。
+    names 是逗号分隔的插件名，对应页面路径 /p/<名>/ }
+  if p = '/lw/api/plugins' then
+  begin
+    Reply('{"ok":true,"ver":"' + LW_VERSION + '","names":["' +
+      StringReplace(LWRouteNames, ',', '","', [rfReplaceAll]) + '"]}',
       'application/json; charset=utf-8', 200, AResponse);
     Exit;
   end;

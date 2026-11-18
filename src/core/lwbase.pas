@@ -56,6 +56,10 @@ type
     procedure SessionShowForm(AForm: TCustomForm); virtual; abstract;
     { 业务代码调用 Form.Hide / Visible:=False / Close 时走这里 }
     procedure SessionHideForm(AForm: TCustomForm); virtual; abstract;
+    { 页面切换支撑：把除 AKeep 之外的所有 Web 可见窗体撤下
+      （浏览器端销毁窗口，服务端实例保留供下次再开）。
+      模态窗体不参与 —— 它有自己的生命周期（ShowModal/EndModal）。 }
+    procedure SessionHideOthers(AKeep: TCustomForm); virtual; abstract;
     { 按窗体名在会话里找已经存在（且已显示）的窗体。
       登录成功后用它复用已有的主窗体 —— 否则"注销 -> 再登录"会
       每轮多造一个主窗体，数据库连接也跟着翻倍 }

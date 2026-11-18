@@ -46,6 +46,17 @@ type
       注册后浏览器/第三方 JS 直接 fetch('/lw/ajax/<名字>')，不经过组件树。 }
     class procedure AddAjax(const AName: string; AHandler: TLWAjaxHandler);
     class function CreateForm(const AName: string; out AForm: TCustomForm): Boolean;
+    { 把注册名映射到外部页面 URL（进程级插件互相跳转用）。
+      独立 exe 形态下每个进程只注册自己的窗体，OpenForm('Notes') 在 dash
+      进程里找不到本地窗体；登记 page.Notes=/p/notes/ 后，OpenForm 会回退
+      成推 JS 让浏览器同标签跳到那个 URL。编译期形态不登记，行为不变。 }
+    class procedure RegisterPageURL(const AName, AUrl: string);
+    { 按注册名打开页面：会话里已有该窗体就复用，没有就建一个，然后推给浏览器。
+      与 lwlogin 切主窗体同一条路径（S.SessionShowForm）。
+      未注册为本地窗体但登记过 RegisterPageURL 时，回退为推 JS 跳转外部页面。
+      返回 False = 这个名字既没注册也没映射，或当前线程不在会话里。
+      典型用法：按钮事件里 TLWApp.OpenForm('Notes')。 }
+    class function OpenForm(const AName: string): Boolean;
     class procedure ListForms(AList: TStrings);
     class function FormNames: string;
     { 默认主窗体名（登录成功后 lwlogin 用它创建主窗体）}
@@ -57,7 +68,7 @@ type
 implementation
 
 uses
-  lwws, lwdlg, lwdbnav, lwpanel, lwrlog, lwconfig;
+  fpjson, lwws, lwdlg, lwdbnav, lwpanel, lwrlog, lwconfig, lwform, lwroute;
 
 type
   { 坑 107：无头 widgetset 上的"异常对话框"是颗雷。
@@ -98,6 +109,18 @@ var
   GCfg: TLWServerConfig;
   GProvider: TLWFormProvider = nil;
   GLoginName: string = '';        { 登录窗体名（'' = 未启用登录）}
+  GExternalPages: TStringList = nil;  { 注册名 -> 外部页面 URL（跨进程插件跳转）}
+
+procedure EnsureExternalPages;
+begin
+  if GExternalPages = nil then
+  begin
+    GExternalPages := TStringList.Create;
+    GExternalPages.CaseSensitive := False;
+    GExternalPages.Sorted := True;
+    GExternalPages.Duplicates := dupIgnore;
+  end;
+end;
 
 procedure EnsureRegistry;
 begin
@@ -211,6 +234,75 @@ begin
   Result := GProvider.CreateForm(AName, AForm);
 end;
 
+class procedure TLWApp.RegisterPageURL(const AName, AUrl: string);
+begin
+  if (AName = '') or (AUrl = '') then Exit;
+  EnsureExternalPages;
+  GExternalPages.Values[AName] := AUrl;
+end;
+
+class function TLWApp.OpenForm(const AName: string): Boolean;
+var
+  S: TLWSessionBase;
+  f: TCustomForm;
+  url: string;
+  j: TJSONObject;
+  jsUrl: TJSONString;
+begin
+  Result := False;
+  if AName = '' then Exit;
+  S := LWCurrentSession;
+  if S = nil then Exit;
+  f := S.SessionFindForm(AName);
+  if f = nil then
+  begin
+    if not CreateForm(AName, f) then
+    begin
+      { 独立 exe 形态：目标窗体在另一个插件进程里，本进程没注册它。
+        若登记过 page.<注册名>=<URL>，回退成推 JS 让浏览器同标签跳转；
+        这保持"模块源码两种形态复用" —— 模块只管调 OpenForm('名字')，
+        是进程内切页还是跨进程跳 URL 由框架按登记情况决定。
+        编译期形态两窗体同进程，CreateForm 成功，走不到这里，行为不变。 }
+      if (GExternalPages <> nil) and
+         (GExternalPages.IndexOfName(AName) >= 0) then
+      begin
+        url := GExternalPages.ValueFromIndex[GExternalPages.IndexOfName(AName)];
+        { 用 TJSONObject 统一序列化，别手工拼引号 —— URL 里的引号/反斜杠
+          若没转义会生成非法 JSON（"code":"location.href="/p/notes/""），
+          前端 Ext.decode 解析失败，跳转静默丢失 }
+        j := TJSONObject.Create;
+        jsUrl := TJSONString.Create(url);
+        try
+          j.Add('type', 'js');
+          { jsUrl.AsJSON 给出带引号的 JS 字符串字面量 "/p/notes/"；
+            拼上 location.href= 得到合法 JS，TJSONObject 再整体转义 }
+          j.Add('code', 'location.href=' + jsUrl.AsJSON);
+          S.SessionPushCommand(j.AsJSON);
+        finally
+          jsUrl.Free;
+          j.Free;
+        end;
+        Exit(True);
+      end;
+      Exit;
+    end;
+  end;
+  { 页面切换语义：
+    - 目标页已是唯一可见页（用户在当前页又点了一次导航）：跳过推送，
+      否则前端会重复开窗；
+    - 其余情况：先把浏览器上其它可见页撤下（SessionHideOthers，
+      服务端实例保留），再推目标页。
+      注意不能只凭"目标页 WebVisible=True"就跳过 —— 那个标记在多窗体
+      切换时会残留（打开 B 页后 A 页的 WebVisible 仍是 True），跳过推送
+      会让"返回上一页"静默失效。 }
+  if (f is TLWForm) and TLWForm(f).WebVisible and
+     (S.VisibleWebFormCount = 1) then
+    Exit(True);
+  S.SessionHideOthers(f);
+  S.SessionShowForm(f);
+  Result := True;
+end;
+
 class procedure TLWApp.ListForms(AList: TStrings);
 begin
   EnsureRegistry;
@@ -244,6 +336,7 @@ var
   ini: TLWConfig;
   portVal: Integer;
   alpineOK, extOK: Boolean;
+  plugins, pages: TStringList;
 
   { ext 渲染层是否可用：ExtDir 给了看它，否则 ext-<版本> 目录，
     目录名对不上时根下唯一一个 ext-* 也算（与 lwhttp.ExtRootFor 同语义） }
@@ -373,6 +466,29 @@ var
         LWLog('警告: 配置文件 client=' + ini.Str(['client'], '') +
           ' 非法（应为 ext 或 alpine），按 ext 处理');
     end;
+
+    { 进程级插件路由：plugin.<名>=host:port（或 http://host:port）。
+      只登记，转发由 lwroute 在 lwhttp 路由入口完成 }
+    plugins := TStringList.Create;
+    try
+      ini.ItemsWithPrefix('plugin.', plugins);
+      for k := 0 to plugins.Count - 1 do
+        LWRouteSet(plugins.Names[k], plugins.ValueFromIndex[k]);
+    finally
+      plugins.Free;
+    end;
+
+    { 跨插件页面导航：page.<注册名>=<URL>。
+      OpenForm 找不到本地窗体时按这张表推 JS 同标签跳转 —— 让模块源码
+      两种形态复用（编译期切页 / 独立 exe 跳 URL） }
+    pages := TStringList.Create;
+    try
+      ini.ItemsWithPrefix('page.', pages);
+      for k := 0 to pages.Count - 1 do
+        RegisterPageURL(pages.Names[k], pages.ValueFromIndex[k]);
+    finally
+      pages.Free;
+    end;
   end;
 
 {$IF FPC_FULLVERSION < 30301}
@@ -481,7 +597,11 @@ begin
   for i := 1 to ParamCount do
   begin
     arg := ParamStr(i);
-    if ValueOf('--port=', val) then
+    { --config= 在上面的预扫描里已处理（决定 ini.Path），这里用一个无害的
+      真语句消费掉，避免落到末尾的"未识别参数"警告——它其实合法且已生效。 }
+    if Copy(arg, 1, 9) = '--config=' then
+      val := val { 已在预扫描处理，此处仅占位以吞掉该参数 }
+    else if ValueOf('--port=', val) then
       GCfg.Port := StrToIntDef(val, GCfg.Port)
     else if ValueOf('--root=', val) then
       GCfg.Root := val
@@ -545,32 +665,35 @@ begin
       GCfg.LogFile := val
     else if (arg = '--help') or (arg = '-h') then
     begin
-      WriteLn('用法: ' + ExtractFileName(ParamStr(0)) + ' [选项]');
-      WriteLn('  --config=path         配置文件（缺省自动找 <exe名>.ini / lazarusWeb.ini）');
-      WriteLn('  --port=8090           监听端口');
-      WriteLn('  --root=C:\LazarusWeb  项目根目录（含 ext-<版本> 目录）；缺省取当前目录');
-      WriteLn('  --form=Name           默认窗体名');
-      WriteLn('  --client=ext          浏览器渲染层：ext | alpine；不指定时自动探测（都在优先 alpine）');
-      WriteLn('  --ext=7.0.0           默认 Ext 版本（对应 ext-<版本> 目录，任意版本号都行）');
-      WriteLn('  --extdir=目录         ext-js 目录（配置文件 extdir 的等价物）');
-      WriteLn('  --theme=crisp         主题（classic/crisp/gray/material/neptune/graphite，?theme= 可覆盖）');
-      WriteLn('  --title=标题          浏览器标签页标题（缺省取 Application.Title）');
-      WriteLn('  --timeout=20          会话空闲超时（分钟）');
-      WriteLn('  --verbose             打印每个请求');
-      WriteLn('  --ajax-cors           /lw/ajax/* 回 CORS 头（第三方站点直接调）');
-      WriteLn('  --trust-proxy         在 nginx/Caddy 反代后面：取 X-Forwarded-For 作客户端 IP');
-      WriteLn('  --ssl                 开 HTTPS（纯 FPC；自签证书零配置即可用）');
-      WriteLn('  --ssl-host=名         证书主机名/SAN 域名或 IP；留空用自签证书');
-      WriteLn('  --ssl-cert=文件       指定 PEM 证书（配 --ssl-key=）；给了证书即自动开 HTTPS');
-      WriteLn('  --ssl-key=文件        指定 PEM 私钥（同上，不必再写 --ssl）');
-      WriteLn('  别名: --tls-cert= / --tls-key= 等价于 --ssl-cert= / --ssl-key=');
-      WriteLn('  提示: 需随包带 libssl-3-x64.dll + libcrypto-3-x64.dll');
-      WriteLn('  --nogui               GUI 构建下也不弹服务端面板（服务化部署）');
-      WriteLn('  --patch=1             增量补丁（事件只回变化的 ops，默认关；老前端自动退回全量）');
-      WriteLn('  --log=path            把服务端日志追加写入文件');
-      WriteLn('  --shutdown-token=X    开放 POST /lw/shutdown 优雅退出（只认回环地址 +');
-      WriteLn('                        该令牌，缺省不开）。lwhyper 拉起 worker 时自动注入');
-      WriteLn('已注册窗体: ' + FormNames);
+      { 用 LWLogRaw 而非裸 WriteLn：GUI 构建（-WG）没有初始化 Output，
+        直接 WriteLn 会触发 I/O 103 "File not open" 弹错误框。LWLogRaw
+        内部按 LWStdOutOpen 判断，GUI 下改走面板/--log 文件。 }
+      LWLogRaw('用法: ' + ExtractFileName(ParamStr(0)) + ' [选项]');
+      LWLogRaw('  --config=path         配置文件（缺省自动找 <exe名>.ini / lazarusWeb.ini）');
+      LWLogRaw('  --port=8090           监听端口');
+      LWLogRaw('  --root=C:\LazarusWeb  项目根目录（含 ext-<版本> 目录）；缺省取当前目录');
+      LWLogRaw('  --form=Name           默认窗体名');
+      LWLogRaw('  --client=ext          浏览器渲染层：ext | alpine；不指定时自动探测（都在优先 alpine）');
+      LWLogRaw('  --ext=7.0.0           默认 Ext 版本（对应 ext-<版本> 目录，任意版本号都行）');
+      LWLogRaw('  --extdir=目录         ext-js 目录（配置文件 extdir 的等价物）');
+      LWLogRaw('  --theme=crisp         主题（classic/crisp/gray/material/neptune/graphite，?theme= 可覆盖）');
+      LWLogRaw('  --title=标题          浏览器标签页标题（缺省取 Application.Title）');
+      LWLogRaw('  --timeout=20          会话空闲超时（分钟）');
+      LWLogRaw('  --verbose             打印每个请求');
+      LWLogRaw('  --ajax-cors           /lw/ajax/* 回 CORS 头（第三方站点直接调）');
+      LWLogRaw('  --trust-proxy         在 nginx/Caddy 反代后面：取 X-Forwarded-For 作客户端 IP');
+      LWLogRaw('  --ssl                 开 HTTPS（纯 FPC；自签证书零配置即可用）');
+      LWLogRaw('  --ssl-host=名         证书主机名/SAN 域名或 IP；留空用自签证书');
+      LWLogRaw('  --ssl-cert=文件       指定 PEM 证书（配 --ssl-key=）；给了证书即自动开 HTTPS');
+      LWLogRaw('  --ssl-key=文件        指定 PEM 私钥（同上，不必再写 --ssl）');
+      LWLogRaw('  别名: --tls-cert= / --tls-key= 等价于 --ssl-cert= / --ssl-key=');
+      LWLogRaw('  提示: 需随包带 libssl-3-x64.dll + libcrypto-3-x64.dll');
+      LWLogRaw('  --nogui               GUI 构建下也不弹服务端面板（服务化部署）');
+      LWLogRaw('  --patch=1             增量补丁（事件只回变化的 ops，默认关；老前端自动退回全量）');
+      LWLogRaw('  --log=path            把服务端日志追加写入文件');
+      LWLogRaw('  --shutdown-token=X    开放 POST /lw/shutdown 优雅退出（只认回环地址 +');
+      LWLogRaw('                        该令牌，缺省不开）。lwhyper 拉起 worker 时自动注入');
+      LWLogRaw('已注册窗体: ' + FormNames);
       Halt(0);
     end
     { 未知参数以前被静默忽略：--tls-cert 拼错成 --tlscert 这种，服务照常
@@ -582,16 +705,20 @@ begin
   end;
 
   { TLS 证书路径：相对路径以 exe 目录为基准（服务方式启动时 cwd 常是
-    System32）；参数不成对或文件不存在时直接退出，不等握手期才报错。 }
+    System32）。证书/私钥不成对或文件不存在时不再 Halt —— 改为打警告并
+    回退 HTTP：INI 里 ssl=1 但 crt/key 没放好是常见部署失误，直接退出会
+    "服务根本起不来"，GUI 版更会因裸 WriteLn 弹 I/O 103 "File not open"
+    （见 lwrlog.pas 的说明）。降级后服务照常以 HTTP 起来，日志里说清楚。 }
   if GCfg.UseSSL then
   begin
     GCfg.SSLCertFile := LWResolveExeRelativePath(GCfg.SSLCertFile);
     GCfg.SSLKeyFile := LWResolveExeRelativePath(GCfg.SSLKeyFile);
     if not LWValidateTLSFiles(GCfg.SSLCertFile, GCfg.SSLKeyFile, err) then
     begin
-      WriteLn('错误: ', err);
-      LWLog('错误: ' + err);
-      Halt(1);
+      LWLog('警告: ' + err + '；已关闭 HTTPS，回退 HTTP 启动（请检查证书路径或改回 ssl=0）');
+      GCfg.UseSSL := False;
+      GCfg.SSLCertFile := '';
+      GCfg.SSLKeyFile := '';
     end;
   end;
 
