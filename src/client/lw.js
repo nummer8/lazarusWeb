@@ -13,6 +13,12 @@
 var LW = (function () {
     'use strict';
 
+    /* API 基路径：本页面所在目录。直接访问为 '/'；经 lwroute 代理时为
+       /p/<插件名>/ —— 所有 /lw/... 调用都挂在它下面，代理剥前缀后
+       原样到达本进程。假设页面 URL 以 '/' 结尾（lwhttp 对无尾斜杠的
+       代理路径补 301）。 */
+    var BASE = location.pathname.replace(/[^\/]*$/, '') || '/';
+
     var S = {
         sid: null,
         ext: '7.0.0',
@@ -270,7 +276,7 @@ var LW = (function () {
         var base = node.caption || (node.kind === 'camera' ? '拍照…' : '上传文件…');
         var busyWord = (node.kind === 'camera') ? '保存中 ' : '上传中 ';
         var xhr = new XMLHttpRequest();
-        xhr.open('POST', '/lw/api/upload?sid=' + encodeURIComponent(S.sid || '') +
+        xhr.open('POST', BASE + 'lw/api/upload?sid=' + encodeURIComponent(S.sid || '') +
             '&id=' + node.id, true);
 
         xhr.upload.onprogress = function (e) {
@@ -383,7 +389,7 @@ var LW = (function () {
            点开对话框的那个事件会一直挂到用户应答为止，60s 就 abort 的话
            服务端稍后写响应时对端已断（EWriteError/streams.inc:631），
            而且对话框的应答还会落在一条已经废弃的请求上 */
-        api('/lw/api/event', payload, function (resp, err) {
+        api(BASE + 'lw/api/event', payload, function (resp, err) {
             S.inflight--;
             setBusy(false);
             applyEventResp(resp, err);
@@ -2776,7 +2782,7 @@ var LW = (function () {
     /* 主动拉一次完整树（重发对话框被应答后用：那次事件的响应已经没了） */
     function refreshTree() {
         if (!S.sid) return;
-        api('/lw/api/tree', null, function (resp, err) {
+        api(BASE + 'lw/api/tree', null, function (resp, err) {
             if (!err && resp) { try { applyPayload(resp); } catch (e) { log('refresh failed', e); } }
         }, { params: { sid: S.sid }, timeout: 20000 });
     }
@@ -2799,7 +2805,7 @@ var LW = (function () {
     };
 
     function dlgPost(id, r, text, cb) {
-        api('/lw/api/dlg', { sid: S.sid, id: id, r: r, text: text == null ? '' : String(text) },
+        api(BASE + 'lw/api/dlg', { sid: S.sid, id: id, r: r, text: text == null ? '' : String(text) },
             cb || function () { });
     }
 
@@ -2904,7 +2910,7 @@ var LW = (function () {
                 for (var i = 0; i < fileInput.files.length; i++)
                     fd.append('file' + i, fileInput.files[i]);
                 var xhr = new XMLHttpRequest();
-                xhr.open('POST', '/lw/api/dlgfile?sid=' + encodeURIComponent(S.sid) +
+                xhr.open('POST', BASE + 'lw/api/dlgfile?sid=' + encodeURIComponent(S.sid) +
                     '&id=' + cmd.id, true);
                 xhr.onload = function () {
                     if (xhr.status === 200) {
@@ -3018,6 +3024,11 @@ var LW = (function () {
                 delete S.forms[cmd.id];
                 try { w.close(); w.destroy(); } catch (e) { }
             }
+        } else if (cmd.type === 'js') {
+            /* TLWForm.RunJS：服务端推一段 JS 在浏览器执行（对标 uniGUI
+               UniSession.AddJS）。代码来自服务端业务代码，与组件树同一
+               信任层级；失败只记日志，不让一条坏指令拖垮会话 */
+            try { (new Function(cmd.code))(); } catch (e) { log('runjs failed', e); }
         } else if (cmd.type === 'dialog') {
             /* ShowMessage / MessageDlg / InputQuery / 文件对话框：
                服务端线程挂起等我们的答复（POST /lw/api/dlg）。
@@ -3070,7 +3081,7 @@ var LW = (function () {
         /* 长轮询是唯一的推送通道（WebSocket 只管事件请求/响应）。
            带着 after 游标：服务端只回"序号比它新"的第一条，
            所以几个页签共用一个会话时各取各的，谁也不会吃掉别人的指令。 */
-        api('/lw/api/poll', null, function (resp, err) {
+        api(BASE + 'lw/api/poll', null, function (resp, err) {
             if (!err && resp) {
                 if (resp.gone) {
                     /* 会话被清理（超时/服务重启）：丢掉旧 sid 重新来过 */
@@ -3099,7 +3110,7 @@ var LW = (function () {
         S.wsConnecting = true;
         try {
             var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            var ws = new WebSocket(proto + '//' + location.host + '/lw/ws?sid=' + encodeURIComponent(S.sid));
+            var ws = new WebSocket(proto + '//' + location.host + BASE + 'lw/ws?sid=' + encodeURIComponent(S.sid));
             var settled = false;
             ws.onopen = function () {
                 settled = true;
@@ -3258,7 +3269,7 @@ var LW = (function () {
     }
 
     function newSession(cfg) {
-        api('/lw/api/session', { form: cfg.form || '' }, function (resp, err) {
+        api(BASE + 'lw/api/session', { form: cfg.form || '' }, function (resp, err) {
             booting = false;
             if (err || !resp || !resp.ok) {
                 showSplash('无法创建会话：' + (err || (resp && resp.err) || '未知错误'));
@@ -3275,7 +3286,7 @@ var LW = (function () {
     }
 
     function attachSession(sid, cfg) {
-        api('/lw/api/attach', null, function (resp, err) {
+        api(BASE + 'lw/api/attach', null, function (resp, err) {
             booting = false;
             if (err || !resp || !resp.ok) {
                 /* 会话过期 / 服务重启：清掉旧 sid，老老实实新建 */

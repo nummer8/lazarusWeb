@@ -16,6 +16,12 @@
 var LW = (function () {
     'use strict';
 
+    /* API 基路径：本页面所在目录。直接访问为 '/'；经 lwroute 代理时为
+       /p/<插件名>/ —— 所有 /lw/... 调用都挂在它下面，代理剥前缀后
+       原样到达本进程。假设页面 URL 以 '/' 结尾（lwhttp 对无尾斜杠的
+       代理路径补 301）。 */
+    var BASE = location.pathname.replace(/[^\/]*$/, '') || '/';
+
     /* ---------------- 主题（8 档：7 套配色 + 跟随系统） ----------------
        固定配色 7 套，分两个色系（CSS 里也按这个分组，见 lw-alpine.css）：
 
@@ -600,7 +606,7 @@ var LW = (function () {
         var base = node.caption || (isCam ? '拍照…' : '上传文件…');
         var busyWord = isCam ? '保存中 ' : '上传中 ';
         var xhr = new XMLHttpRequest();
-        xhr.open('POST', '/lw/api/upload?sid=' + encodeURIComponent(S.sid || '') +
+        xhr.open('POST', BASE + 'lw/api/upload?sid=' + encodeURIComponent(S.sid || '') +
             '&id=' + node.id, true);
         xhr.upload.onprogress = function (e) {
             if (e.lengthComputable) setCaption(node.id, busyWord + Math.round(e.loaded * 100 / e.total) + '%');
@@ -682,7 +688,7 @@ var LW = (function () {
         S.inflight++;
         var ctrl = new AbortController();
         var to = setTimeout(function () { try { ctrl.abort(); } catch (e) { } }, 200000);
-        fetch('/lw/api/event', {
+        fetch(BASE + 'lw/api/event', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
@@ -2274,7 +2280,7 @@ var LW = (function () {
         /* 缓存 key 带后缀：同名窗体的桌面/移动模板分开缓存（404 也缓存） */
         var key = name + '|' + suffix;
         if (key in tplCache) { cb(tplCache[key]); return; }
-        fetch('/lw/tpl/' + encodeURIComponent(name) + suffix,
+        fetch(BASE + 'lw/tpl/' + encodeURIComponent(name) + suffix,
             { credentials: 'same-origin' })
             .then(function (r) { return r.ok ? r.text() : null; })
             .then(function (t) { tplCache[key] = t; cb(t); })
@@ -2298,55 +2304,150 @@ var LW = (function () {
         return host;
     }
 
-    /* 控件节点落进它的占位符（模板未接管 / 无此占位符则留在原地）。
-       只清定位内联不改 S.P：syncChildren 靠 S.P === kids 判定走 patch
-       而不是整棵重建 */
-    function lwDropNode(id, name) {
-        var fm = S.forms[S.WIN[id]];
-        if (!fm || !fm.tplApplied || !fm.tplEl || !name) return false;
-        var ph = fm.tplEl.querySelector('[data-lw-ph="' + name + '"]');
-        var w = S.E[id];
-        if (!ph || !w) return false;
-        w.classList.add('lw-flow');
-        w.style.left = ''; w.style.top = ''; w.style.zIndex = '';
-        w.style.width = ''; w.style.height = '';
-        ph.appendChild(w);
+    /* 拆掉已套用的模板装饰层。控件从未被搬动（两种模式都保持 LFM
+       绝对定位），所以只需摘掉宿主 DOM，不做任何搬回/清类操作 */
+    function lwClearFormTpl(fm) {
+        var kids = S.E[fm.f.id];
+        if (!kids || !fm.tplApplied) return;
+        if (fm.tplEl && fm.tplEl.parentNode) fm.tplEl.parentNode.removeChild(fm.tplEl);
+        fm.tplApplied = false;
+        fm.tplEl = null;
+        fm.tplOrder = null;
+        kids.classList.remove('lw-kids-tpl');
+    }
+
+    /* 把模板骨架挂进窗体客户区当背景层：顶层控件留在原地，继续按
+       LFM 的 Left/Top 绝对定位。layout 记成 'flat'/'desktop'/'mobile'，
+       避免布局切换时反复重套。 */
+    function lwApplyTplHost(fm, tpl, layout, host) {
+        var formId = fm.f.id;
+        var kids = S.E[formId];
+        if (!host) host = tpl ? lwTplHost(formId, tpl) : null;
+        if (!host || !kids) return false;
+        kids.classList.add('lw-kids-tpl');
+        host.classList.add('lw-tpl-backdrop');
+        /* 插到最前：控件是后面的绝对定位兄弟，自然盖在装饰层之上 */
+        if (kids.firstChild) kids.insertBefore(host, kids.firstChild);
+        else kids.appendChild(host);
+        fm.tplApplied = true;
+        fm.tplEl = host;
+        fm.tplFallback = false;
+        fm.tplLayout = layout;
         return true;
     }
 
+    /* 平面模式：模板头写 lw-tpl-mode:flat 时，该窗体不显示标题栏/边框/
+       缩放手柄，整块铺满视口；控件仍按 LFM 绝对坐标摆放，不重排。 */
+    function lwApplyFlatTpl(fm, tpl) {
+        var formId = fm.f.id;
+        var kids = S.E[formId];
+        var win = fm.el;
+        var body = null;
+        var host;
+        var i;
+        if (!kids || !win) return false;
+        host = lwTplHost(formId, tpl);
+        if (!host) return false;                    /* 占位符对不上就退回浮窗流程 */
+        lwClearFormTpl(fm);
+        for (i = 0; i < win.children.length; i++) {
+            if (win.children[i].classList &&
+                win.children[i].classList.contains('lw-win-body')) {
+                body = win.children[i];
+                break;
+            }
+        }
+        win.classList.add('lw-flat-form');
+        win.classList.remove('lw-resizable');
+        win.classList.remove('lw-max');
+        win.style.left = '0px';
+        win.style.top = '0px';
+        win.style.width = '100%';
+        win.style.height = '100%';
+        if (body) {
+            body.style.height = '100%';
+            body.style.overflow = 'auto';
+        }
+        fm.savedPos = null;
+        if (!lwApplyTplHost(fm, tpl, 'flat', host)) return false;
+        fm.flatMode = true;
+        lwUpdatePan();
+        return true;
+    }
+
+    /* 没有可用模板：设计期所见即所得。控件本来就没被模板搬动，这里只处理
+       窗体几何（移动端平移模式）与平移开关，再按 LFM 绝对坐标重算一次 */
+    function lwApplyNoTpl(fm, mode) {
+        var win = fm.el;
+        var kids = S.E[fm.f.id];
+        if (!win || !kids) return;
+        if (mode === 'desktop') {
+            fm.tplFallback = false;
+            if (fm.savedPos) {
+                win.style.left = fm.savedPos.left;
+                win.style.width = fm.savedPos.width;
+                win.style.height = fm.savedPos.height;
+                fm.savedPos = null;
+            }
+        } else {
+            /* 移动端无模板：不做整体等比缩放（字号太小，用户 2026-11-16 拍板
+               放弃），改为平移模式：窗体保持设计宽高，超出视口的部分由
+               #lw-root 滚动平移查看 */
+            fm.tplFallback = true;
+            win.style.width = Math.max(fm.f.w || 300, window.innerWidth - 8) + 'px';
+            win.style.height = Math.max(fm.f.h || 400, window.innerHeight - 12) + 'px';
+            win.style.left = '0px';
+            win.style.top = '6px';
+        }
+        lwUpdatePan();
+        runLayout({ body: kids }, fm.f.children || []);
+    }
+
     /* 单窗体模板切换。mode='mobile'|'desktop'：
-       有该端模板 -> 顶层控件搬进占位符（流式排布，桌面不改窗体几何）；
-       没有模板   -> 设计期所见即所得（桌面=绝对定位原样；移动=平移模式）。 */
+       统一请求同名 <窗体名>.html（窗口/平面共用一个文件名）：
+         lw-tpl-mode:flat → 整页平面模式，不再跟随布局切换；
+         lw-tpl-mode:window → 浮窗背景装饰层；
+         两种标记同时出现 → flat 优先；
+         没有模板 → 设计期所见即所得。
+       控件在三种情况下都保持 LFM 的 Left/Top 绝对坐标，不重排。
+       兼容旧 .flat.html：仍存在时平面优先。 */
     function lwApplyFormTpl(fm, mode) {
         var formId = fm.f.id;
         var kids = S.E[formId];
         var win = fm.el;
+        var fname;
+        var fseq;
         if (!kids || !win) return;
-        if (fm.tplApplied && fm.tplLayout === mode) return;
-        /* 拆掉已套用的模板（换端或回绝对定位）：按建树原序搬回原位 */
-        if (fm.tplApplied && fm.tplOrder) {
-            fm.tplOrder.forEach(function (cid) {
-                var w = S.E[cid];
-                if (w) { w.classList.remove('lw-flow'); kids.appendChild(w); }
+        if (!fm.tplChecked) {
+            fname = fm.f.name || String(formId);
+            fm.tplChecked = true;
+            fm.tplSeq = (fm.tplSeq || 0) + 1;
+            fseq = fm.tplSeq;
+            fm.tplPending = true;
+            lwFetchTpl(fname, '.flat.html', function (legacyFlat) {
+                if (fseq !== fm.tplSeq || !S.forms[formId]) return;
+                if (legacyFlat && lwApplyFlatTpl(fm, legacyFlat)) {
+                    fm.tplPending = false;
+                    return;
+                }
+                lwApplyFormTpl(fm, mode);
             });
-            if (fm.tplEl && fm.tplEl.parentNode) fm.tplEl.parentNode.removeChild(fm.tplEl);
-            fm.tplApplied = false; fm.tplEl = null; fm.tplOrder = null;
-            kids.classList.remove('lw-kids-tpl');
+            return;
         }
+        if (fm.flatMode && fm.tplApplied) return;
+        if (fm.tplApplied && fm.tplLayout === mode) return;
+        lwClearFormTpl(fm);
         if (mode === 'mobile') {
             if (!fm.savedPos) {
                 fm.savedPos = { left: win.style.left, width: win.style.width,
                                 height: win.style.height };
             }
-            /* 移动端窗体贴满视口：模板内容（单列流式）往往高于桌面客户区，
-               且手机上本就该全屏；状态栏贴窗体底，超出部分客户区滚动 */
+            /* 移动端窗体贴满视口；控件还是设计期绝对坐标，超出由根容器平移查看 */
             win.style.width = Math.min(fm.f.w || 300, window.innerWidth - 8) + 'px';
             win.style.height = (window.innerHeight - 12) + 'px';
             win.style.left = Math.max(4, Math.round((window.innerWidth - win.offsetWidth) / 2)) + 'px';
             win.style.top = '6px';
         } else {
-            /* 桌面模板不改窗体几何：位置尺寸保持设计期（WYSIWYG 基准），
-               只有客户区内容变流式；从移动态切回时先恢复原几何 */
+            /* 桌面不改窗体几何：从移动态切回时先恢复原几何 */
             fm.tplFallback = false;
             if (fm.savedPos) {
                 win.style.left = fm.savedPos.left;
@@ -2356,62 +2457,20 @@ var LW = (function () {
             }
         }
         lwUpdatePan();
+        fname = fm.f.name || String(formId);
         fm.tplSeq = (fm.tplSeq || 0) + 1;
-        var seq = fm.tplSeq;
+        fseq = fm.tplSeq;
         fm.tplPending = true;
-        lwFetchTpl(fm.f.name || String(formId),
-            mode === 'mobile' ? '.m.html' : '.html', function (tpl) {
+        lwFetchTpl(fname, '.html', function (tpl) {
             /* fetch 是异步的：回来时模式可能已切换或窗体已关，按序号丢弃 */
-            if (seq !== fm.tplSeq || !S.forms[formId]) return;
+            if (fseq !== fm.tplSeq || !S.forms[formId]) return;
             fm.tplPending = false;
-            var host = tpl ? lwTplHost(formId, tpl) : null;
-            if (!host) {
-                if (mode === 'desktop') {
-                    /* 桌面无模板：设计期所见即所得 —— 绝对定位原样恢复。
-                       tplPending 在等待期间让 placeNode/syncChildren 暂走
-                       流式路径，这里全部搬回并重跑 runLayout */
-                    (fm.f.children || []).forEach(function (n) {
-                        var w = S.E[n.id];
-                        if (w) w.classList.remove('lw-flow');
-                        placeNode(n.id, n);
-                    });
-                    runLayout({ body: kids }, fm.f.children || []);
-                    lwUpdatePan();
-                    return;
-                }
-                /* 移动端无模板：回退绝对定位。
-                   tplFallback 让 placeNode / syncChildren / ResizeObserver
-                   恢复走桌面路径，lw-flow 一并摘掉。
-                   不做整体等比缩放（字号太小，用户 2026-11-16 拍板放弃），
-                   也不把窗体硬压到视口宽——压窄后子控件仍按设计坐标摆，
-                   右侧被裁/留白（用户真机截图反馈）。改为平移模式：
-                   窗体保持设计宽高（字号原大），超出视口的部分由
-                   #lw-root 滚动平移查看；设计尺寸小于视口时撑满视口。 */
-                fm.tplFallback = true;
-                win.style.width = Math.max(fm.f.w || 300, window.innerWidth - 8) + 'px';
-                win.style.height = Math.max(fm.f.h || 400, window.innerHeight - 12) + 'px';
-                win.style.left = '0px';
-                win.style.top = '6px';
-                lwUpdatePan();
-                (fm.f.children || []).forEach(function (n) {
-                    var w = S.E[n.id];
-                    if (w) w.classList.remove('lw-flow');
-                    placeNode(n.id, n);
-                });
-                runLayout({ body: kids }, fm.f.children || []);
-                return;
-            }
-            fm.tplLayout = mode;
-            fm.tplOrder = (fm.f.children || []).map(function (n) { return n.id; })
-                .filter(function (cid) {
-                    return S.E[cid] && S.E[cid].parentNode === kids;
-                });
-            kids.classList.add('lw-kids-tpl');
-            kids.appendChild(host);
-            fm.tplApplied = true; fm.tplEl = host; fm.tplFallback = false;
-            (fm.f.children || []).forEach(function (n) {
-                lwDropNode(n.id, n.name);
-            });
+            if (!tpl) { lwApplyNoTpl(fm, mode); return; }
+            /* flat 优先：同一文件里两种标记并存时也按平面渲染 */
+            if (/lw-tpl-mode\s*:\s*flat/i.test(tpl) && lwApplyFlatTpl(fm, tpl)) return;
+            var host = lwTplHost(formId, tpl);
+            if (!host) { lwApplyNoTpl(fm, mode); return; }
+            lwApplyTplHost(fm, tpl, mode, host);
         });
     }
 
@@ -2429,7 +2488,7 @@ var LW = (function () {
        重排拉伸型子控件。 */
     function lwFallbackSize(fm) {
         var win = fm.el;
-        if (!win || layoutState !== 'mobile') return;
+        if (!win || fm.flatMode || layoutState !== 'mobile') return;
         win.style.width = Math.max(fm.f.w || 300, window.innerWidth - 8) + 'px';
         win.style.height = Math.max(fm.f.h || 400, window.innerHeight - 12) + 'px';
         win.style.left = '0px';
@@ -2714,20 +2773,8 @@ var LW = (function () {
     function placeNode(id, node) {
         var w = S.E[id];
         if (!w) return;
-        /* 模板接管窗体顶层（任意端）：窗体顶层控件不写绝对定位内联样式
-           （进占位符后由模板 CSS 排布）；容器内部控件照旧 —— 模板只重排
-           窗体顶层。等待模板回包（tplPending）与回退窗体不走这里 */
-        var pfid = S.WIN[id];
-        var pfm = (pfid != null && S.forms[pfid] && S.P[id] === S.E[pfid])
-            ? S.forms[pfid] : null;
-        if (pfm && (pfm.tplApplied || pfm.tplPending)) {
-            w.style.left = ''; w.style.top = ''; w.style.zIndex = '';
-            w.classList.add('lw-flow');
-            if (node.visible === false && node.kind !== 'tabsheet') w.style.display = 'none';
-            else if (node.kind !== 'tabsheet') w.style.display = '';
-            lwDropNode(id, node.name);
-            return;
-        }
+        /* 统一模板只是背景装饰层：顶层控件始终写 LFM 的绝对坐标，
+           窗口/平面模式都不重排、不进占位符（tplApplied/tplPending 不再改写定位） */
         if (node.kind === 'toolbutton' || w.classList.contains('lw-flow')) {
             w.style.position = 'static';
             return;
@@ -2827,14 +2874,9 @@ var LW = (function () {
             if (cid && !keep[cid]) destroyNode(cid);
         });
         S.kids[body.__lwid || node.id || ''] = list.map(function (n) { return n.id; });
-        /* 模板接管窗体顶层（任意端）时不跑 runLayout（排布交给模板 CSS）；
-           容器内部（body 不是窗体 kids）、等待回包（tplPending）与回退
-           窗体照常 */
-        var sfm = ct.winId != null ? S.forms[ct.winId] : null;
-        if (!(sfm && (sfm.tplApplied || sfm.tplPending) &&
-              body === S.E[ct.winId])) {
-            runLayout(ct, list);
-        }
+        /* 模板只是背景层：顶层排布仍由 runLayout 按 LFM 绝对定位计算，
+           窗口/平面/等待回包都照常跑（装饰层没有 data-lwid，不会被清掉） */
+        runLayout(ct, list);
     }
 
     function destroyNode(id) {
@@ -3147,11 +3189,8 @@ var LW = (function () {
                         if (win.__lwStatus) placeStatusbar(win, body, fm.f);
                         /* 侧栏高度与客户区右移量跟着窗口尺寸走 */
                         if (win.__lwSide) applySideLayout(win, body, kids, fm.f);
-                        /* 模板接管时顶层排布交给模板 CSS（kids === body，
-                           任意端） */
-                        if (!(fm.tplApplied || fm.tplPending)) {
-                            runLayout({ body: kids }, fm.f.children || []);
-                        }
+                        /* 模板不接管排布：尺寸变化时始终按 LFM 绝对坐标重算 */
+                        runLayout({ body: kids }, fm.f.children || []);
                     } catch (e) { }
                 });
             });
@@ -3790,7 +3829,7 @@ var LW = (function () {
     /* 主动拉一次完整树（重发对话框被应答后用） */
     function refreshTree() {
         if (!S.sid) return;
-        api('/lw/api/tree', null, function (resp, err) {
+        api(BASE + 'lw/api/tree', null, function (resp, err) {
             if (!err && resp) { try { applyPayload(resp); } catch (e) { log('refresh failed', e); } }
         }, { params: { sid: S.sid }, timeout: 20000 });
     }
@@ -3807,7 +3846,7 @@ var LW = (function () {
     };
 
     function dlgPost(id, r, text, cb) {
-        api('/lw/api/dlg', { sid: S.sid, id: id, r: r, text: text == null ? '' : String(text) },
+        api(BASE + 'lw/api/dlg', { sid: S.sid, id: id, r: r, text: text == null ? '' : String(text) },
             cb || function () { });
     }
 
@@ -3829,7 +3868,7 @@ var LW = (function () {
                 for (var i = 0; i < fileInput.files.length; i++)
                     fd.append('file' + i, fileInput.files[i]);
                 var xhr = new XMLHttpRequest();
-                xhr.open('POST', '/lw/api/dlgfile?sid=' + encodeURIComponent(S.sid) +
+                xhr.open('POST', BASE + 'lw/api/dlgfile?sid=' + encodeURIComponent(S.sid) +
                     '&id=' + cmd.id, true);
                 xhr.onload = function () {
                     if (xhr.status === 200) {
@@ -3948,6 +3987,10 @@ var LW = (function () {
             if (tree) applyPayload(tree);
         } else if (cmd.type === 'closeform') {
             if (S.forms[cmd.id]) closeFormWin(cmd.id);
+        } else if (cmd.type === 'js') {
+            /* TLWForm.RunJS：服务端推一段 JS 在浏览器执行（同 lw.js）。
+               代码来自服务端业务代码，与组件树同一信任层级；失败只记日志 */
+            try { (new Function(cmd.code))(); } catch (e) { log('runjs failed', e); }
         } else if (cmd.type === 'dialog') {
             /* 多页签共享会话时只让"引起它的那个页签"弹窗（同 lw.js） */
             if (!resend) {
@@ -3988,7 +4031,7 @@ var LW = (function () {
         if (!S.sid) { defer(startPoll, 500); return; }
         /* 长轮询是唯一的推送通道（WebSocket 只管事件请求/响应）。
            带着 after 游标：服务端只回"序号比它新"的第一条。 */
-        api('/lw/api/poll', null, function (resp, err) {
+        api(BASE + 'lw/api/poll', null, function (resp, err) {
             if (!err && resp) {
                 if (S.pollErr) { S.pollErr = 0; hideSplash(); }
                 if (resp.gone) {
@@ -4023,7 +4066,7 @@ var LW = (function () {
         S.wsConnecting = true;
         try {
             var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            var ws = new WebSocket(proto + '//' + location.host + '/lw/ws?sid=' + encodeURIComponent(S.sid));
+            var ws = new WebSocket(proto + '//' + location.host + BASE + 'lw/ws?sid=' + encodeURIComponent(S.sid));
             ws.onopen = function () {
                 S.wsConnecting = false;
                 log('websocket connected');
@@ -4194,7 +4237,7 @@ var LW = (function () {
     }
 
     function newSession(cfg) {
-        api('/lw/api/session', { form: cfg.form || '' }, function (resp, err) {
+        api(BASE + 'lw/api/session', { form: cfg.form || '' }, function (resp, err) {
             booting = false;
             if (err || !resp || !resp.ok) {
                 showSplash('无法创建会话：' + (err || (resp && resp.err) || '未知错误'));
@@ -4212,7 +4255,7 @@ var LW = (function () {
     }
 
     function attachSession(sid, cfg) {
-        api('/lw/api/attach', null, function (resp, err) {
+        api(BASE + 'lw/api/attach', null, function (resp, err) {
             booting = false;
             if (err || !resp || !resp.ok) {
                 forgetSid();

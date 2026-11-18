@@ -834,6 +834,27 @@ html, body {
     border-radius: 0;
 }
 .lw-win.lw-max.lw-resizable { resize: none; }
+
+/* 平面模式（<窗体名>.flat.html）：整页网页形态，不要窗口的外观与交互。
+   !important 压住 JS 写进 style 的设计期几何；标题栏整体隐藏后客户区
+   直接从视口顶部开始，普通文档流由 .lw-win-body 自身滚动。 */
+.lw-win.lw-flat-form {
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    min-width: 0;
+    min-height: 0;
+    border-radius: 0;
+    box-shadow: none;
+    resize: none !important;
+    overflow: hidden;
+}
+.lw-win.lw-flat-form > .lw-win-title { display: none !important; }
+.lw-win.lw-flat-form > .lw-win-body {
+    background: #fff;
+    overflow: auto;
+}
 .lw-win-body {
     position: relative;
     overflow: auto;
@@ -1718,41 +1739,20 @@ html[data-lw-layout="mobile"] .lw-ud-dn::after { content: '\2212'; } /* − */
 
 /* ---------- 自适应移动布局（方案 B，自研） ----------
    html[data-lw-layout="desktop|mobile"]、html[data-lw-input="mouse|touch"]
-   由 lw-alpine.js 的自适应模块维护。模板骨架 .lw-tpl 里的占位容器
-   .lw-ph 承接被搬进来的控件节点；控件在占位符内恢复文档流，
-   宽高交给模板自己的 CSS（模板可写 <style> 定制排布）。 */
+   由 lw-alpine.js 的自适应模块维护。统一模板只是背景装饰层：控件不进
+   占位符，窗口/平面模式都保持 LFM 的 Left/Top 绝对定位。 */
 .lw-tpl {
-    padding: 10px 12px 16px;
-}
-/* 模板接管窗体顶层（任意端）：客户区超高时滚动。
-   这里给的是 height 而不是 min-height，并且用"单轨 grid"把客户区高度变成
-   模板根节点的**确定**高度：模板的主区域要写 calc(100% - 其它控件)，百分比
-   高度只有落在确定高度上才解析得出来。只写 height:100% 不够 —— 这条链上
-   有一环是 flex 项的 flex:1，Chromium 在百分比解析时不算它 definite，于是
-   根节点的 100% 退化成 auto、主区域塌到 min-height（gallery 实测 240px）。
-   1fr 轨道的尺寸是确定的，网格项拿到的就是它（实测 714px），见坑 164。
-   类由 lwApplyFormTpl 加/摘（lw-kids-tpl） */
-.lw-kids.lw-kids-tpl {
-    overflow: auto;
+    position: absolute;
+    left: 0; top: 0; right: 0; bottom: 0;
+    box-sizing: border-box;
+    pointer-events: none;
+    z-index: 0;
 }
 .lw-kids.lw-kids-tpl > .lw-tpl {
     height: 100%;
     box-sizing: border-box;
-    display: grid;
-    grid-template-rows: 1fr;
 }
-.lw-tpl .lw-ph {
-    display: block;
-    margin: 0 0 10px;
-}
-.lw-tpl .lw-ph > .lw-n {
-    position: static;
-    width: auto;
-    max-width: 100%;
-}
-.lw-tpl .lw-ph > .lw-n > .lw-label {
-    white-space: normal;
-}
+.lw-tpl.lw-tpl-backdrop > * { pointer-events: none; }
 
 /* 触控细节：与布局模式解耦，只看输入能力（html[data-lw-input]）。
    iOS 聚焦输入框字号 <16px 会整页放大，触屏下提到 16px；
