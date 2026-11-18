@@ -2267,6 +2267,13 @@ var LW = (function () {
        否则算点击 —— 移动端没有 hover/鼠标，只能靠这个判定。 */
     var FAB_POS_KEY = 'lw.themeFab.pos';
 
+    /* 位置记忆分两套：平面模式（整页、客户区全是模板）与窗口模式（浮窗，
+       视口右下角往往压着状态栏/控件）的合理落点不一样。共用一套会把平面
+       模式拖到的位置带到窗口模式上，一打开就压在控件中间。 */
+    function themeFabKey(fm) {
+        return fm && fm.flatMode ? FAB_POS_KEY : FAB_POS_KEY + '.win';
+    }
+
     function themeFabClamp(b, x, y) {
         var w = b.offsetWidth || 34, h = b.offsetHeight || 34;
         return {
@@ -2277,7 +2284,8 @@ var LW = (function () {
 
     function themeFabRestore(b) {
         var pos = null;
-        try { pos = JSON.parse(localStorage.getItem(FAB_POS_KEY) || 'null'); } catch (e) { }
+        var key = b.__fabKey || FAB_POS_KEY;
+        try { pos = JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { }
         if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number') return;
         var p = themeFabClamp(b, pos.x, pos.y);
         b.style.left = p.x + 'px';
@@ -2314,7 +2322,7 @@ var LW = (function () {
             /* 拖动结束：记住位置，并吃掉随之而来的 click（否则拖完会弹菜单） */
             b.__fabMoved = true;
             try {
-                localStorage.setItem(FAB_POS_KEY, JSON.stringify({
+                localStorage.setItem(b.__fabKey || FAB_POS_KEY, JSON.stringify({
                     x: parseFloat(b.style.left) || 0,
                     y: parseFloat(b.style.top) || 0
                 }));
@@ -2339,11 +2347,17 @@ var LW = (function () {
     });
 
     function themeFabAdd(fm) {
-        if (!fm || fm.themeFab || themeBtnHidden || (fm.f && fm.f.modal)) return;
+        if (!fm || themeBtnHidden || (fm.f && fm.f.modal)) return;
         var win = fm.el;
         if (!win) return;
+        var key = themeFabKey(fm);
+        if (fm.themeFab) {
+            if (fm.themeFab.__fabKey === key) return;   /* 已挂且形态没变 */
+            themeFabDrop(fm);                           /* 形态变了：按新键重摆 */
+        }
         var b = document.createElement('span');
         b.className = 'lw-theme-fab';
+        b.__fabKey = key;
         b.title = '主题（可拖动）';
         b.addEventListener('click', function (e) {
             e.stopPropagation();
@@ -2365,6 +2379,30 @@ var LW = (function () {
         var i = themeBtns.indexOf(b);
         if (i >= 0) themeBtns.splice(i, 1);
         fm.themeFab = null;
+    }
+
+    /* 主题入口用哪种形态（标题栏图标 / 右下角浮钮）：
+       - 平面模式：标题栏整条被 display:none，只能浮钮；
+       - 移动布局：窗口模式的标题栏只有 28px 高，图标 22×20，手指点不准，
+         用户要求统一改成浮钮（可拖动、38px）；桌面窗口模式仍用标题栏图标。
+       模态窗体与服务端 LWThemeButton=False 一律不建（沿用原规则）。 */
+    function themeEntryWanted(fm) {
+        if (!fm || !fm.el) return false;
+        if (themeBtnHidden || (fm.f && fm.f.modal)) return false;
+        if (fm.flatMode) return true;
+        return lwLayoutNow() === 'mobile';
+    }
+
+    /* 幂等：该挂的挂上、该摘的摘掉。布局切换 / 模板切换 / 窗体新建都走这里，
+       避免出现"标题栏图标和浮钮同时存在"或"移动端两个都没有"。 */
+    function themeEntrySync(fm) {
+        if (!fm) return;
+        if (themeEntryWanted(fm)) themeFabAdd(fm);
+        else themeFabDrop(fm);
+    }
+
+    function themeEntrySyncAll() {
+        Object.keys(S.forms).forEach(function (k) { themeEntrySync(S.forms[k]); });
     }
 
     /* ---------------- 自适应布局 + 窗体模板（方案 B，自研） ----------------
@@ -2464,7 +2502,9 @@ var LW = (function () {
         fm.tplEl = null;
         fm.tplOrder = null;
         kids.classList.remove('lw-kids-tpl');
-        themeFabDrop(fm);   /* 离开平面模式：浮钮换回标题栏按钮 */
+        /* 可能是"平面 -> 窗口"或"有模板 -> 无模板"，入口形态交给统一判定：
+           移动布局的窗口模式仍要浮钮，不能无条件摘掉 */
+        themeEntrySync(fm);
     }
 
     /* 把模板骨架挂进窗体客户区当背景层：顶层控件留在原地，继续按
@@ -2484,6 +2524,7 @@ var LW = (function () {
         fm.tplEl = host;
         fm.tplFallback = false;
         fm.tplLayout = layout;
+        themeEntrySync(fm);   /* 移动布局的窗口模式也要浮钮 */
         lwRevealForm(fm);
         return true;
     }
@@ -2533,7 +2574,7 @@ var LW = (function () {
            首次 lwApplyLayout，那时 layoutState 还是 null，会漏开平移。 */
         if (lwLayoutNow() === 'mobile') fm.tplFallback = true;
         lwRevealForm(fm);
-        themeFabAdd(fm);   /* 标题栏隐藏了，主题入口改挂右下角浮钮 */
+        themeEntrySync(fm);   /* 标题栏隐藏了：主题入口改挂浮钮 */
         lwUpdatePan();
         return true;
     }
@@ -2564,6 +2605,7 @@ var LW = (function () {
             win.style.top = '6px';
         }
         lwUpdatePan();
+        themeEntrySync(fm);   /* 移动布局的窗口模式也用浮钮 */
         runLayout({ body: kids }, fm.f.children || []);
     }
 
@@ -2737,6 +2779,9 @@ var LW = (function () {
         layoutState = want;
         lwSetAttr();
         lwRelayout(want);
+        /* lwApplyFormTpl 对已套模板的窗体直接 return，切换布局不会重走套用
+           流程 —— 主题入口形态只能在这里统一纠正（桌面↔移动互斥） */
+        themeEntrySyncAll();
     }
 
     var lwPending = false;

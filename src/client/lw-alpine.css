@@ -1773,6 +1773,11 @@ html[data-lw-layout="mobile"] .lw-ud-dn::after { content: '\2212'; } /* − */
 /* 当前配色不是"跟随系统"时点亮（图标本身见 .lw-win-max / .lw-win-x 的共用块） */
 .lw-win-theme.lw-on { color: var(--lw-accent); }
 
+/* 移动布局：窗口模式的主题入口也改成右下角可拖动浮钮（38px、手指好点、
+   不挤 28px 的标题栏），标题栏里那个 22px 小图标让位。桌面布局仍用标题栏
+   图标 —— 浮钮由 themeEntrySync 按布局挂/摘，这里只负责隐藏标题栏那份 */
+html[data-lw-layout="mobile"] .lw-win-title .lw-win-theme { display: none; }
+
 /* ---------- 图表 / 仪表盘的 SVG 配色 ----------
    SVG 的表现属性（fill=/stroke=）不认 var()，所以颜色用类名承载：
    换主题时 CSS 变量一变，已经画好的 SVG 直接跟着变色，不用重绘。 */
