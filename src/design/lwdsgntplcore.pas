@@ -6,11 +6,13 @@
   职责：
     1. ParseLfmText —— 解析 .lfm 文本：窗体名、窗体设计宽、顶层可视
        控件（Name/类名/Left/Top/Width/Height），非可视控件跳过；
-    2. GenMobileTpl / GenDesktopTpl —— 分别生成移动端（单列流式）与
-       桌面端（按设计期宽度比例的流式排布）两份模板骨架。
+    2. GenUnifiedTplEx —— 现行生成器：窗口/平面两种模式统一输出单个
+       <窗体名>.html，文件头写 lw-tpl-mode:window|flat 标记决定渲染方式；
+       模板只作背景装饰层，控件保持 LFM 的 Left/Top 绝对定位，不重排。
 
-  生成的只是「起始骨架」：占位符 {%控件名%} 由浏览器端搬迁既有 DOM，
-  用户拿到文件后可自由改 CSS 精修（见手册第二篇 16 的 CSS 钩子表）。
+  GenMobileTplEx / GenDesktopTplEx / GenFlatTplEx 是旧版占位符流式模板的
+  生成函数，现行 IDE 菜单已不再调用，仅为回归测试保留；新功能请看
+  GenUnifiedTplEx。用户拿到骨架后可自由加背景/CSS 装饰（见手册第二篇 16）。
 
   解析按对象深度 + 集合 item 块 + 括号字符串块三层状态推进，避免
   TListView.Columns 的 end/end> 与多行字符串里的 'end' 误伤对象层级；
@@ -63,15 +65,15 @@ function GenDesktopTpl(const FormName: string; Children: TObjectList;
 function GenDesktopTplEx(const FormName: string; Children: TObjectList;
   FormWidth: Integer; Warnings: TStrings): string;
 
-{ 生成平面模板（标准网页整页）：完整 HTML5 文档，body 普通文档流，
-  无浮窗标题/边框/拖动/缩放；控件按设计期高度定高，避免搬迁后容器塌陷。
-  与桌面/移动模板共用同名占位符语法（花括号包控件名）。 }
+{ 【旧版，仅回归测试保留】生成平面模板（标准网页整页）：完整 HTML5 文档，
+  body 普通文档流，无浮窗标题/边框/拖动/缩放；用花括号控件名占位符 +
+  按设计期高度定高的流式 CSS。现行 IDE 菜单走 GenUnifiedTplEx。 }
 function GenFlatTplEx(const FormName: string; Children: TObjectList;
   FormWidth: Integer; Warnings: TStrings): string;
 
 { 统一模板：窗口/平面两种模式只生成一个 <窗体名>.html，文件头写
   `lw-tpl-mode:window|flat` 标记，客户端按标记决定浮窗或整页渲染。
-  模板只作背景装饰层，不再用 {%控件名%} 重排控件；控件始终按 LFM 的
+  模板只作背景装饰层，不再用花括号占位符重排控件；控件始终按 LFM 的
   Left/Top 绝对定位。若文件里同时出现两种标记，flat 优先。 }
 function GenUnifiedTplEx(const FormName: string; Children: TObjectList;
   FormWidth: Integer; Flat: Boolean; Warnings: TStrings): string;
@@ -819,7 +821,9 @@ begin
     '    /* 平面模式：普通网页布局，内容超过视口时由页面自身滚动；' + sLineBreak +
     '       不依赖浮窗客户区高度，也不用 calc(100% - ...) 抢高度。 */' + sLineBreak +
     '    html, body { margin: 0; padding: 0; min-height: 100%; }' + sLineBreak +
-    '    body { background: #f5f7fa; color: #2b3a49;' + sLineBreak +
+    '    /* 颜色用主题变量 + 浅色兜底：模板会随客户端主题（米色/深色/深蓝夜色…）' + sLineBreak +
+    '       一起变，写死 #f5f7fa 会导致所有主题下都是同一块浅色底（坑 182）。 */' + sLineBreak +
+    '    body { background: var(--lw-win-bg, #f5f7fa); color: var(--lw-fg, #2b3a49);' + sLineBreak +
     '           font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", Arial, sans-serif; }' + sLineBreak +
     '    .' + K + ' { max-width: 1080px; margin: 0 auto; padding: 16px 24px 32px;' + sLineBreak +
     '                box-sizing: border-box; display: flex; flex-direction: column;' + sLineBreak +
@@ -884,8 +888,8 @@ begin
     '<!--' + sLineBreak +
     '  ' + FormName + ' 的' + ModeText + '模板 —— 由 lwdesign 的 IDE' + sLineBreak +
     '  Tools 菜单「生成 lazarusWeb 窗体模板」生成（起始骨架）。' + sLineBreak +
-    '  窗口/平面统一使用 <窗体名>.html 这一个文件名；文件头的 lw-tpl-mode' + sLineBreak +
-    '  决定浏览器按浮窗还是整页渲染。若文件里同时出现两种标记，flat 优先。' + sLineBreak +
+    '  每个端一个文件：桌面 <窗体名>.html、移动 <窗体名>.m.html，均为装饰层；' + sLineBreak +
+    '  文件头的 lw-tpl-mode 决定浏览器按浮窗还是整页渲染。两种标记并存时 flat 优先。' + sLineBreak +
     '  本模板只作背景/装饰层：不重排控件、不使用花括号控件名占位符。' + sLineBreak +
     '  控件继续由框架按 LFM 的 Left/Top 绝对定位，' + Note + '。' + sLineBreak +
     '  可在下面 <style> 与 <div> 里加背景、花纹、说明文字等装饰；' + sLineBreak +
@@ -911,19 +915,24 @@ begin
   Result := Result + sLineBreak + '-->' + sLineBreak;
 
   if Flat then
-    Result := Result + '<head>' + sLineBreak;
+    Result := Result + '<html lang="zh-CN">' + sLineBreak + '<head>' + sLineBreak;
   Result := Result + '<style>' + sLineBreak +
     '  /* 装饰层：铺满窗体客户区/整页，控件仍是客户的绝对定位子节点。 */' + sLineBreak;
   if Flat then
-  begin
     Result := Result +
-      '  html, body { margin: 0; padding: 0; min-height: 100%; }' + sLineBreak +
-      '  body { background: #f5f7fa; color: #2b3a49;' + sLineBreak +
-      '         font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", Arial, sans-serif; }' + sLineBreak;
-  end;
+      '  html, body { margin: 0; padding: 0; min-height: 100%; }' + sLineBreak;
   Result := Result +
     '  .' + K + ' { position: absolute; left: 0; top: 0; right: 0; bottom: 0;' + sLineBreak +
-    '              box-sizing: border-box; pointer-events: none; }' + sLineBreak +
+    '              box-sizing: border-box; pointer-events: none;';
+  if Flat then
+    Result := Result + sLineBreak +
+      '              /* 背景/字体放在装饰层类上，不用 body 全局选择器：' + sLineBreak +
+      '                 模板经 innerHTML 注入宿主页面，body 规则会污染同页其它窗体 */' + sLineBreak +
+      '              /* 颜色跟随客户端主题（var 取宿主页 :root 上的主题变量），' + sLineBreak +
+      '                 写死固定色会让所有主题都显示同一块浅底（坑 182） */' + sLineBreak +
+      '              background: var(--lw-win-bg, #f5f7fa); color: var(--lw-fg, #2b3a49);' + sLineBreak +
+      '              font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", Arial, sans-serif;';
+  Result := Result + ' }' + sLineBreak +
     '  </style>' + sLineBreak;
   if Flat then
     Result := Result + '</head>' + sLineBreak + '<body>' + sLineBreak;
