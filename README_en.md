@@ -16,8 +16,8 @@ Browser (Alpine.js by default / Ext JS optional) — Server (Lazarus, nogui widg
 - **Ext support is an optional feature; the ext-js files must be obtained by the user, and the user is responsible for license compliance.**
 
 ## Component Installation
-1、src\lwcore.lpk —> compile only
-2、src\lwserver.lpk —> compile only
+1、src\lwcore.lpk          —> compile only
+2、src\lwserver.lpk        —> compile only
 3、src\design\lwdesign.lpk —> compile and install
 
 

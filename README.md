@@ -15,8 +15,8 @@ Lazarus 桌面程序的 Web 化运行时 —— 参考 uniGUI 的思路，但用
 - **Ext 支持为可选功能，ext-js 文件由用户自行获取，其授权合规由使用者自行负责。**  
 
 ## 控件安装
-1、src\lwcore.lpk                   --->只编译
-2、src\lwserver.lpk                --->只编译
+1、src\lwcore.lpk             --->只编译
+2、src\lwserver.lpk           --->只编译
 3、src\design\lwdesign.lpk    --->编译及安装
 
 ## 跨平台构建矩阵（宿主 → 目标）
