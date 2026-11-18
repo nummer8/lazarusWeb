@@ -1058,46 +1058,64 @@ var LW = (function () {
         if ($lwHas(id, 'OnChange')) fire(id, 'OnChange', { val: k == null ? '' : String(k) });
     };
 
-    /* 取色器：原生 <input type=color> 弹调色板 */
+    /* 取色器 ------------------------------------------------------------------
+       色块的点击入口**不再**是 JS 造一个 1px 透明 input 再程序化 click()。
+       那条路桌面 Chromium 认（坑 166 时就是这么过的），移动浏览器普遍不认：
+       它把"脚本触发的 click"当成非用户手势，直接忽略 —— 手机上点了色块
+       什么都没弹（坑 181）。现在色块内部常驻一个真实的 <input type=color>
+       （透明铺满色块），用户手指直接点到它，任何浏览器都会弹原生调色板；
+       桌面点击同样命中它，两端行为一致。 */
+    function lwApplyColor(id, hex) {
+        hex = String(hex || '').toUpperCase();
+        if (!hex) return;
+        var r = S.R[id];
+        if (r) r.txt = hex;
+        if (S.ND[id]) S.ND[id].value = hex;
+        var el = S.E[id];
+        if (!el) return;
+        var sw = el.querySelector('.lw-swatch');
+        if (sw) sw.style.background = hex;
+        var inp = el.querySelector('.lw-cp-inp');
+        if (inp && String(inp.value).toUpperCase() !== hex) inp.value = hex;
+    }
+
+    /* 色块内 input 的 @input：拖动/确认时连续回发（与原实现一致） */
+    window.$lwPickColorChange = function (id, ev) {
+        var hex = ev && ev.target ? ev.target.value : '';
+        lwApplyColor(id, hex);
+        fire(id, 'OnColorChange', { val: String(hex || '').toUpperCase() });
+    };
+
+    /* 兼容入口：模板里写过 @click="$lwPickColor(id)" 的地方仍可用。
+       优先 showPicker()（Chromium 99+ / Safari 16+，明确要求由脚本唤起
+       原生选择器），不支持或被拒时退回 click()。 */
     window.$lwPickColor = function (id) {
-        var inp = document.createElement('input');
-        inp.type = 'color';
-        inp.value = (S.ND[id] && S.ND[id].value) || '#ffffff';
-        /* 原生调色板是**锚着 input 的位置**弹出的：以前把 input 摆在
-           left:-9999px（只求不可见），Chromium 照锚点把弹窗开到视口外
-           —— 用户看到的就是"点了色块没反应"（坑 166）。所以 input 必须
-           落在视口内：贴着色块摆一个 1px 的透明 input，弹窗就像下拉一样
-           从色块下方展开。opacity:0 不影响锚点（元素仍参与布局）。 */
-        var x = 40, y = 40;
-        var sw = S.E[id];
-        if (sw) {
-            var r = sw.getBoundingClientRect();
-            x = Math.min(Math.max(4, r.left), window.innerWidth - 8);
-            y = Math.min(Math.max(4, r.bottom), window.innerHeight - 8);
+        var el = S.E[id];
+        var inp = el ? el.querySelector('.lw-cp-inp') : null;
+        if (!inp) {
+            inp = document.createElement('input');
+            inp.type = 'color';
+            inp.value = (S.ND[id] && S.ND[id].value) || '#ffffff';
+            var r = el ? el.getBoundingClientRect() : null;
+            var w = r && r.width > 8 ? Math.round(r.width) : 32;
+            var h = r && r.height > 8 ? Math.round(r.height) : 32;
+            inp.style.cssText = 'position:fixed;left:' +
+                (r ? Math.round(Math.min(Math.max(0, r.left), window.innerWidth - w)) : 40) +
+                'px;top:' +
+                (r ? Math.round(Math.min(Math.max(0, r.top), window.innerHeight - h)) : 40) +
+                'px;width:' + w + 'px;height:' + h +
+                'px;opacity:0.01;border:0;padding:0;margin:0;background:transparent';
+            inp.oninput = function () { lwApplyColor(id, inp.value); };
+            inp.onchange = function () {
+                try { document.body.removeChild(inp); } catch (e) { }
+            };
+            document.body.appendChild(inp);
         }
-        inp.style.position = 'fixed';
-        inp.style.left = x + 'px';
-        inp.style.top = y + 'px';
-        inp.style.width = '1px';
-        inp.style.height = '1px';
-        inp.style.opacity = '0';
-        inp.style.border = 'none';
-        inp.style.padding = '0';
-        document.body.appendChild(inp);
-        inp.oninput = function () {
-            var hex = String(inp.value).toUpperCase();
-            var r = S.R[id];
-            if (r) r.txt = hex;
-            if (S.ND[id]) S.ND[id].value = hex;
-            var el = S.E[id];
-            if (el) {
-                var sw = el.querySelector('.lw-swatch');
-                if (sw) sw.style.background = hex;
-            }
-            fire(id, 'OnColorChange', { val: hex });
-        };
-        inp.onchange = function () { try { document.body.removeChild(inp); } catch (e) { } };
-        inp.click();
+        var opened = false;
+        if (typeof inp.showPicker === 'function') {
+            try { inp.showPicker(); opened = true; } catch (e) { opened = false; }
+        }
+        if (!opened) { try { inp.click(); } catch (e) { } }
     };
 
     /* ---------------- 速度按钮组 ---------------- */
@@ -1628,8 +1646,11 @@ var LW = (function () {
                 return '<div class="lw-gauge" id="lw-gauge-' + id + '"></div>';
 
             case 'color':
-                return '<div class="lw-swatch" style="background:' + esc(node.value || '#ffffff') +
-                    ';cursor:pointer" @click="$lwPickColor(\'' + id + '\')"></div>';
+                /* 透明 input 铺满色块：真实触摸/点击由浏览器自己唤起调色板，
+                   不经脚本 click()（移动端会拒，见坑 181） */
+                return '<div class="lw-swatch" style="background:' + esc(node.value || '#ffffff') + '">' +
+                    '<input class="lw-cp-inp" type="color" value="' + esc(node.value || '#ffffff') +
+                    '" @input="$lwPickColorChange(\'' + id + '\', $event)"></div>';
 
             case 'panel':
             case 'scrollbox':
@@ -2195,15 +2216,23 @@ var LW = (function () {
     /* ---------------- 主题切换按钮（标题栏右侧 ☀/☾/◐） ----------------
        弹层复用 .lw-menu-pop 的三项菜单；标题栏本来就有放大/关闭图标，
        放这里不会压住状态栏文字，也不用额外的浮层定位。 */
-    function themeMenu(anchor) {
+    function themeMenu(anchor, up) {
         /* 同一个锚点再点一次 = 收起（外部点击统一由 menuOutsideDown 处理） */
         if (menuPopEl && menuPopAnchor === anchor) { closeAllMenus(); return; }
         var pop = openMenuPop(THEME_MODES.map(function (p) {
             return { caption: themeLabel(p), checked: p === themePref };
         }), anchor);
         var r = anchor.getBoundingClientRect();
-        pop.style.left = Math.max(4, Math.round(r.right - pop.offsetWidth)) + 'px';
-        pop.style.top = Math.round(r.bottom + 2) + 'px';
+        var ph = pop.offsetHeight, pw = pop.offsetWidth;
+        pop.style.left = Math.max(4, Math.round(r.right - pw)) + 'px';
+        /* 标题栏按钮在顶部 → 向下展开；平面模式的浮钮可被拖到任意位置，
+           按上下可用空间选方向，再整体 clamp 进视口，避免盖住按钮/跑出屏幕 */
+        var below = window.innerHeight - r.bottom - 2;
+        var above = r.top - 2;
+        var goUp = up ? (above >= ph || above > below) : false;
+        var top = goUp ? (r.top - ph - 2) : (r.bottom + 2);
+        top = Math.min(Math.max(4, top), Math.max(4, window.innerHeight - ph - 4));
+        pop.style.top = Math.round(top) + 'px';
         pop.querySelectorAll('.lw-menu-item').forEach(function (el, i) {
             el.addEventListener('click', function (e) {
                 e.stopPropagation();
@@ -2225,6 +2254,117 @@ var LW = (function () {
         var before = title.querySelector('.lw-win-max') || title.querySelector('.lw-win-x');
         if (before) title.insertBefore(b, before); else title.appendChild(b);
         return b;
+    }
+
+    /* ---------------- 平面模式的主题入口（右下角浮动按钮） ----------------
+       平面模式把整条标题栏 display:none 掉了（.lw-flat-form > .lw-win-title），
+       标题栏里的 ☀/☾/◐ 跟着消失，用户就没有换配色的入口了。手机上没有
+       Alt 键，靠快捷键也不成立 —— 所以在平面窗体右下角浮一个小圆钮，
+       点击向上展开同一份主题菜单（复用 themeMenu）。
+       服务端 LWThemeButton=False 时不建；模态窗体沿用标题栏按钮的规则。 */
+    /* 平面模式的主题浮钮：可拖动（位置记在 localStorage），点一下才弹菜单。
+       拖动与点击用「位移阈值」区分：手指按下到抬起移动超过 6px 算拖动，
+       否则算点击 —— 移动端没有 hover/鼠标，只能靠这个判定。 */
+    var FAB_POS_KEY = 'lw.themeFab.pos';
+
+    function themeFabClamp(b, x, y) {
+        var w = b.offsetWidth || 34, h = b.offsetHeight || 34;
+        return {
+            x: Math.min(Math.max(0, x), Math.max(0, window.innerWidth - w)),
+            y: Math.min(Math.max(0, y), Math.max(0, window.innerHeight - h))
+        };
+    }
+
+    function themeFabRestore(b) {
+        var pos = null;
+        try { pos = JSON.parse(localStorage.getItem(FAB_POS_KEY) || 'null'); } catch (e) { }
+        if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number') return;
+        var p = themeFabClamp(b, pos.x, pos.y);
+        b.style.left = p.x + 'px';
+        b.style.top = p.y + 'px';
+        b.style.right = 'auto';
+        b.style.bottom = 'auto';
+    }
+
+    function themeFabDrag(b) {
+        var dragging = false, moved = false;
+        var sx = 0, sy = 0, ox = 0, oy = 0;
+        b.addEventListener('pointerdown', function (e) {
+            if (e.button !== undefined && e.button !== 0) return;
+            var r = b.getBoundingClientRect();
+            sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
+            dragging = true; moved = false;
+            try { b.setPointerCapture(e.pointerId); } catch (er) { }
+        });
+        b.addEventListener('pointermove', function (e) {
+            if (!dragging) return;
+            var dx = e.clientX - sx, dy = e.clientY - sy;
+            if (!moved && Math.abs(dx) + Math.abs(dy) < 6) return;
+            moved = true;
+            var p = themeFabClamp(b, ox + dx, oy + dy);
+            b.style.left = p.x + 'px';
+            b.style.top = p.y + 'px';
+            b.style.right = 'auto';
+            b.style.bottom = 'auto';
+        });
+        function end() {
+            if (!dragging) return;
+            dragging = false;
+            if (!moved) return;              /* 没移动 → 交给 click 弹菜单 */
+            /* 拖动结束：记住位置，并吃掉随之而来的 click（否则拖完会弹菜单） */
+            b.__fabMoved = true;
+            try {
+                localStorage.setItem(FAB_POS_KEY, JSON.stringify({
+                    x: parseFloat(b.style.left) || 0,
+                    y: parseFloat(b.style.top) || 0
+                }));
+            } catch (e) { }
+            if (menuPopEl) closeAllMenus();
+        }
+        b.addEventListener('pointerup', end);
+        b.addEventListener('pointercancel', end);
+    }
+
+    /* 视口变化（旋转/键盘）时把拖出去的位置拉回来 */
+    window.addEventListener('resize', function () {
+        var list = document.querySelectorAll('.lw-theme-fab');
+        for (var i = 0; i < list.length; i++) {
+            var b = list[i];
+            if (!b.style.left) continue;
+            var p = themeFabClamp(b, parseFloat(b.style.left) || 0,
+                                  parseFloat(b.style.top) || 0);
+            b.style.left = p.x + 'px';
+            b.style.top = p.y + 'px';
+        }
+    });
+
+    function themeFabAdd(fm) {
+        if (!fm || fm.themeFab || themeBtnHidden || (fm.f && fm.f.modal)) return;
+        var win = fm.el;
+        if (!win) return;
+        var b = document.createElement('span');
+        b.className = 'lw-theme-fab';
+        b.title = '主题（可拖动）';
+        b.addEventListener('click', function (e) {
+            e.stopPropagation();
+            if (b.__fabMoved) { b.__fabMoved = false; return; }
+            themeMenu(b, true);
+        });
+        themeFabDrag(b);
+        themeBtnSync(b);
+        themeBtns.push(b);
+        win.appendChild(b);
+        themeFabRestore(b);   /* 进 DOM 后再摆：clamp 需要真实尺寸 */
+        fm.themeFab = b;
+    }
+
+    function themeFabDrop(fm) {
+        var b = fm && fm.themeFab;
+        if (!b) return;
+        if (b.parentNode) b.parentNode.removeChild(b);
+        var i = themeBtns.indexOf(b);
+        if (i >= 0) themeBtns.splice(i, 1);
+        fm.themeFab = null;
     }
 
     /* ---------------- 自适应布局 + 窗体模板（方案 B，自研） ----------------
@@ -2324,6 +2464,7 @@ var LW = (function () {
         fm.tplEl = null;
         fm.tplOrder = null;
         kids.classList.remove('lw-kids-tpl');
+        themeFabDrop(fm);   /* 离开平面模式：浮钮换回标题栏按钮 */
     }
 
     /* 把模板骨架挂进窗体客户区当背景层：顶层控件留在原地，继续按
@@ -2372,8 +2513,14 @@ var LW = (function () {
         win.classList.remove('lw-max');
         win.style.left = '0px';
         win.style.top = '0px';
-        win.style.width = '100%';
-        win.style.height = '100%';
+        /* 平面模式**不能**把窗宽压成视口宽：模板只是装饰层，控件仍按设计期
+           绝对坐标摆放，而页签页（alClient）/容器会跟着窗宽收缩 —— 设计坐标
+           x>窗宽 的控件被页签页内部裁掉，滚都滚不到，用户点不到（坑 181，
+           与坑 179 同族）。这里与窗口模式统一：窗宽高取
+           max(设计值, 视口值)，超出部分由 #lw-root 平移查看。窄屏不再"整页
+           自适应"，但控件不会被裁。 */
+        win.style.width = Math.max(fm.f.w || 300, window.innerWidth) + 'px';
+        win.style.height = Math.max(fm.f.h || 400, window.innerHeight) + 'px';
         if (body) {
             body.style.height = '100%';
             body.style.overflow = 'auto';
@@ -2381,7 +2528,12 @@ var LW = (function () {
         fm.savedPos = null;
         if (!lwApplyTplHost(fm, tpl, 'flat', host)) { lwRevealForm(fm); return false; }
         fm.flatMode = true;
+        /* 窗比视口宽时需要平移滚动（桌面视口一般装得下，只在移动布局开）。
+           这里用 lwLayoutNow() 而不是 layoutState：冷启动时模板回包可能早于
+           首次 lwApplyLayout，那时 layoutState 还是 null，会漏开平移。 */
+        if (lwLayoutNow() === 'mobile') fm.tplFallback = true;
         lwRevealForm(fm);
+        themeFabAdd(fm);   /* 标题栏隐藏了，主题入口改挂右下角浮钮 */
         lwUpdatePan();
         return true;
     }
@@ -2454,10 +2606,14 @@ var LW = (function () {
                 fm.savedPos = { left: win.style.left, width: win.style.width,
                                 height: win.style.height };
             }
-            /* 移动端窗体贴满视口；控件还是设计期绝对坐标，超出由根容器平移查看 */
-            win.style.width = Math.min(fm.f.w || 300, window.innerWidth - 8) + 'px';
-            win.style.height = (window.innerHeight - 12) + 'px';
-            win.style.left = Math.max(4, Math.round((window.innerWidth - win.offsetWidth) / 2)) + 'px';
+            /* 移动端保持设计宽高（不小于视口），超出视口的部分由 #lw-root 滚动
+               平移查看。不能把窗宽压成 min(设计宽, 视口宽)：模板只是装饰层，
+               控件仍按设计期绝对坐标摆放，窗一窄右侧控件就被裁掉、页签页按窄
+               宽重排 → gallery TPageControl 右边一片空白（坑 150/151 同类）。 */
+            fm.tplFallback = true;
+            win.style.width = Math.max(fm.f.w || 300, window.innerWidth - 8) + 'px';
+            win.style.height = Math.max(fm.f.h || 400, window.innerHeight - 12) + 'px';
+            win.style.left = '0px';
             win.style.top = '6px';
         } else {
             /* 桌面不改窗体几何：从移动态切回时先恢复原几何 */
@@ -2474,17 +2630,47 @@ var LW = (function () {
         fm.tplSeq = (fm.tplSeq || 0) + 1;
         fseq = fm.tplSeq;
         fm.tplPending = true;
-        lwFetchTpl(fname, '.html', function (tpl) {
-            /* fetch 是异步的：回来时模式可能已切换或窗体已关，按序号丢弃 */
-            if (fseq !== fm.tplSeq || !S.forms[formId]) return;
-            fm.tplPending = false;
-            if (!tpl) { lwApplyNoTpl(fm, mode); return; }
+
+        /* 套用一份模板串：flat 标记 -> 整页平面；否则作背景装饰层。
+           返回 true 表示已接管。控件在两种情况下都保持 LFM 绝对坐标。 */
+        function lwUseTpl(tpl) {
             /* flat 优先：同一文件里两种标记并存时也按平面渲染 */
-            if (/lw-tpl-mode\s*:\s*flat/i.test(tpl) && lwApplyFlatTpl(fm, tpl)) return;
+            if (/lw-tpl-mode\s*:\s*flat/i.test(tpl) && lwApplyFlatTpl(fm, tpl)) return true;
             var host = lwTplHost(formId, tpl);
-            if (!host) { lwApplyNoTpl(fm, mode); return; }
-            lwApplyTplHost(fm, tpl, mode, host);
-        });
+            if (!host) return false;
+            if (!lwApplyTplHost(fm, tpl, mode, host)) return false;
+            /* 移动端模板同样是装饰层：窗体保持设计宽高、开平移滚动。lwApplyTplHost
+               会把 tplFallback 清成 false（桌面语义），这里按移动端重新置位。 */
+            if (mode === 'mobile') {
+                fm.tplFallback = true;
+                win.style.width = Math.max(fm.f.w || 300, window.innerWidth - 8) + 'px';
+                win.style.height = Math.max(fm.f.h || 400, window.innerHeight - 12) + 'px';
+                win.style.left = '0px';
+                win.style.top = '6px';
+                lwUpdatePan();
+                /* 窗宽从窄改回设计宽后，页签页/alClient 子项按新客户区重算一遍 */
+                runLayout({ body: kids }, fm.f.children || []);
+            }
+            return true;
+        }
+        /* fetch 异步：回来时模式可能已切换或窗体已关，按序号丢弃 */
+        if (mode === 'mobile') {
+            /* 移动端与桌面端对称：有 .m.html 就用移动模板布局，
+               没有就直接用 LCL 布局（不读桌面 .html、不重排控件）。
+               找不到模板时把设计期几何完整还原，别残留移动几何。 */
+            lwFetchTpl(fname, '.m.html', function (mtpl) {
+                if (fseq !== fm.tplSeq || !S.forms[formId]) return;
+                fm.tplPending = false;
+                if (mtpl && lwUseTpl(mtpl)) return;
+                lwApplyNoTpl(fm, 'desktop');   /* 回 LCL 布局，与桌面端无模板一致 */
+            });
+        } else {
+            lwFetchTpl(fname, '.html', function (tpl) {
+                if (fseq !== fm.tplSeq || !S.forms[formId]) return;
+                fm.tplPending = false;
+                if (!tpl || !lwUseTpl(tpl)) lwApplyNoTpl(fm, mode);
+            });
+        }
     }
 
     function lwRelayout(mode) {
@@ -2512,7 +2698,9 @@ var LW = (function () {
        （全部有模板 / 桌面模式）关闭，恢复桌面"窗体自由摆放不滚动"。 */
     function lwUpdatePan() {
         var any = false;
-        if (layoutState === 'mobile') {
+        /* 用 lwLayoutNow() 而不是 layoutState：冷启动时模板回包可能早于首次
+           lwApplyLayout，layoutState 还是 null，会漏开平移（窗比视口宽却滑不动） */
+        if (lwLayoutNow() === 'mobile') {
             Object.keys(S.forms).some(function (k) {
                 if (S.forms[k] && S.forms[k].tplFallback) { any = true; return true; }
                 return false;
@@ -2521,10 +2709,24 @@ var LW = (function () {
         document.documentElement.setAttribute('data-lw-pan', any ? '1' : '0');
     }
 
+    /* 平面模式窗体尺寸：与窗口模式同一规则（不小于设计宽高），
+       旋转/键盘弹出/改窗时按新视口重算，否则窄屏下页签页会按旧宽裁控件。
+       平移开关也在这里跟着布局走 —— lwApplyFormTpl 对已套用的平面窗直接
+       return，切换布局时不会重进 lwApplyFlatTpl，只能靠这里同步。 */
+    function lwFlatSize(fm) {
+        var win = fm.el;
+        if (!win || !fm.flatMode) return;
+        win.style.width = Math.max(fm.f.w || 300, window.innerWidth) + 'px';
+        win.style.height = Math.max(fm.f.h || 400, window.innerHeight) + 'px';
+        fm.tplFallback = (lwLayoutNow() === 'mobile');
+    }
+
     function lwFallbackSizeAll() {
         Object.keys(S.forms).forEach(function (k) {
             var fm = S.forms[k];
-            if (fm && fm.tplFallback) lwFallbackSize(fm);
+            if (!fm) return;
+            if (fm.flatMode) lwFlatSize(fm);
+            else if (fm.tplFallback) lwFallbackSize(fm);
         });
         lwUpdatePan();
     }
@@ -3576,6 +3778,9 @@ var LW = (function () {
                 if (prev.value !== n.value) {
                     var sw = el.querySelector('.lw-swatch');
                     if (sw) sw.style.background = n.value || '#ffffff';
+                    /* 色块内的 input 也要跟着走，否则下次点开还是旧颜色 */
+                    var cinp = el.querySelector('.lw-cp-inp');
+                    if (cinp && n.value) cinp.value = n.value;
                 }
             }
         } catch (e) { }

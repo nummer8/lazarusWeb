@@ -841,18 +841,58 @@ html, body {
 .lw-win.lw-flat-form {
     left: 0 !important;
     top: 0 !important;
-    width: 100% !important;
-    height: 100% !important;
-    min-width: 0;
-    min-height: 0;
+    /* 宽高不用 100% 写死：平面模式同样不允许把窗压到视口宽（控件按设计坐标
+       摆放，压窄会被页签页内部裁掉，见坑 181）。尺寸由 JS 按
+       max(设计宽高, 视口) 设置；这里只兜底"不小于视口"。 */
+    min-width: 100%;
+    min-height: 100%;
     border-radius: 0;
     box-shadow: none;
     resize: none !important;
     overflow: hidden;
 }
 .lw-win.lw-flat-form > .lw-win-title { display: none !important; }
+
+/* 平面模式的主题入口：标题栏整体隐藏后，☀/☾/◐ 没了落点，改挂右下角
+   浮动圆钮（JS 见 themeFabAdd）。z-index 低于菜单弹层 97000、高于窗体；
+   fixed 定位相对视口，不随 .lw-win-body 滚动。手机没有 Alt 键，必须留
+   一个可点的入口，不能只做快捷键。 */
+.lw-theme-fab {
+    position: fixed;
+    right: 12px;
+    bottom: 12px;
+    width: 34px;
+    height: 34px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--lw-surface2);
+    border: 1px solid var(--lw-border3);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .18);
+    color: var(--lw-icon);
+    opacity: .75;
+    z-index: 96000;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    /* 可拖动：触摸拖动时不要让浏览器抢去滚动页面（拖完位置记到 localStorage） */
+    touch-action: none;
+    cursor: grab;
+}
+.lw-theme-fab:active { cursor: grabbing; }
+.lw-theme-fab:hover { opacity: 1; background: var(--lw-hover); color: var(--lw-accent-strong); }
+.lw-theme-fab.lw-on { opacity: .95; }
+html[data-lw-layout="mobile"] .lw-theme-fab {
+    width: 38px;
+    height: 38px;
+    right: 10px;
+    bottom: 10px;
+}
 .lw-win.lw-flat-form > .lw-win-body {
-    background: #fff;
+    /* 不能写死 #fff：面板/标签的 bg、fg 在 LCL 里常是系统色（服务端下发空），
+       客户端交给主题决定 —— 底色写死白会让深色主题出现"白底浅字"（坑 182） */
+    background: var(--lw-win-bg);
     overflow: auto;
 }
 .lw-win-body {
@@ -1480,7 +1520,32 @@ html[data-lw-layout="mobile"] .lw-ud-dn::after { content: '\2212'; } /* − */
     border-radius: 3px;
 }
 .lw-gauge { width: 100%; height: 100%; }
-.lw-swatch { width: 100%; height: 100%; min-height: 20px; box-sizing: border-box; border-radius: 3px; }
+/* 取色器：色块 + 铺满它的透明 color input（点击入口）。
+   input 必须是**真实存在、可被手指点中**的元素 —— 脚本造个 1px 透明 input
+   再 click() 的做法在移动浏览器会被当成非用户手势丢掉（坑 181）。 */
+.lw-swatch {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-height: 20px;
+    box-sizing: border-box;
+    border-radius: 3px;
+    overflow: hidden;
+}
+.lw-cp-inp {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    cursor: pointer;
+    background: transparent;
+    -webkit-tap-highlight-color: transparent;
+}
 
 /* ---------- 页签 ---------- */
 .lw-tabs {
