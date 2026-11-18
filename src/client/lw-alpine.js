@@ -2304,6 +2304,16 @@ var LW = (function () {
         return host;
     }
 
+    /* 新建窗体先隐藏，等模板模式判定完（flat/window/无模板）再显示：
+       否则浮窗会以设计期几何 + 标题栏先闪一下，异步回包再变平面/装饰层，
+       空窗体尤其明显（看起来像"闪一下消失"）。visibility 不影响布局测量，
+       buildForm 里的 getBoundingClientRect / offsetHeight 照常可用。 */
+    function lwRevealForm(fm) {
+        if (!fm || !fm.el) return;
+        fm.el.style.visibility = '';
+        if (fm.mask) fm.mask.style.visibility = '';
+    }
+
     /* 拆掉已套用的模板装饰层。控件从未被搬动（两种模式都保持 LFM
        绝对定位），所以只需摘掉宿主 DOM，不做任何搬回/清类操作 */
     function lwClearFormTpl(fm) {
@@ -2333,6 +2343,7 @@ var LW = (function () {
         fm.tplEl = host;
         fm.tplFallback = false;
         fm.tplLayout = layout;
+        lwRevealForm(fm);
         return true;
     }
 
@@ -2347,7 +2358,7 @@ var LW = (function () {
         var i;
         if (!kids || !win) return false;
         host = lwTplHost(formId, tpl);
-        if (!host) return false;                    /* 占位符对不上就退回浮窗流程 */
+        if (!host) { lwRevealForm(fm); return false; } /* 占位符对不上退回浮窗流程 */
         lwClearFormTpl(fm);
         for (i = 0; i < win.children.length; i++) {
             if (win.children[i].classList &&
@@ -2368,8 +2379,9 @@ var LW = (function () {
             body.style.overflow = 'auto';
         }
         fm.savedPos = null;
-        if (!lwApplyTplHost(fm, tpl, 'flat', host)) return false;
+        if (!lwApplyTplHost(fm, tpl, 'flat', host)) { lwRevealForm(fm); return false; }
         fm.flatMode = true;
+        lwRevealForm(fm);
         lwUpdatePan();
         return true;
     }
@@ -2380,6 +2392,7 @@ var LW = (function () {
         var win = fm.el;
         var kids = S.E[fm.f.id];
         if (!win || !kids) return;
+        lwRevealForm(fm);
         if (mode === 'desktop') {
             fm.tplFallback = false;
             if (fm.savedPos) {
@@ -3017,6 +3030,11 @@ var LW = (function () {
            否则 .lw-win-body 只剩 h-28，客户区底部（如模态窗体的关闭按钮）被裁掉 */
         win.style.height = (clientH + TITLE_H) + 'px';
         win.style.zIndex = 100 + Object.keys(S.forms).length;
+        /* 先隐藏：模板（尤其平面模式）是异步 fetch 后才套用的，若先显示浮窗
+           再改成整页，用户会看到带标题栏的窗体闪一下再消失（空窗体最明显）。
+           visibility 保留布局尺寸，下面 getBoundingClientRect 的 dh 补偿照常；
+           lwApplyFormTpl 的所有终态分支都会 lwRevealForm 把它显示出来。 */
+        win.style.visibility = 'hidden';
         /* 可调大小：LFM 的 bsSizeable/bsSizeToolWin 才给拖角调整（与 Ext 版
            resizable: !!f.resizable 同语义），用 CSS resize + ResizeObserver */
         if (f.resizable) win.classList.add('lw-resizable');
@@ -3025,9 +3043,10 @@ var LW = (function () {
         var maskEl = null;
         if (f.modal) {
             maskEl = document.createElement('div');
-            maskEl.className = 'lw-win-mask';
-            maskEl.style.zIndex = 99 + Object.keys(S.forms).length;
-            root.appendChild(maskEl);
+                maskEl.className = 'lw-win-mask';
+                maskEl.style.zIndex = 99 + Object.keys(S.forms).length;
+                maskEl.style.visibility = 'hidden';   /* 与窗体一起等模板判定完再显示 */
+                root.appendChild(maskEl);
         }
 
         var title = document.createElement('div');

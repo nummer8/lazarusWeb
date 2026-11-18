@@ -2091,6 +2091,92 @@ var LW = (function () {
         return n ? out : [{ xtype: 'component', flex: 1, html: '' }];
     }
 
+    /* ---------------- 窗体模板（与 Alpine 端同机制）----------------
+       统一只请求同名 <窗体名>.html，文件头 lw-tpl-mode:window|flat 决定
+       浮窗背景装饰层还是整页平面。两种模式控件都保持设计期绝对坐标（Ext
+       本来就是 absolute 布局），模板只作背景层 pointer-events:none。
+       旧 .flat.html 仍兼容（存在即平面优先）。模板 no-store，404 也缓存。 */
+    var tplCache = {};
+
+    function lwFetchTpl(name, suffix, cb) {
+        var key = name + '|' + suffix;
+        if (key in tplCache) { cb(tplCache[key]); return; }
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', BASE + 'lw/tpl/' + encodeURIComponent(name) + suffix, true);
+        xhr.onreadystatechange = function () {
+            if (xhr.readyState !== 4) return;
+            var t = (xhr.status >= 200 && xhr.status < 300) ? xhr.responseText : null;
+            tplCache[key] = t;
+            cb(t);
+        };
+        try { xhr.send(); } catch (e) { tplCache[key] = null; cb(null); }
+    }
+
+    function lwProbeTpl(name, cb) {
+        lwFetchTpl(name, '.flat.html', function (legacy) {
+            if (legacy) { cb('flat', legacy); return; }
+            lwFetchTpl(name, '.html', function (tpl) {
+                if (!tpl) { cb('none', null); return; }
+                if (/lw-tpl-mode\s*:\s*flat/i.test(tpl)) cb('flat', tpl);
+                else cb('window', tpl);
+            });
+        });
+    }
+
+    /* 模板串 -> 可插进 body 的装饰层 HTML：收拢所有 <style>，主体取
+       <body> 内容（flat 是完整 HTML5 文档，window 是片段）。 */
+    function lwTplBackdropHtml(tpl) {
+        if (!tpl) return '';
+        var styles = '', re = /<style[^>]*>([\s\S]*?)<\/style>/gi, m;
+        while ((m = re.exec(tpl))) styles += m[1] + '\n';
+        var bodyHtml;
+        var bm = /<body[^>]*>([\s\S]*?)<\/body>/i.exec(tpl);
+        if (bm) bodyHtml = bm[1];
+        else bodyHtml = tpl.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+            .replace(/<!--[\s\S]*?-->/g, '');
+        return (styles ? '<style>' + styles + '</style>' : '') + bodyHtml;
+    }
+
+    function lwAddBackdrop(win, tpl) {
+        var html = lwTplBackdropHtml(tpl);
+        if (!html) return;
+        var host = document.createElement('div');
+        host.className = 'lw-tpl-backdrop';
+        host.innerHTML = html;
+        try {
+            win.body.dom.insertBefore(host, win.body.dom.firstChild);
+        } catch (e) { try { win.body.appendChild(host); } catch (e2) { } }
+    }
+
+    /* 平面模式：标题栏/边框/拖动/缩放全去掉，铺满视口，客户区自身滚动。
+       Ext 的 absolute 布局天然保持控件设计期坐标，不动一个控件。 */
+    function lwMakeFlat(win, tpl) {
+        win.__lwFlat = true;
+        try {
+            if (win.header) win.header.hide();
+            try { win.setResizable(false); } catch (e1) { }
+            try { win.setDraggable(false); } catch (e2) { }
+            try { win.setBorder(false); } catch (e3) { }
+            win.setPosition(0, 0);
+            var vw = Ext.Element.getViewportWidth(), vh = Ext.Element.getViewportHeight();
+            win.setSize(vw, vh);
+            win.body.setStyle({ background: '#fff', overflow: 'auto' });
+            win.addCls('lw-ext-flat-form');
+            /* 视口变化继续铺满（防拖出边距）；__lwFlatResize 防重入 */
+            win.on('resize', function () {
+                if (!win.__lwFlat || win.__lwFlatResize) return;
+                win.__lwFlatResize = true;
+                try {
+                    win.setPosition(0, 0);
+                    win.setSize(Ext.Element.getViewportWidth(),
+                                Ext.Element.getViewportHeight());
+                } catch (e4) { }
+                win.__lwFlatResize = false;
+            });
+        } catch (e) { log('flat form apply failed', e); }
+        lwAddBackdrop(win, tpl);
+    }
+
     function buildForm(f) {
         var win = S.forms[f.id];
         if (win) return win;
@@ -2160,7 +2246,20 @@ var LW = (function () {
             });
         }
 
+        /* 先 show 再立刻隐藏（同一同步块内，浏览器不会绘制中间态）：
+           模板（平面模式）异步 fetch 后才套用，若直接显示浮窗再改成整页，
+           用户会看到标题栏窗体闪一下再消失（空窗体最明显）。用 hidden
+           会让 body 量不到尺寸，故用 setVisible(false) 保留布局，等探测
+           完再 setVisible(true)。 */
         win.show();
+        win.setVisible(false);
+        var fname = f.name || String(f.id);
+        lwProbeTpl(fname, function (mode, tpl) {
+            if (!S.forms[f.id] || win.destroyed) return;   /* 等待期间已关 */
+            if (mode === 'flat') lwMakeFlat(win, tpl);
+            else if (tpl) lwAddBackdrop(win, tpl);
+            win.setVisible(true);
+        });
         /* Ext 的 height 含标题栏，LCL 的 ClientHeight 不含；
            把差值补回去，让窗口 body 的坐标空间与 LCL 客户区一致 */
         try {

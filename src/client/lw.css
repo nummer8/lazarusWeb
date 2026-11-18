@@ -312,3 +312,25 @@ html, body {
 .lw-end-box { text-align: center; padding: 32px 44px; }
 .lw-end-t { font-size: 17px; font-weight: bold; color: #222; margin-bottom: 8px; }
 .lw-end-s { font-size: 13px; color: #666; }
+
+/* ---------- 窗体模板（与 Alpine 端同机制）----------
+   统一单文件 <窗体名>.html，文件头 lw-tpl-mode:window|flat 决定渲染方式。
+   模板只作背景装饰层：绝对铺满客户区、不拦控件事件；控件仍由 Ext 的
+   absolute 布局按 LFM 设计期坐标摆放，一个都不重排。 */
+.lw-tpl-backdrop {
+    position: absolute;
+    left: 0; top: 0; right: 0; bottom: 0;
+    box-sizing: border-box;
+    pointer-events: none;
+    z-index: 0;
+    overflow: hidden;
+}
+/* 平面模式：整页无窗口边框/标题栏，客户区铺满视口并自身滚动 */
+.lw-ext-flat-form {
+    border: none !important;
+    box-shadow: none !important;
+}
+.lw-ext-flat-form .x-window-body {
+    background: #fff;
+    overflow: auto;
+}
