@@ -62,6 +62,15 @@ type
     { 默认主窗体名（登录成功后 lwlogin 用它创建主窗体）}
     class function DefaultFormName: string;
     class procedure Run;
+    { 作为 Windows 服务 / 守护进程运行时的入口。
+      与 Run 的差别：强制 NoUI（无面板、accept 在主线程）、不调用 Halt
+      （服务里 Halt 会绕过 SCM 的 Stop 协议），把致命配置错误记日志后
+      以 ExitCode 返回；被 StopService 唤醒后正常收尾。
+      典型用法：TDaemon 的 OnStart 里起 worker 线程调它，OnStop 调 StopService。 }
+    class procedure RunService;
+    { 请求服务停止：唤醒阻塞在 accept 循环的 RunService，让它走正常收尾。
+      供 TDaemon.OnStop 调用，幂等（Stop 内部本来就可重复调用）。 }
+    class procedure StopService;
     class function Server: TLWServer;
   end;
 
@@ -84,6 +93,10 @@ type
   public
     procedure HandleException(Sender: TObject; E: Exception);
   end;
+
+  { 服务模式下致命配置错误的哨兵：RunService 捕获它后正常收尾，
+    不让它冒泡到 TDaemon（冒泡会被记成未处理异常，掩盖真正原因）。 }
+  ELWServiceAbort = class(Exception);
 
 var
   GExcHandler: TLWAppExceptionHandler = nil;
@@ -110,6 +123,8 @@ var
   GProvider: TLWFormProvider = nil;
   GLoginName: string = '';        { 登录窗体名（'' = 未启用登录）}
   GExternalPages: TStringList = nil;  { 注册名 -> 外部页面 URL（跨进程插件跳转）}
+  GServiceMode: Boolean = False;  { RunService 期间为真：致命错误不 Halt，改记日志+ExitCode }
+  GStopRequested: Boolean = False;{ StopService 早于服务器建好时先记一笔，RunService 兜底处理 }
 
 procedure EnsureExternalPages;
 begin
@@ -328,6 +343,21 @@ begin
   Result := GServer;
 end;
 
+{ Run 里三处致命错误统一走这里。普通模式维持历史行为 Halt（独立 exe
+  直接退出）；服务模式绝不 Halt —— 那会绕过 SCM 的 Stop 协议，让服务
+  变成"意外终止"。改为记日志 + ExitCode，再抛出这个哨兵异常由 RunService
+  捕获，走 finally 正常收尾后把控制权交回 TDaemon。 }
+procedure LWRunAbort(ACode: Integer; const AMsg: string);
+begin
+  LWLog(AMsg);
+  if GServiceMode then
+  begin
+    ExitCode := ACode;
+    raise ELWServiceAbort.Create(AMsg);
+  end;
+  Halt(ACode);
+end;
+
 class procedure TLWApp.Run;
 var
   i: Integer;
@@ -435,6 +465,24 @@ var
 
     if ini.Has(['extdir', 'extjs', 'extroot']) then
       GCfg.ExtDir := Trim(ini.Str(['extdir', 'extjs', 'extroot'], ''));
+
+    { 日志文件：服务化部署时 cwd 常是 C:\Windows\System32，相对路径若按 cwd
+      解析会写到系统目录（或没权限直接失败、日志凭空消失）。与 --config=、
+      --ssl-cert= 一致，相对一律按 exe 目录展开。命令行 --log= 随后覆盖。 }
+    if ini.Has(['log', 'logfile']) then
+    begin
+      val := Trim(ini.Str(['log', 'logfile'], ''));
+      if val <> '' then
+      begin
+        if (Pos(':', val) = 2) or (Copy(val, 1, 2) = '\\') or
+           (Copy(val, 1, 1) = '/') then
+          GCfg.LogFile := val   { 已是绝对路径 }
+        else
+          GCfg.LogFile := ExpandFileName(
+            IncludeTrailingPathDelimiter(
+              ExtractFileDir(ExpandFileName(ParamStr(0)))) + val);
+      end;
+    end;
 
     { 界面语言：language=en / language=zh（也认 lang / locale）。
       非法值不报错退出，退回中文并留一条日志 —— 多语言是可选能力，
@@ -577,7 +625,10 @@ begin
   GCfg.LoginForm := GLoginName;
   GCfg.AjaxCORS := False;
   GCfg.TrustProxy := False;
-  GCfg.NoUI := False;
+  { 服务模式强制无面板：accept 留在调用线程（worker 线程），
+    这样 StopService 调 Server.Stop 就能唤醒它、走正常收尾。
+    GUI 面板依赖消息循环，服务里没有桌面会话，绝不能开。 }
+  GCfg.NoUI := GServiceMode;
   GCfg.LogFile := '';
   GCfg.UseSSL := False;
   GCfg.SSLHost := '';
@@ -605,10 +656,7 @@ begin
     if cfgPath <> '' then
     begin
       if not ini.Load(cfgPath) then
-      begin
-        LWLog(LWLangFmt('错误: 找不到配置文件 -> %s', [cfgPath]));
-        Halt(1);
-      end;
+        LWRunAbort(1, LWLangFmt('错误: 找不到配置文件 -> %s', [cfgPath]));
     end
     else
       ini.Load('');
@@ -766,6 +814,11 @@ begin
   if not DirectoryExists(GCfg.Root) then
   begin
     LWLog(LWLangFmt('错误: 项目根目录不存在 -> %s', [GCfg.Root]));
+    if GServiceMode then
+    begin
+      ExitCode := 1;
+      raise ELWServiceAbort.Create(GCfg.Root);
+    end;
     Halt(1);
   end;
   { 多语言：选语言并预热 PO（languages\<lang>\*.po，见 lwlang）。
@@ -821,6 +874,14 @@ begin
 
   GServer := TLWServer.Create(GCfg, @GProvider.CreateForm, @GProvider.ListForms);
   try
+    { 竞态：SCM 可能在服务器还没建好时就发了 Stop（例如快速启停）。
+      StopService 那时看不到 GServer，只置了 GStopRequested —— 这里补上。
+      Stop 幂等，未 Start 时调用也安全（见 lwhttp.TLWServer.Stop）。 }
+    if GStopRequested then
+    begin
+      GStopRequested := False;
+      GServer.Stop;
+    end;
     { 横幅必须打在 Start 之前：Start 进入 accept 循环后不再返回 }
     GServer.PrintBanner;
     { --log= 开文件日志：服务化部署留证据；GUI 面板只显示到窗口里 }
@@ -837,6 +898,31 @@ begin
     GServer := nil;
     LWStopTrace('lwapp ② 服务器对象已释放');
   end;
+end;
+
+class procedure TLWApp.RunService;
+begin
+  GServiceMode := True;
+  GStopRequested := False;
+  ExitCode := 0;
+  LWLog('[lw] 服务模式启动（无面板；由 SCM/守护进程管理生命周期）');
+  try
+    { Run 内部不再 Halt：致命配置错误会抛 ELWServiceAbort，
+      在 finally 释放服务器后到这里被吞掉，控制权交回 TDaemon。 }
+    Run;
+  except
+    on E: ELWServiceAbort do
+      LWLog('[lw] 服务启动失败（已记录错误，进程将退出）: ' + E.Message);
+  end;
+end;
+
+class procedure TLWApp.StopService;
+begin
+  { 幂等：Stop 本身可重复调用；GServer 可能为 nil —— 那是 SCM 来得太早，
+    记下标志，Run 在建好服务器后会补一次 Stop（见 Run 里的竞态处理）。 }
+  GStopRequested := True;
+  if GServer <> nil then
+    GServer.Stop;
 end;
 
 finalization

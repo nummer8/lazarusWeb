@@ -49,12 +49,30 @@ type
     Headless: Boolean;
     { 工程模板：True = 插件模式（.lpr uses lwmodules 并调用 RegisterAllModules，
       另生成 lwmodules.pas 空骨架）；False = 常规模式。
-      IDE 新建工程向导第二个选择框决定，tools\lwnew 用 --plugin 切换。 }
+      IDE 新建工程向导第三个选择框决定，tools\lwnew 用 --plugin 切换。 }
     Plugin: Boolean;
+    { True = 服务(daemon)模式：生成可注册为 Windows 服务的完整宿主层
+      （.lpr 带 DaemonApp 分流 + uDaemon.pas + uMapper.pas + lazarusWeb.ini），
+      同一个 exe 仍可前台运行。IDE 向导第一框的后一项决定，tools\lwnew
+      用 --service 切换；False = 普通应用模式（历史行为，一字不变）。 }
+    Service: Boolean;
     { 非空时工程用 OtherUnitFiles 指向源码目录（不依赖已安装的包）；
       为空时依赖 lwserver 包（IDE 向导走这条路，工程可随意搬动） }
     UnitPath: string;
   end;
+
+const
+  { 服务模式额外生成的文件名（固定名，与 demos/service_demo 同源）。
+    守护类名/映射类名固定，mapper 的服务名由工程名派生：<Name>Service。
+    ini 用固定名 lazarusWeb.ini 而不是 <工程名>.ini —— 原因见 lwconfig：
+    运行期按 <exe名>.ini -> lazarusWeb.ini 查找，固定名让 IDE 向导在
+    "落盘前"就能把 ini 内容确定下来（保存时才定工程名，若用 <工程名>.ini
+    则落盘那一刻内容还依赖未知的最终名）。 }
+  sLWDaemonUnitName = 'uDaemon';
+  sLWMapperUnitName = 'uMapper';
+  sLWDaemonClassName = 'TLWServiceDaemon';
+  sLWMapperClassName = 'TServiceDaemonMapper';
+  sLWServiceIniName = 'lazarusWeb.ini';
 
 { 生成默认选项：Name=MyApp -> umain / TMainForm / 端口 8090 }
 function LWDefaultProject(const AName: string): TLWNewProject;
@@ -63,6 +81,18 @@ function LWProjectSource(const O: TLWNewProject): string;
 { 插件模式的 lwmodules.pas 空骨架（常规模式不生成此文件） }
 function LWModulesSource(const O: TLWNewProject): string;
 function LWProjectInfo(const O: TLWNewProject): string;
+
+{ 服务(daemon)模式额外文件的模板（O.Service=True 才生成）：
+  - uDaemon.pas    TDaemon 子类 + worker 线程 + 命令行分流 + 管理员预检
+  - uMapper.pas    TDaemonMapper 子类（DaemonDefs 用代码构造，**无需 .lfm**）
+  - lazarusWeb.ini 端口与日志配置（服务方式 cwd=System32 也要能找到）
+  这些函数是 demos/service_demo 那套已验证代码的模板化版本，
+  把踩过的坑（CreateNew 绑事件、worker 注册窗体、防假活）都固化在模板里。 }
+function LWServiceDaemonSource(const O: TLWNewProject): string;
+function LWServiceMapperSource(const O: TLWNewProject): string;
+function LWServiceIniSource(const O: TLWNewProject): string;
+{ mapper 的服务名：<工程名>Service（保证多服务共存时不撞名） }
+function LWServiceName(const O: TLWNewProject): string;
 
 { .lpi 里体现 widgetset 档位的那几段 XML —— 两个档位的差别只在这里判断
   一次，`LWProjectInfo`（写字面意义上的 .lpi）和 IDE 侧的补丁（IDE 自己写完
@@ -202,22 +232,21 @@ begin
   Result.Port := 8090;
   Result.Headless := True;   { lwnew 命令行保持历史行为；IDE 向导会显式覆盖 }
   Result.Plugin := False;    { 默认常规模式 }
+  Result.Service := False;   { 默认普通应用模式；IDE 向导第一框 / --service 覆盖 }
   Result.UnitPath := '';
 end;
 
 function LWProjectSource(const O: TLWNewProject): string;
 var
-  hint: string;
-  apptype: string;
-  usesLine: string;
-  regLine: string;
+  hint, apptype, regLine, head, body, regAll, frontReg: string;
 begin
+  { apptype / hint 与历史完全一致：GUI 档写 $APPTYPE GUI，nogui 写 CONSOLE
+    （LWIsTemplateProject 的源码判据也靠这个，不能改）。服务模式叠加说明文字。 }
   if O.Headless then
   begin
     hint :=
       '    编译时必须用 nogui widgetset（lazbuild --ws=nogui 或工程选项里设置），' + LineEnding +
       '    这样服务端不需要任何图形环境，LCL 控件仍然真的。';
-    { 控制台子系统：日志直接打在 stdout，服务化部署好采日志 }
     apptype := '{$IFDEF MSWINDOWS}{$APPTYPE CONSOLE}{$ENDIF}' + LineEnding;
   end
   else
@@ -225,29 +254,115 @@ begin
     hint :=
       '    默认 widgetset 编译即可（IDE 里直接按 F9）。' + LineEnding +
       '    启动后弹出服务端面板窗口（状态/日志/停止），浏览器访问同一端口。';
-    { GUI 子系统：不写这一句时 FPC 按控制台链接，跑起来会跟一个黑窗口。
-      APPTYPE 编译指令的优先级高于命令行的 -WG，所以这里必须显式写 GUI。 }
     apptype := '{$IFDEF MSWINDOWS}{$APPTYPE GUI}{$ENDIF}' + LineEnding;
   end;
-  { 插件模式：uses 多一个 lwmodules，注册窗体后再调 RegisterAllModules。
-    主窗体仍照常保留（PLUGIN_GUIDE 3.2：主窗体与插件可共存），
-    .lpr 里保留 TLWApp.Register 也让 LWIsTemplateProject 的源码判据成立。 }
+  if O.Service then
+    hint := hint + LineEnding +
+      '    本工程为服务(daemon)模式：同一个 exe 既能前台运行（不带参数），' + LineEnding +
+      '    也能 --install 注册成 Windows 服务（需管理员）。';
+
+  { 前台分支的窗体注册（普通/服务两模式共用，内容一字不改） }
+  regLine :=
+    '  { 注册窗体：类名去掉 T 就是浏览器里的窗体名（' + O.FormName + '） }' + LineEnding +
+    '  TLWApp.Register(T' + O.FormName + ');' + LineEnding;
+  regAll := '';
   if O.Plugin then
-  begin
-    usesLine := '  Interfaces, Forms, lwapp, lwmodules, ' + O.UnitName + ';' + LineEnding;
-    regLine :=
-      '  { 注册窗体：类名去掉 T 就是浏览器里的窗体名（' + O.FormName + '） }' + LineEnding +
-      '  TLWApp.Register(T' + O.FormName + ');' + LineEnding +
+    regAll :=
       '  { 插件模式：注册所有插件模块（见 lwmodules.pas） }' + LineEnding +
       '  RegisterAllModules;' + LineEnding;
+
+  if O.Service then
+  begin
+    { 前台分支的注册块单独构造，缩进对齐到 else begin 内部（4 空格） }
+    frontReg :=
+      '    { 注册窗体：类名去掉 T 就是浏览器里的窗体名（' + O.FormName + '） }' + LineEnding +
+      '    TLWApp.Register(T' + O.FormName + ');' + LineEnding;
+    if O.Plugin then
+      frontReg := frontReg +
+        '    { 插件模式：注册所有插件模块（见 lwmodules.pas） }' + LineEnding +
+        '    RegisterAllModules;' + LineEnding;
+    { ---- 服务(daemon)模式：uses 加 DaemonApp + 宿主单元 + Windows API ---- }
+    head :=
+      'uses' + LineEnding +
+      '  {$IFDEF UNIX}cthreads,{$ENDIF}' + LineEnding +
+      '  Interfaces, Forms, DaemonApp, lwapp, ';
+    if O.Plugin then
+      head := head + 'lwmodules, ';
+    head := head + O.UnitName + ', ' + sLWDaemonUnitName + ', ' +
+      sLWMapperUnitName +
+      ' {$IFDEF MSWINDOWS}, SysUtils, Windows{$ENDIF};' + LineEnding;
+
+    { begin 块：--install/--uninstall/--run 交给 DaemonApp，其余前台运行。
+      来自已验证的 demos/service_demo，含管理员预检，避免误导性 Disk Full。 }
+    body :=
+      'var' + LineEnding +
+      '  ServiceManagerError: DWORD = 0;' + LineEnding +
+      LineEnding +
+      'function CanManageWindowsServices: Boolean;' + LineEnding +
+      'var' + LineEnding +
+      '  Mgr: THandle;' + LineEnding +
+      'begin' + LineEnding +
+      '  Mgr := OpenSCManager(nil, nil, SC_MANAGER_ALL_ACCESS);' + LineEnding +
+      '  Result := Mgr <> 0;' + LineEnding +
+      '  if Result then' + LineEnding +
+      '    CloseServiceHandle(Mgr)' + LineEnding +
+      '  else' + LineEnding +
+      '    ServiceManagerError := GetLastError;' + LineEnding +
+      'end;' + LineEnding +
+      LineEnding +
+      'begin' + LineEnding +
+      '  if WantDaemonApp then' + LineEnding +
+      '  begin' + LineEnding +
+      '    {$IFDEF MSWINDOWS}' + LineEnding +
+      '    { 安装/卸载需要管理员令牌：提前拦住，避免 FCL 连抛 OS Code 5' + LineEnding +
+      '      与误导性的 EInOutError: Disk Full }' + LineEnding +
+      '    if NeedsServiceManagerAccess and (not CanManageWindowsServices) then' + LineEnding +
+      '    begin' + LineEnding +
+      '      WriteLn(' +
+        '''ERROR: cannot open Windows Service Control Manager (OS Code ''' +
+        ' + IntToStr(ServiceManagerError) + ' +
+        ''').''' + ');' + LineEnding +
+      '      WriteLn(''Please run as Administrator before --install / --uninstall.'');' + LineEnding +
+      '      ExitCode := 1;' + LineEnding +
+      '      Exit;' + LineEnding +
+      '    end;' + LineEnding +
+      '    {$ENDIF}' + LineEnding +
+      '    { 服务形态：DaemonApp 原生处理 --install/--uninstall/--run }' + LineEnding +
+      '    RegisterServiceDaemon;' + LineEnding +
+      '    RegisterServiceMapper;' + LineEnding +
+      '    DaemonApp.Application.Initialize;' + LineEnding +
+      '    DaemonApp.Application.Run;' + LineEnding +
+      '  end' + LineEnding +
+      '  else' + LineEnding +
+      '  begin' + LineEnding +
+      '    { 前台形态：与普通应用一模一样，GUI 构建照常显示服务端面板 }' + LineEnding +
+      '    Application.Initialize;' + LineEnding +
+      '    Application.Title := ' + QuotedStr(O.Title) + ';' + LineEnding +
+      frontReg +
+      '    TLWApp.Run;' + LineEnding +
+      '  end;' + LineEnding +
+      'end.' + LineEnding;
   end
   else
   begin
-    usesLine := '  Interfaces, Forms, lwapp, ' + O.UnitName + ';' + LineEnding;
-    regLine :=
-      '  { 注册窗体：类名去掉 T 就是浏览器里的窗体名（' + O.FormName + '） }' + LineEnding +
-      '  TLWApp.Register(T' + O.FormName + ');' + LineEnding;
+    { ---- 普通模式：生成的 .lpr 与改动前逐字一致 ---- }
+    head :=
+      'uses' + LineEnding +
+      '  {$IFDEF UNIX}cthreads,{$ENDIF}' + LineEnding +
+      '  Interfaces, Forms, lwapp, ';
+    if O.Plugin then
+      head := head + 'lwmodules, ';
+    head := head + O.UnitName + ';' + LineEnding;
+    body :=
+      'begin' + LineEnding +
+      '  Application.Initialize;' + LineEnding +
+      '  Application.Title := ' + QuotedStr(O.Title) + ';' + LineEnding +
+      regLine + regAll +
+      '  { 想加更多窗体就继续注册，最后一个 --form=名字 可指定默认窗体 }' + LineEnding +
+      '  TLWApp.Run;' + LineEnding +
+      'end.' + LineEnding;
   end;
+
   Result :=
     'program ' + O.Name + ';' + LineEnding +
     LineEnding +
@@ -256,17 +371,282 @@ begin
     LineEnding +
     '{ lazarusWeb 服务程序：' + LineEnding +
     hint + ' }' + LineEnding +
-    'uses' + LineEnding +
-    '  {$IFDEF UNIX}cthreads,{$ENDIF}' + LineEnding +
-    usesLine +
+    head +
     LineEnding +
+    body;
+end;
+
+function LWServiceName(const O: TLWNewProject): string;
+begin
+  Result := O.Name + 'Service';
+end;
+
+{ 把服务模板里的占位符换成工程相关的值。模板正文统一用字面量拼接，
+  这里集中替换，避免每处都写 QuotedStr / IntToStr 把代码读乱。 }
+function LWServiceExpand(const S: string; const O: TLWNewProject): string;
+begin
+  Result := StringReplace(S, '@FORMCLASS@', 'T' + O.FormName, [rfReplaceAll]);
+  Result := StringReplace(Result, '@FORMUNIT@', O.UnitName, [rfReplaceAll]);
+  Result := StringReplace(Result, '@SERVICENAME@', LWServiceName(O), [rfReplaceAll]);
+  Result := StringReplace(Result, '@DISPLAYNAME@', O.Title + ' Service', [rfReplaceAll]);
+  Result := StringReplace(Result, '@APPNAME@', O.Name, [rfReplaceAll]);
+  Result := StringReplace(Result, '@PORT@', IntToStr(O.Port), [rfReplaceAll]);
+  Result := StringReplace(Result, '@DAEMONUNIT@', sLWDaemonUnitName, [rfReplaceAll]);
+  Result := StringReplace(Result, '@MAPPERUNIT@', sLWMapperUnitName, [rfReplaceAll]);
+  Result := StringReplace(Result, '@DAEMONCLASS@', sLWDaemonClassName, [rfReplaceAll]);
+  Result := StringReplace(Result, '@MAPPERCLASS@', sLWMapperClassName, [rfReplaceAll]);
+end;
+
+function LWServiceDaemonSource(const O: TLWNewProject): string;
+var
+  t: string;
+begin
+  { demos/service_demo/uServiceDaemon.pas 的模板化版本。三处实战修复都固化：
+    1. override CreateNew 绑事件（FPC 用 CreateNew 创建 daemon，绕过 Create）；
+    2. worker 里 Register(主窗体)，否则 "no form specified"；
+    3. 非 SCM 停止时 Halt(1)，避免 services.msc "假活"。
+    诊断文件 Diag() 内联保留（定位问题用，稳定后可删，不影响运行）。 }
+  t :=
+    'unit ' + sLWDaemonUnitName + ';' + LineEnding +
+    LineEnding +
+    '{$mode objfpc}{$H+}' + LineEnding +
+    LineEnding +
+    'interface' + LineEnding +
+    LineEnding +
+    '{ 是否应走 DaemonApp（服务管理命令或服务运行模式）。' + LineEnding +
+    '  False = 前台运行，主程序走原来的 TLWApp.Run。 }' + LineEnding +
+    'function WantDaemonApp: Boolean;' + LineEnding +
+    LineEnding +
+    '{ 仅 --install / --uninstall 需要打开 SCM（SC_MANAGER_ALL_ACCESS）。 }' + LineEnding +
+    'function NeedsServiceManagerAccess: Boolean;' + LineEnding +
+    LineEnding +
+    '{ 注册守护类；必须在 DaemonApp.Application.Initialize 之前调用 }' + LineEnding +
+    'procedure RegisterServiceDaemon;' + LineEnding +
+    LineEnding +
+    'implementation' + LineEnding +
+    LineEnding +
+    'uses' + LineEnding +
+    '  Classes, SysUtils, DaemonApp, lwapp, lwrlog, @FORMUNIT@;' + LineEnding +
+    LineEnding +
+    'const' + LineEnding +
+    '  DIAG_FILE = ''@APPNAME@.diag'';' + LineEnding +
+    LineEnding +
+    'procedure Diag(const AMsg: string);' + LineEnding +
+    'var' + LineEnding +
+    '  F: TextFile;' + LineEnding +
+    '  P: string;' + LineEnding +
     'begin' + LineEnding +
-    '  Application.Initialize;' + LineEnding +
-    '  Application.Title := ' + QuotedStr(O.Title) + ';' + LineEnding +
-    regLine +
-    '  { 想加更多窗体就继续注册，最后一个 --form=名字 可指定默认窗体 }' + LineEnding +
-    '  TLWApp.Run;' + LineEnding +
+    '  try' + LineEnding +
+    '    P := IncludeTrailingPathDelimiter(' + LineEnding +
+    '           ExtractFileDir(ExpandFileName(ParamStr(0)))) + DIAG_FILE;' + LineEnding +
+    '    AssignFile(F, P);' + LineEnding +
+    '    {$I-}' + LineEnding +
+    '    if FileExists(P) then Append(F) else Rewrite(F);' + LineEnding +
+    '    Writeln(F, FormatDateTime(''hh:nn:ss'', Now) + ''  '' + AMsg);' + LineEnding +
+    '    CloseFile(F);' + LineEnding +
+    '    {$I+}' + LineEnding +
+    '  except' + LineEnding +
+    '  end;' + LineEnding +
+    'end;' + LineEnding +
+    LineEnding +
+    'var' + LineEnding +
+    '  GStoppingBySCM: Boolean = False;' + LineEnding +
+    LineEnding +
+    'type' + LineEnding +
+    '  TLWWorkerThread = class(TThread)' + LineEnding +
+    '  protected' + LineEnding +
+    '    procedure Execute; override;' + LineEnding +
+    '  end;' + LineEnding +
+    LineEnding +
+    '  TLWServiceDaemon = class(TDaemon)' + LineEnding +
+    '  private' + LineEnding +
+    '    FWorker: TLWWorkerThread;' + LineEnding +
+    '    procedure BindEvents;' + LineEnding +
+    '  public' + LineEnding +
+    '    constructor Create(AOwner: TComponent); override;' + LineEnding +
+    '    { 框架用 DaemonClass.CreateNew 创建 daemon 实例，绕过 override 的 Create；' + LineEnding +
+    '      必须 override CreateNew 并在这里绑事件，否则 DoStart 永不触发（假活）。 }' + LineEnding +
+    '    constructor CreateNew(AOwner: TComponent; CreateMode: Integer); override;' + LineEnding +
+    '    procedure DoStart(Sender: TCustomDaemon; var OK: Boolean);' + LineEnding +
+    '    procedure DoStop(Sender: TCustomDaemon; var OK: Boolean);' + LineEnding +
+    '  end;' + LineEnding +
+    LineEnding +
+    'procedure TLWWorkerThread.Execute;' + LineEnding +
+    'begin' + LineEnding +
+    '  Diag(''worker.Execute 进入，即将调用 TLWApp.RunService'');' + LineEnding +
+    '  { 服务模式也要注册主窗体：Run 用 GOrder[0] 设 DefaultForm，' + LineEnding +
+    '    不注册则建会话时报 "no form specified"。 }' + LineEnding +
+    '  TLWApp.Register(@FORMCLASS@);' + LineEnding +
+    '  try' + LineEnding +
+    '    TLWApp.RunService;' + LineEnding +
+    '  except' + LineEnding +
+    '    on E: Exception do' + LineEnding +
+    '    begin' + LineEnding +
+    '      Diag(''worker 异常: '' + E.ClassName + '': '' + E.Message);' + LineEnding +
+    '      LWLog(''[service] worker 异常: '' + E.ClassName + '': '' + E.Message);' + LineEnding +
+    '    end;' + LineEnding +
+    '  end;' + LineEnding +
+    '  { 非 SCM 主动停止时 worker 退出 = 服务已失效，Halt 让 SCM 看到真实状态，' + LineEnding +
+    '    避免 services.msc 一直显示"正在运行"却没人监听端口。 }' + LineEnding +
+    '  if not GStoppingBySCM then' + LineEnding +
+    '  begin' + LineEnding +
+    '    LWLog(''[service] worker 非正常退出，终止进程（防假活）'');' + LineEnding +
+    '    Halt(1);' + LineEnding +
+    '  end;' + LineEnding +
+    'end;' + LineEnding +
+    LineEnding +
+    'procedure TLWServiceDaemon.BindEvents;' + LineEnding +
+    'begin' + LineEnding +
+    '  OnStart := @DoStart;' + LineEnding +
+    '  OnStop := @DoStop;' + LineEnding +
+    'end;' + LineEnding +
+    LineEnding +
+    'constructor TLWServiceDaemon.Create(AOwner: TComponent);' + LineEnding +
+    'begin' + LineEnding +
+    '  inherited Create(AOwner);' + LineEnding +
+    '  BindEvents;' + LineEnding +
+    'end;' + LineEnding +
+    LineEnding +
+    'constructor TLWServiceDaemon.CreateNew(AOwner: TComponent; CreateMode: Integer);' + LineEnding +
+    'begin' + LineEnding +
+    '  inherited CreateNew(AOwner, CreateMode);' + LineEnding +
+    '  BindEvents;' + LineEnding +
+    'end;' + LineEnding +
+    LineEnding +
+    'procedure TLWServiceDaemon.DoStart(Sender: TCustomDaemon; var OK: Boolean);' + LineEnding +
+    'begin' + LineEnding +
+    '  Diag(''DoStart 进入（OnStart 已触发）'');' + LineEnding +
+    '  FWorker := TLWWorkerThread.Create(True);' + LineEnding +
+    '  FWorker.FreeOnTerminate := False;' + LineEnding +
+    '  FWorker.Start;' + LineEnding +
+    '  OK := True;' + LineEnding +
+    'end;' + LineEnding +
+    LineEnding +
+    'procedure TLWServiceDaemon.DoStop(Sender: TCustomDaemon; var OK: Boolean);' + LineEnding +
+    'begin' + LineEnding +
+    '  GStoppingBySCM := True;' + LineEnding +
+    '  TLWApp.StopService;' + LineEnding +
+    '  if FWorker <> nil then' + LineEnding +
+    '  begin' + LineEnding +
+    '    FWorker.WaitFor;' + LineEnding +
+    '    FWorker.Free;' + LineEnding +
+    '    FWorker := nil;' + LineEnding +
+    '  end;' + LineEnding +
+    '  OK := True;' + LineEnding +
+    'end;' + LineEnding +
+    LineEnding +
+    'procedure RegisterServiceDaemon;' + LineEnding +
+    'begin' + LineEnding +
+    '  RegisterDaemonClass(@DAEMONCLASS@);' + LineEnding +
+    'end;' + LineEnding +
+    LineEnding +
+    'function NeedsServiceManagerAccess: Boolean;' + LineEnding +
+    'var' + LineEnding +
+    '  i: Integer;' + LineEnding +
+    '  arg: string;' + LineEnding +
+    'begin' + LineEnding +
+    '  Result := False;' + LineEnding +
+    '  for i := 1 to ParamCount do' + LineEnding +
+    '  begin' + LineEnding +
+    '    arg := LowerCase(ParamStr(i));' + LineEnding +
+    '    if (arg = ''--install'') or (arg = ''-i'') or' + LineEnding +
+    '       (arg = ''--uninstall'') or (arg = ''-u'') then' + LineEnding +
+    '      Exit(True);' + LineEnding +
+    '  end;' + LineEnding +
+    'end;' + LineEnding +
+    LineEnding +
+    'function WantDaemonApp: Boolean;' + LineEnding +
+    'var' + LineEnding +
+    '  i: Integer;' + LineEnding +
+    '  arg: string;' + LineEnding +
+    'begin' + LineEnding +
+    '  Result := False;' + LineEnding +
+    '  for i := 1 to ParamCount do' + LineEnding +
+    '  begin' + LineEnding +
+    '    arg := LowerCase(ParamStr(i));' + LineEnding +
+    '    if (arg = ''--install'') or (arg = ''-i'') or' + LineEnding +
+    '       (arg = ''--uninstall'') or (arg = ''-u'') or' + LineEnding +
+    '       (arg = ''--run'') or (arg = ''-r'') then' + LineEnding +
+    '      Exit(True);' + LineEnding +
+    '  end;' + LineEnding +
+    'end;' + LineEnding +
+    LineEnding +
     'end.' + LineEnding;
+  Result := LWServiceExpand(t, O);
+end;
+
+function LWServiceMapperSource(const O: TLWNewProject): string;
+var
+  t: string;
+begin
+  { daemon 映射单元。**不需要 .lfm 资源文件**：override Create 用 CreateNew
+    跳过 InitInheritedComponent，DaemonDefs 直接在代码里构造。
+    这样落盘时 uMapper.pas 一个文件就完整正确（不必依赖额外 .lfm，
+    也避开 IDE 把 .lfm 当窗体资源打开设计器的问题）。 }
+  t :=
+    'unit ' + sLWMapperUnitName + ';' + LineEnding +
+    LineEnding +
+    '{$mode objfpc}{$H+}' + LineEnding +
+    LineEnding +
+    'interface' + LineEnding +
+    LineEnding +
+    'uses' + LineEnding +
+    '  Classes, SysUtils, DaemonApp;' + LineEnding +
+    LineEnding +
+    'type' + LineEnding +
+    '  @MAPPERCLASS@ = class(TDaemonMapper)' + LineEnding +
+    '  public' + LineEnding +
+    '    constructor Create(AOwner: TComponent); override;' + LineEnding +
+    '  end;' + LineEnding +
+    LineEnding +
+    '{ 注册映射类；在 DaemonApp.Application.Initialize 之前调用 }' + LineEnding +
+    'procedure RegisterServiceMapper;' + LineEnding +
+    LineEnding +
+    'implementation' + LineEnding +
+    LineEnding +
+    'constructor @MAPPERCLASS@.Create(AOwner: TComponent);' + LineEnding +
+    'var' + LineEnding +
+    '  DD: TDaemonDef;' + LineEnding +
+    'begin' + LineEnding +
+    '  { 用 CreateNew 跳过 TDaemonMapper.Create 的 InitInheritedComponent，' + LineEnding +
+    '    因此不需要 @MAPPERUNIT@.lfm —— 服务定义全在代码里，一个 .pas 就够。' + LineEnding +
+    '    （纯代码 Create 若走 inherited Create 会报 No streaming method available）}' + LineEnding +
+    '  inherited CreateNew(AOwner, 0);' + LineEnding +
+    '  DD := TDaemonDef(DaemonDefs.Add);' + LineEnding +
+    '  DD.DaemonClassName := ''' + sLWDaemonClassName + ''';' + LineEnding +
+    '  DD.Name := ''' + LWServiceName(O) + ''';' + LineEnding +
+    '  DD.DisplayName := ''' + StringReplace(O.Title + ' Service', '''', '''''', [rfReplaceAll]) + ''';' + LineEnding +
+    '  DD.Description := ''lazarusWeb server running as a Windows service'';' + LineEnding +
+    '  DD.Options := [doAllowStop];' + LineEnding +
+    '  DD.WinBindings.StartType := stAuto;      { 开机自启 }' + LineEnding +
+    '  DD.WinBindings.ServiceType := stWin32;' + LineEnding +
+    '  DD.WinBindings.ErrorSeverity := esIgnore;' + LineEnding +
+    '  DD.LogStatusReport := False;' + LineEnding +
+    'end;' + LineEnding +
+    LineEnding +
+    'procedure RegisterServiceMapper;' + LineEnding +
+    'begin' + LineEnding +
+    '  RegisterDaemonMapper(@MAPPERCLASS@);' + LineEnding +
+    'end;' + LineEnding +
+    LineEnding +
+    'end.' + LineEnding;
+  Result := LWServiceExpand(t, O);
+end;
+
+function LWServiceIniSource(const O: TLWNewProject): string;
+var
+  t: string;
+begin
+  { 服务方式 cwd 常是 System32，所有路径按 exe 目录解析；开文件日志，
+    因为 Windows 服务没有控制台，屏幕日志看不见。 }
+  t :=
+    '; @APPNAME@ 服务版配置（服务启动时 cwd 常是 System32，勿用相对路径）' + LineEnding +
+    'client=alpine' + LineEnding +
+    'port=@PORT@' + LineEnding +
+    LineEnding +
+    '; Windows 服务没有控制台，建议开文件日志（按 exe 目录解析）' + LineEnding +
+    'log=@APPNAME@.log' + LineEnding;
+  Result := LWServiceExpand(t, O);
 end;
 
 function LWModulesSource(const O: TLWNewProject): string;
@@ -727,8 +1107,17 @@ end;
 
 function LWBuildBatch(const O: TLWNewProject): string;
 var
-  wsArg, runHint: string;
+  wsArg, runHint, svcHint: string;
 begin
+  { 服务模式的运维提示（纯 ASCII + CRLF）：安装/启动都需管理员，且明确
+    写 sc.exe（PowerShell 里 sc 是 Set-Content 别名，直接写 sc 会踩坑）。 }
+  if O.Service then
+    svcHint :=
+      'echo  install (as Admin): ' + O.Name + '.exe --install' + #13#10 +
+      'echo  start:              sc.exe start ' + LWServiceName(O) + #13#10 +
+      'echo  uninstall (Admin):  ' + O.Name + '.exe --uninstall' + #13#10
+  else
+    svcHint := '';
   { 纯 ASCII + CRLF：cmd.exe 碰到 UTF-8 中文注释会错行，甚至整只批处理挂死
     （详见 docs/NOTES.md 坑 10）。启动/浏览提示也用英文，别在这里放中文。 }
   if O.Headless then
@@ -767,13 +1156,22 @@ begin
     'echo.' + #13#10 +
     'echo  run:  ' + O.Name + '.exe --port=' + IntToStr(O.Port) + #13#10 +
     'echo  open: http://127.0.0.1:' + IntToStr(O.Port) + '/' + #13#10 +
+    svcHint +
     ':end' + #13#10;
 end;
 
 function LWBuildShell(const O: TLWNewProject): string;
 var
-  wsArg: string;
+  wsArg, svcHint: string;
 begin
+  { Windows 服务是 SCM 概念，build.sh 只在服务模式加一句说明：
+    服务命令要在 Windows 的 cmd/PowerShell 里跑，不是 bash。 }
+  if O.Service then
+    svcHint :=
+      '# Windows service: run ' + O.Name + '.exe --install / --uninstall as Admin,' + #10 +
+      '# then: sc.exe start ' + LWServiceName(O) + ' (in cmd or PowerShell)' + #10
+  else
+    svcHint := '';
   { 纯 ASCII + LF（WriteText 原样写字节，#10 不会变成 CRLF）。
     Windows 文件系统不存执行位，首次使用：chmod +x build.sh 或 bash build.sh。 }
   if O.Headless then
@@ -799,6 +1197,7 @@ begin
     '  echo "lazbuild not found. Install Lazarus or: export LAZBUILD=/path/to/lazbuild" >&2' + #10 +
     '  exit 1' + #10 +
     '}' + #10 +
+    svcHint +
     '"$LAZBUILD" -B ' + wsArg + O.Name + '.lpi "$@"' + #10 +
     'echo' + #10 +
     'echo "  run:  ./' + O.Name + ' --port=' + IntToStr(O.Port) + '"' + #10 +
@@ -836,6 +1235,13 @@ begin
   { 插件模式额外写 lwmodules.pas 空骨架 }
   if O.Plugin then
     if not WriteText(d + 'lwmodules.pas', LWModulesSource(O), AErr) then Exit;
+  { 服务(daemon)模式额外写守护层：uDaemon.pas / uMapper.pas / lazarusWeb.ini }
+  if O.Service then
+  begin
+    if not WriteText(d + sLWDaemonUnitName + '.pas', LWServiceDaemonSource(O), AErr) then Exit;
+    if not WriteText(d + sLWMapperUnitName + '.pas', LWServiceMapperSource(O), AErr) then Exit;
+    if not WriteText(d + sLWServiceIniName, LWServiceIniSource(O), AErr) then Exit;
+  end;
   if not WriteText(d + 'build.bat', LWBuildBatch(O), AErr) then Exit;
   if not WriteText(d + 'build.sh', LWBuildShell(O), AErr) then Exit;
   Result := True;
