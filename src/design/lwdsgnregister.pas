@@ -3,15 +3,24 @@
   ------------------------------------------------------------------
   设计期包（lwdesign）的注册单元。装上这个包以后，IDE 里会多出：
 
-    1. 新建工程 -> 两个模板，差别只在 .lpi 的 widgetset 档位：
-       "lazarusWeb Application"          默认 widgetset 构建（IDE 里直接 F9，
-                                         启动后弹服务端面板窗口，调试最方便）；
-       "lazarusWeb Application (nogui)"  LCLWidgetType=nogui 的控制台服务程序
-                                         （部署档，只能 lazbuild --ws=nogui 编译）。
+    1. 新建工程 -> 一个模板 "lazarusWeb"。选中后连弹三个选择框：
+       第一框选应用模式（普通应用 / 服务 daemon）：
+         "普通应用模式"     普通的 lazarusWeb 程序，浏览器访问服务；
+         "服务(daemon)模式" 额外生成 Windows 服务宿主层（uDaemon.pas /
+                            uMapper.pas / lazarusWeb.ini），.lpr 带 DaemonApp
+                            分流 —— 同一个 exe 既能前台跑，也能 --install
+                            注册成服务（见 docs/WINDOWS_SERVICE.md）。
+       第二框选工程类型档位（GUI / nogui，决定 .lpi 的 widgetset）：
+         "lazarusWeb project"          默认 widgetset 构建（IDE 里直接 F9，
+                                       启动后弹服务端面板窗口，调试最方便）；
+         "lazarusWeb project(nogui)"   LCLWidgetType=nogui 的控制台服务程序
+                                       （部署档，只能 lazbuild --ws=nogui 编译）。
+       第三框选工程模板（常规 / 插件）：插件模式按插件工程生成 .lpr
+       （uses lwmodules + RegisterAllModules，另生成 lwmodules.pas 空骨架）。
        主窗体直接就是 TLWForm，可以像普通窗体一样拖控件。
 
-       落盘时机与 Lazarus 自带模板完全一致 —— 选中模板后不弹任何对话框、
-       不建目录、不写文件：工程此刻是"虚拟工程"（ProjectInfoFile 为空），
+       落盘时机与 Lazarus 自带模板完全一致 —— 选完三个框后不建目录、不写文件：
+       工程此刻是"虚拟工程"（ProjectInfoFile 为空），
        .lpr 的源码、主窗体单元的源码和 .lfm 全在内存里，标题栏显示
        "project1 (*lpi)"（工程名和标准模板一样先给个占位名）。用户按保存
        （Ctrl+S / 保存全部）时 IDE 才弹标准的"保存项目"对话框，工程名和
@@ -70,12 +79,33 @@ uses
   lwdbgrid, lwdbnav, lwchart, lwui, lwweb, lwreport, lwsidemenu;
 
 const
-  sLWProjectName      = 'lazarusWeb Application';
-  sLWProjectDesc      = '用真实 LCL 控件生成 Web 服务程序（Ext JS 前端）。' + LineEnding +
-    '默认 widgetset 构建：IDE 里直接 F9 调试，启动后弹服务端面板窗口。';
-  sLWProjectNoguiName = 'lazarusWeb Application (nogui)';
-  sLWProjectNoguiDesc = '同 lazarusWeb Application，但 .lpi 固定 LCLWidgetType=nogui：' + LineEnding +
-    '纯控制台服务程序，无窗口，只能用 lazbuild --ws=nogui 编译（部署档）。';
+  sLWProjectName = 'lazarusWeb';
+  sLWProjectDesc = '用真实 LCL 控件生成 Web 服务程序（Ext JS 前端）。' + LineEnding +
+    '选中后依次选应用模式（普通 / 服务(daemon)）、工程类型（GUI / nogui）与' + LineEnding +
+    '工程模板（常规 / 插件）。';
+  { 第一框：应用模式（普通应用 / 服务(daemon)） }
+  sLWChooseModeCaption = 'lazarusWeb 新建工程（1/3）';
+  sLWChooseModeMsg     = '请选择应用模式：' + LineEnding +
+    '  普通应用模式   一个普通的 lazarusWeb 程序，浏览器访问服务；' + LineEnding +
+    '  服务(daemon)模式 额外生成 Windows 服务宿主层（uDaemon/uMapper），' + LineEnding +
+    '                  同一个 exe 既能前台运行，也能 --install 注册成服务。';
+  sLWModeNormalName  = '普通应用模式';
+  sLWModeServiceName = '服务(daemon)模式';
+  { 第二框：工程类型档位（GUI / nogui） }
+  sLWChooseTypeCaption = 'lazarusWeb 新建工程（2/3）';
+  sLWChooseTypeMsg     = '请选择工程类型：' + LineEnding +
+    '  lazarusWeb project        默认 widgetset，IDE 里 F9 直接跑；' + LineEnding +
+    '  lazarusWeb project(nogui) LCLWidgetType=nogui，控制台服务（部署档）。';
+  sLWTypeGuiName   = 'lazarusWeb project';
+  sLWTypeNoguiName = 'lazarusWeb project(nogui)';
+  { 第三框：工程模板（常规 / 插件） }
+  sLWChooseTplCaption = 'lazarusWeb 新建工程（3/3）';
+  sLWChooseTplMsg     = '请选择工程模板：' + LineEnding +
+    '  常规模式：普通 lazarusWeb 工程；' + LineEnding +
+    '  插件模式：按插件工程生成 .lpr（uses lwmodules + RegisterAllModules）。';
+  sLWTplNormalName = '常规模式';
+  sLWTplPluginName = '插件模式';
+  sLWCancelName    = '取消';
   sLWFormName    = 'lazarusWeb Form';
   sLWFormDesc    = '一个 TLWForm 窗体单元，可直接在 IDE 里设计';
   sLWLoginName   = 'lazarusWeb Login form';
@@ -101,40 +131,42 @@ const
 
 type
   { ---------------------------------------------------------------
-    新建工程（两个模板的共同实现）
+    新建工程（合并后的唯一向导）
     ---------------------------------------------------------------
-    档位（GUI / nogui）由子类的 GetHeadless 固定，**不放在实例字段里**：
-    这样即使 IDE 复制/重建描述符实例，档位也不会丢 —— 之前用可变字段
-    时出现过两个模板编出来一模一样（都按 nogui 的 $APPTYPE CONSOLE 生成）
-    的问题，改成本质属性后没有可丢失的状态。 }
-  TProjectLWAppBase = class(TProjectDescriptor)
-  protected
+    原来 GUI / nogui 两个工程模板合并为一个 "lazarusWeb" 描述符。选中向导后
+    由 DoInitDescriptor 连弹三个选择框：第一框定应用模式（普通应用 / 服务
+    daemon），第二框定工程类型档位（GUI / nogui），第三框定工程模板
+    （常规 / 插件）。三个选择存进实例字段，供 InitProject / CreateStartFiles 使用。
+
+    为什么这里可以把选择放实例字段（坑 170 的反例）：坑 170 时是两个描述符
+    靠可变字段传档位，IDE 重建实例后两个模板都按 nogui 生成。这次只有一个
+    描述符，查过 IDE 源码（main.pp 的 DoNewProject -> sourcefilemanager.pas 的
+    InitNewProject）确认同一次新建里 InitDescriptor、InitProject、CreateStartFiles
+    用的是 ChooseNewProject 返回的同一个 ProjectDesc 实例，中间不重建；
+    Lazarus 自带 pas2js / fpcunit 向导也是把 DoInitDescriptor 的选项存字段、在
+    InitProject 读，属于官方模式。任一框取消就返回 mrCancel，IDE 不动当前工程。 }
+  TProjectLWApp = class(TProjectDescriptor)
+  private
+    { True = 服务(daemon)模式（第一框选服务）：
+      额外生成 uDaemon.pas / uMapper.pas / lazarusWeb.ini，
+      .lpr 带 DaemonApp 分流；False = 普通应用模式 }
+    FService: Boolean;
     { True = nogui 档（.lpr 写 $APPTYPE CONSOLE、.lpi 需要 LCLWidgetType=nogui）；
       False = 默认 widgetset 档（$APPTYPE GUI，IDE 里 F9 直接跑） }
-    function GetHeadless: Boolean; virtual; abstract;
+    FHeadless: Boolean;
+    { True = 插件模式（.lpr uses lwmodules + RegisterAllModules） }
+    FPlugin: Boolean;
+    { 把一篇已经写好的文本作为工程文件加进去（含编辑器页，保证 Ctrl+S 会落盘）。
+      用于插件模式的 lwmodules.pas、服务模式的 uDaemon.pas / uMapper.pas /
+      lazarusWeb.ini。失败只记日志，不打断新建流程。 }
+    procedure AddExtraFile(const AFile, ASource: string);
   public
+    constructor Create; override;
+    function GetLocalizedName: string; override;
+    function GetLocalizedDescription: string; override;
+    function DoInitDescriptor: TModalResult; override;
     function InitProject(AProject: TLazProject): TModalResult; override;
     function CreateStartFiles(AProject: TLazProject): TModalResult; override;
-  end;
-
-  { 默认档：正常 GUI 程序，不要黑色控制台窗口 }
-  TProjectLWApp = class(TProjectLWAppBase)
-  protected
-    function GetHeadless: Boolean; override;
-  public
-    constructor Create; override;
-    function GetLocalizedName: string; override;
-    function GetLocalizedDescription: string; override;
-  end;
-
-  { 部署档：控制台服务程序，无任何窗口 }
-  TProjectLWAppNogui = class(TProjectLWAppBase)
-  protected
-    function GetHeadless: Boolean; override;
-  public
-    constructor Create; override;
-    function GetLocalizedName: string; override;
-    function GetLocalizedDescription: string; override;
   end;
 
   { ---------------------------------------------------------------
@@ -275,13 +307,48 @@ type
     function SavedAll({%H-}Sender: TObject): TModalResult;
   end;
 
+  { ---------------------------------------------------------------
+    向导内部用的"附加文本文件"描述符
+    ---------------------------------------------------------------
+    新建工程除了主窗体，还要带几个纯文本文件：插件模式的 lwmodules.pas，
+    服务(daemon)模式的 uDaemon.pas / uMapper.pas / lazarusWeb.ini。
+
+    **不能**用 CreateProjectFile + SetSourceText 塞它们 —— 那样建出来的只是
+    一个"没有编辑器页的工程文件"，而 IDE 保存虚拟工程时，写盘的循环是这样的
+    （ide/sourcefilemanager.pas 的 SaveProject，"save virtual files" 段）：
+
+        for i:=0 to Project1.UnitCount-1 do begin
+          AnUnitInfo:=Project1.Units[i];
+          if AnUnitInfo.Loaded and AnUnitInfo.IsVirtual and ...
+             and (AnUnitInfo.OpenEditorInfoCount > 0) then   // <-- 关键
+            SaveEditorFile(AnUnitInfo.OpenEditorInfo[0].EditorComponent, ...);
+
+    没有编辑器页 = 永远轮不到它 = Ctrl+S 之后盘上根本没有这个文件。
+    （坑 195：最初这样写，IDE 里存完发现只有 .lpr/.lpi/umain.* 落了盘。）
+
+    改成走标准路径：DoNewEditorFile + 描述符 + 直接给源码 —— 一次拿到
+    编辑器页与工程文件，内容在内存里就已完整正确，Ctrl+S 时由 IDE 按普通
+    源文件写盘，不依赖任何保存钩子补写。
+
+    不用 nfCreateDefaultSrc：那个标志会改调 CreateSource 重新"造"一份源码，
+    我们直接把整篇文本作为 NewSource 传进去就行（IDE 在 sourcefilemanager
+    里 `NewBuffer.Source := NewSource`）。 }
+  TLWExtraFileDesc = class(TProjectFileDescriptor)
+  public
+    constructor Create; override;
+    function GetLocalizedName: string; override;
+    function GetLocalizedDescription: string; override;
+  end;
+
 var
-  LWProjectDescriptor: TProjectLWApp = nil;             { GUI 档 }
-  LWProjectNoguiDescriptor: TProjectLWAppNogui = nil;   { nogui 档 }
+  LWProjectDescriptor: TProjectLWApp = nil;   { 合并后的唯一新建工程向导 }
   LWMainFormDescriptor: TLWMainFormFileDesc = nil;
   LWFormDescriptor: TLWFormFileDesc = nil;
   LWLoginFormDescriptor: TLWLoginFormFileDesc = nil;
   LWProjectFinalizer: TLWProjectFinalizer = nil;
+  { 附加文本文件共用同一个描述符实例（文件名与源码都从参数给）。
+    只在本单元内部用，VisibleInNewDialog=False，不会出现在"新建文件"里 }
+  LWExtraDescriptor: TLWExtraFileDesc = nil;
 
 { ================= TProjectLWApp ================= }
 
@@ -290,24 +357,12 @@ begin
   inherited Create;
   { Name 是 IDE 内部的唯一标识（RegisterProjectDescriptor 强制要求非空，
     否则装包时直接弹 "Descriptor.Name empty" 异常，重复还会被改名成 xxx2）；
-    显示名走 GetLocalizedName（sLWProjectName），两者是两回事 }
+    显示名走 GetLocalizedName（sLWProjectName），两者是两回事。
+    原来两个描述符 lazarusWebApp / lazarusWebAppNogui 合并为一个。 }
   Name := 'lazarusWebApp';
-end;
-
-constructor TProjectLWAppNogui.Create;
-begin
-  inherited Create;
-  Name := 'lazarusWebAppNogui';
-end;
-
-function TProjectLWApp.GetHeadless: Boolean;
-begin
-  Result := False;
-end;
-
-function TProjectLWAppNogui.GetHeadless: Boolean;
-begin
-  Result := True;
+  FService := False;
+  FHeadless := False;
+  FPlugin := False;
 end;
 
 function TProjectLWApp.GetLocalizedName: string;
@@ -320,20 +375,49 @@ begin
   Result := sLWProjectDesc;
 end;
 
-function TProjectLWAppNogui.GetLocalizedName: string;
+function TProjectLWApp.DoInitDescriptor: TModalResult;
+var
+  r: TModalResult;
 begin
-  Result := sLWProjectNoguiName;
+  Result := mrCancel;
+
+  { 第一框：应用模式 —— 普通应用 / 服务(daemon) }
+  r := QuestionDlg(sLWChooseModeCaption, sLWChooseModeMsg, mtConfirmation,
+    [mrYes, sLWModeNormalName, mrNo, sLWModeServiceName,
+     mrCancel, sLWCancelName], 0);
+  case r of
+    mrYes: FService := False;   { 普通应用模式 }
+    mrNo:  FService := True;    { 服务(daemon)模式 }
+  else
+    Exit;
+  end;
+
+  { 第二框：工程类型档位 —— GUI / nogui }
+  r := QuestionDlg(sLWChooseTypeCaption, sLWChooseTypeMsg, mtConfirmation,
+    [mrYes, sLWTypeGuiName, mrNo, sLWTypeNoguiName,
+     mrCancel, sLWCancelName], 0);
+  case r of
+    mrYes: FHeadless := False;
+    mrNo:  FHeadless := True;
+  else
+    Exit;
+  end;
+
+  { 第三框：工程模板 —— 常规 / 插件 }
+  r := QuestionDlg(sLWChooseTplCaption, sLWChooseTplMsg, mtConfirmation,
+    [mrYes, sLWTplNormalName, mrNo, sLWTplPluginName,
+     mrCancel, sLWCancelName], 0);
+  case r of
+    mrYes: FPlugin := False;
+    mrNo:  FPlugin := True;
+  else
+    Exit;
+  end;
+
+  Result := mrOk;
 end;
 
-function TProjectLWAppNogui.GetLocalizedDescription: string;
-begin
-  Result := sLWProjectNoguiDesc;
-end;
-
-{ 不再重写 DoInitDescriptor：标准模板（TProjectApplicationDescriptor）在这里
-  什么也不问，选完模板就直接建"虚拟工程"。所以这里保留基类的 mrOk。 }
-
-function TProjectLWAppBase.InitProject(AProject: TLazProject): TModalResult;
+function TProjectLWApp.InitProject(AProject: TLazProject): TModalResult;
 var
   O: TLWNewProject;
   MainFile: TLazProjectFile;
@@ -344,7 +428,9 @@ begin
 
   O := LWDefaultProject(sLWDefaultProjectName);
   O.Port := 8090;
-  O.Headless := GetHeadless;
+  O.Headless := FHeadless;
+  O.Plugin := FPlugin;
+  O.Service := FService;
 
   { 关键：不设 ProjectInfoFile、不建目录、不写盘 —— 工程保持虚拟状态
     （TProject.IsVirtual 判据就是 ProjectInfoFile 为空）。
@@ -365,6 +451,10 @@ begin
   AProject.MainFileID := 0;
   MainFile.SetSourceText(LWProjectSource(O));
 
+  { 插件模式的 lwmodules.pas、服务模式的 uDaemon.pas / uMapper.pas /
+    lazarusWeb.ini 都不在这里建 —— 见 CreateStartFiles 与 TLWExtraFileDesc 的
+    注释：没有编辑器页的工程文件 IDE 不会写盘，必须走 DoNewEditorFile。 }
+
   CO := AProject.LazCompilerOptions;
   CO.TargetFilename := O.Name;
   CO.TargetFilenameApplyConventions := True;
@@ -381,18 +471,72 @@ begin
   Result := mrOk;
 end;
 
-function TProjectLWAppBase.CreateStartFiles(AProject: TLazProject): TModalResult;
+function TProjectLWApp.CreateStartFiles(AProject: TLazProject): TModalResult;
+var
+  O: TLWNewProject;
 begin
+  O := LWDefaultProject(sLWDefaultProjectName);
+  O.Port := 8090;
+  O.Headless := FHeadless;
+  O.Plugin := FPlugin;
+  O.Service := FService;
+
   { 主窗体单元同样只在内存里建：DoNewEditorFile 会给它开编辑器页、建窗体
     设计器，并把 .lfm 也做成内存缓冲。源码与 .lfm 都要等用户保存才写盘 ——
     这正是 Lazarus 自带模板在 CreateStartFiles 里干的事（那里传的是
     标准的 LCL Form 描述符，这里换成 lazarusWeb 的主窗体描述符）。 }
-  LWMainFormDescriptor.Title := LWDefaultProject(sLWDefaultProjectName).Title;
-  LWMainFormDescriptor.Headless := GetHeadless;
+  LWMainFormDescriptor.Title := O.Title;
+  LWMainFormDescriptor.Headless := FHeadless;
   Result := LazarusIDE.DoNewEditorFile(LWMainFormDescriptor, '', '',
     [nfIsPartOfProject, nfOpenInEditor, nfCreateDefaultSrc]);
   if Result = mrCancel then
     Result := mrOk;
+
+  { 附加文件：插件模式的 lwmodules.pas；服务(daemon)模式的 uDaemon.pas /
+    uMapper.pas / lazarusWeb.ini。
+    全部走 DoNewEditorFile 并把整篇源码直接给它 —— 编辑器页与工程文件一次
+    到位，内容在内存里就已经是最终版本，用户 Ctrl+S 时 IDE 按普通源文件写盘。
+    （为什么不能用 CreateProjectFile + SetSourceText，见 TLWExtraFileDesc） }
+  if O.Plugin then
+    AddExtraFile('lwmodules.pas', LWModulesSource(O));
+  if O.Service then
+  begin
+    AddExtraFile(sLWDaemonUnitName + '.pas', LWServiceDaemonSource(O));
+    AddExtraFile(sLWMapperUnitName + '.pas', LWServiceMapperSource(O));
+    AddExtraFile(sLWServiceIniName, LWServiceIniSource(O));
+  end;
+end;
+
+procedure TProjectLWApp.AddExtraFile(const AFile, ASource: string);
+begin
+  { 描述符是共用的一个实例：文件名走第一参数，源码走第三参数。
+    失败（极少见，比如同名文件已存在）不打断新建流程 —— 用户还能继续编辑
+    主窗体，缺的文件手动补即可。 }
+  LazarusIDE.DoNewEditorFile(LWExtraDescriptor, AFile, ASource,
+    [nfIsPartOfProject, nfOpenInEditor]);
+end;
+
+{ ================= TLWExtraFileDesc ================= }
+
+constructor TLWExtraFileDesc.Create;
+begin
+  inherited Create;
+  Name := 'lazarusWebProjectExtra';
+  { 不进"新建文件"对话框：它只在新建工程向导内部用 }
+  VisibleInNewDialog := False;
+  { 不让 IDE 往 .lpr 的 uses 段里加/减东西 —— 模板自己写全了 }
+  AddToProject := False;
+  DefaultFilename := 'lwextra.txt';
+end;
+
+function TLWExtraFileDesc.GetLocalizedName: string;
+begin
+  Result := 'lazarusWeb extra file';
+end;
+
+function TLWExtraFileDesc.GetLocalizedDescription: string;
+begin
+  Result := 'lazarusWeb 新建工程向导内部使用的附加文件（不出现在新建对话框）';
 end;
 
 { ================= TLWMainFormFileDesc ================= }
@@ -880,6 +1024,15 @@ begin
   Result := True;
 end;
 
+{ 判断工程是不是服务(daemon)模式：.lpr 里带 WantDaemonApp（只有服务模板会写）。
+  保存钩子据此在 build 脚本里补服务提示。 }
+function LWIsServiceProject(P: TLazProject): Boolean;
+begin
+  Result := False;
+  if (P = nil) or (P.MainFile = nil) then Exit;
+  Result := Pos('WantDaemonApp', P.MainFile.GetSourceText) > 0;
+end;
+
 { 找框架的 src/client 目录 —— 不写死任何盘符或安装路径。
 
   主路径：工程"需要的软件包"里那个 **lwserver**（工程检查器里能看到的那个），
@@ -1079,8 +1232,10 @@ begin
   if dir = '' then Exit;
   O := LWDefaultProject(ExtractFileNameOnly(P.ProjectInfoFile));
   O.Headless := hd;
-  LwWizardLog(Format('EnsureExtras: lpi=%s headless=%s', [P.ProjectInfoFile,
-    BoolToStr(hd, 'nogui', 'gui')]));
+  O.Service := LWIsServiceProject(P);   { 服务工程：build 脚本带服务提示 }
+  LwWizardLog(Format('EnsureExtras: lpi=%s headless=%s service=%s',
+    [P.ProjectInfoFile, BoolToStr(hd, 'nogui', 'gui'),
+     BoolToStr(O.Service, True)]));
   { 工程名撞了框架单元就编不过（program LWApp 与 uses 的 lwapp 同名）。
     IDE 的"保存项目"对话框不查这个，只能在这里提醒一次：宏/脚本照补，
     警告单独弹，用户改个名字就好。 }
@@ -1290,19 +1445,23 @@ begin
   FormEditingHook.RegisterDesignerBaseClass(TLWForm);
   FormEditingHook.RegisterDesignerBaseClass(TLWLoginForm);
 
-  { 2. 新建工程向导：两个模板，差别只有 widgetset 档位与 .lpr 的 $APPTYPE。
-    注册顺序 = 新建工程对话框里的显示顺序；GUI 档调试最顺手，放前面。
-    档位写死在类里（TProjectLWApp / TProjectLWAppNogui），传参设标志的
-    老做法在实例被 IDE 复制时会丢档位，见坑 170。 }
+  { 2. 新建工程向导：一个 "lazarusWeb" 模板。选中后由 DoInitDescriptor
+    依次弹三个框：应用模式（普通 / 服务 daemon）→ 工程类型档位（GUI / nogui）
+    → 工程模板（常规 / 插件）。三项都存在同一个描述符实例字段里
+    —— 同一次新建 IDE 不重建描述符，见类注释与坑 184 / 195。 }
   LWProjectDescriptor := TProjectLWApp.Create;
   RegisterProjectDescriptor(LWProjectDescriptor);
-  LWProjectNoguiDescriptor := TProjectLWAppNogui.Create;
-  RegisterProjectDescriptor(LWProjectNoguiDescriptor);
 
   { 2b. 新建工程时在内存里建主窗体单元用的描述符：只在向导内部用，
       不进"新建文件"对话框（VisibleInNewDialog=False） }
   LWMainFormDescriptor := TLWMainFormFileDesc.Create;
   RegisterProjectFileDescriptor(LWMainFormDescriptor);
+
+  { 2c. 附加文本文件（lwmodules.pas / uDaemon.pas / uMapper.pas /
+      lazarusWeb.ini）共用的描述符。必须走 DoNewEditorFile 才拿得到编辑器页，
+      IDE 保存工程时才会写它 —— 见 TLWExtraFileDesc 的类注释。 }
+  LWExtraDescriptor := TLWExtraFileDesc.Create;
+  RegisterProjectFileDescriptor(LWExtraDescriptor);
 
   { 2c. 保存钩子：工程落盘之后补 build.bat / build.sh 与 nogui 档的
       widgetset 宏 —— 这两样 IDE 的工程模型写不出来，只能等 .lpi 有了
