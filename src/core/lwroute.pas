@@ -34,7 +34,7 @@ interface
 
 uses
   Classes, SysUtils, SyncObjs, fphttpserver, httpdefs, httpprotocol,
-  fphttpclient, lwbase, lwrlog;
+  fphttpclient, lwbase, lwrlog, lwlang;
 
 type
   { LWRouteDispatch 的结果：handled=True 表示响应已写好（成功或已回错误），
@@ -515,17 +515,20 @@ begin
     begin
       AResponse.ContentType := 'text/html; charset=utf-8';
       AResponse.Content :=
-        '<!DOCTYPE html><html><head><meta charset="utf-8">' +
-        '<title>插件不可达: ' + name + '</title></head><body ' +
+        '<!DOCTYPE html><html lang="' + LWLangGet + '"><head><meta charset="utf-8">' +
+        '<title>' + LWLangText('插件不可达') + ': ' + name + '</title></head><body ' +
         'style="font-family:sans-serif;background:#1e1e1e;color:#ddd;' +
         'margin:0;padding:48px 24px">' +
-        '<h2 style="color:#f66;margin:0 0 16px">插件「' + name + '」未启动或不可达</h2>' +
-        '<p>宿主已按登记把本页代理到 <code>' + up + '</code>，但连接失败。</p>' +
-        '<p>最常见原因：<b>插件 exe 没有运行</b>（或正在重启）。请启动对应插件' +
-        '程序后<a href="" onclick="location.reload();return false" ' +
-        'style="color:#6cf">刷新本页</a>。</p>' +
-        '<p style="color:#999;font-size:13px">宿主 ini 键：plugin.' + name + '=' +
-        up + '</p></body></html>';
+        '<h2 style="color:#f66;margin:0 0 16px">' +
+        LWLangText('插件「') + name + LWLangText('」未启动或不可达') + '</h2>' +
+        '<p>' + LWLangText('宿主已按登记把本页代理到') + ' <code>' + up + '</code>' +
+        LWLangText('，但连接失败。') + '</p>' +
+        '<p>' + LWLangText('最常见原因：') + '<b>' +
+        LWLangText('插件 exe 没有运行') + '</b>' + LWLangText('（或正在重启）。请启动对应插件程序后') +
+        '<a href="" onclick="location.reload();return false" ' +
+        'style="color:#6cf">' + LWLangText('刷新本页') + '</a>。</p>' +
+        '<p style="color:#999;font-size:13px">' + LWLangText('宿主 ini 键：') +
+        'plugin.' + name + '=' + up + '</p></body></html>';
     end
     else
     begin

@@ -42,7 +42,7 @@ implementation
 uses
   Classes, SysUtils, Forms, Controls, Dialogs, Buttons, Graphics,
   LCLType, InterfaceBase, WSLCLClasses, WSDialogs,
-  fpjson, lwbase;
+  fpjson, lwbase, lwlang;
 
 type
   TLWButtonSpec = record
@@ -82,17 +82,60 @@ begin
   Result := LWCurrentSession <> nil;
 end;
 
-{ 按钮文字统一取自 LCL（中文环境就是中文，英文环境就是英文），
-  和本地模式下弹出的对话框保持一致 }
+{ 标准按钮的"中文键"与英文兜底。
+  为什么不用 GetButtonCaption 直接出英文：LCL 的按钮文案来自它自己的
+  资源表（本机 LCL 是中文构建，rsmbOK 读出来就是 '确定(&O)'），跟
+  lazarusWeb 的语言设置无关。中文环境下照旧用 LCL 的文案（带加速键、
+  与桌面程序一致）；其它语言先按中文键查 PO（译者在 po 里改），查不到
+  再用下面的英文兜底。 }
+const
+  LWBTN_KEYS: array[0..12] of record
+    Id: Integer;
+    Zh: string;
+    En: string;
+  end = (
+    (Id: idButtonOk;        Zh: '确定'; En: 'OK'),
+    (Id: idButtonCancel;    Zh: '取消'; En: 'Cancel'),
+    (Id: idButtonYes;       Zh: '是';   En: 'Yes'),
+    (Id: idButtonNo;        Zh: '否';   En: 'No'),
+    (Id: idButtonAbort;     Zh: '中止'; En: 'Abort'),
+    (Id: idButtonRetry;     Zh: '重试'; En: 'Retry'),
+    (Id: idButtonIgnore;    Zh: '忽略'; En: 'Ignore'),
+    (Id: idButtonAll;       Zh: '全部'; En: 'All'),
+    (Id: idButtonYesToAll;  Zh: '全是'; En: 'Yes to all'),
+    (Id: idButtonNoToAll;   Zh: '全否'; En: 'No to all'),
+    (Id: idButtonHelp;      Zh: '帮助'; En: 'Help'),
+    (Id: idButtonClose;     Zh: '关闭'; En: 'Close'),
+    (Id: idButtonContinue;  Zh: '继续'; En: 'Continue')
+  );
+
 function ButtonCaptionOf(AId: Integer): string;
+var
+  i: Integer;
+  zh: string;
 begin
+  { 中文：LCL 给什么用什么（含 &O 这类加速键，与桌面端完全一致）}
+  if LWLangGet = LW_LANG_ZH then
+  begin
+    Result := GetButtonCaption(AId);
+    if Result = '?' then
+      if AId = idButtonContinue then
+        Result := '继续'
+      else
+        Result := IntToStr(AId);
+    Exit;
+  end;
+  { 其它语言：按中文键查 PO，再退回内置英文 }
+  for i := Low(LWBTN_KEYS) to High(LWBTN_KEYS) do
+    if LWBTN_KEYS[i].Id = AId then
+    begin
+      zh := LWBTN_KEYS[i].Zh;
+      Result := LWLangText(zh);
+      if Result = zh then Result := LWBTN_KEYS[i].En;
+      Exit;
+    end;
   Result := GetButtonCaption(AId);
-  if Result = '?' then
-    { LCL 的按钮文案表里没有"继续"（MB_CANCELTRYCONTINUE 才会用到）}
-    if AId = idButtonContinue then
-      Result := 'Continue'
-    else
-      Result := IntToStr(AId);
+  if (Result = '?') or (Result = '') then Result := IntToStr(AId);
 end;
 
 function MakeBtns(const AIds: array of Integer; ADefault: Integer): TLWButtonSpecs;
@@ -129,15 +172,17 @@ begin
   spec := TJSONObject.Create;
   try
     spec.Add('kind', AKind);
-    spec.Add('caption', ACaption);
-    spec.Add('text', AText);
+    { 多语言：对话框标题/正文/按钮都过一遍 PO（按中文原文查译文）。
+      LCL 给的按钮文案是 '确定(&O)' 这种带加速键的形态，PO 里照抄即可 }
+    spec.Add('caption', LWLangText(ACaption));
+    spec.Add('text', LWLangText(AText));
     spec.Add('escape', AEscape);
     arr := TJSONArray.Create;
     for i := 0 to High(ABtns) do
     begin
       o := TJSONObject.Create;
       o.Add('id', ABtns[i].Id);
-      o.Add('text', ABtns[i].Caption);
+      o.Add('text', LWLangText(ABtns[i].Caption));
       if ABtns[i].IsDefault then
         o.Add('default', True);
       arr.Add(o);

@@ -47,6 +47,10 @@ type
               启动后弹服务端面板窗口（lwpanel），浏览器访问同一端口。
       命令行工具（tools\lwnew）默认 True，--gui 切到 False。 }
     Headless: Boolean;
+    { 工程模板：True = 插件模式（.lpr uses lwmodules 并调用 RegisterAllModules，
+      另生成 lwmodules.pas 空骨架）；False = 常规模式。
+      IDE 新建工程向导第二个选择框决定，tools\lwnew 用 --plugin 切换。 }
+    Plugin: Boolean;
     { 非空时工程用 OtherUnitFiles 指向源码目录（不依赖已安装的包）；
       为空时依赖 lwserver 包（IDE 向导走这条路，工程可随意搬动） }
     UnitPath: string;
@@ -56,6 +60,8 @@ type
 function LWDefaultProject(const AName: string): TLWNewProject;
 
 function LWProjectSource(const O: TLWNewProject): string;
+{ 插件模式的 lwmodules.pas 空骨架（常规模式不生成此文件） }
+function LWModulesSource(const O: TLWNewProject): string;
 function LWProjectInfo(const O: TLWNewProject): string;
 
 { .lpi 里体现 widgetset 档位的那几段 XML —— 两个档位的差别只在这里判断
@@ -195,6 +201,7 @@ begin
   Result.Title := 'lazarusWeb · ' + AName;
   Result.Port := 8090;
   Result.Headless := True;   { lwnew 命令行保持历史行为；IDE 向导会显式覆盖 }
+  Result.Plugin := False;    { 默认常规模式 }
   Result.UnitPath := '';
 end;
 
@@ -202,6 +209,8 @@ function LWProjectSource(const O: TLWNewProject): string;
 var
   hint: string;
   apptype: string;
+  usesLine: string;
+  regLine: string;
 begin
   if O.Headless then
   begin
@@ -220,6 +229,25 @@ begin
       APPTYPE 编译指令的优先级高于命令行的 -WG，所以这里必须显式写 GUI。 }
     apptype := '{$IFDEF MSWINDOWS}{$APPTYPE GUI}{$ENDIF}' + LineEnding;
   end;
+  { 插件模式：uses 多一个 lwmodules，注册窗体后再调 RegisterAllModules。
+    主窗体仍照常保留（PLUGIN_GUIDE 3.2：主窗体与插件可共存），
+    .lpr 里保留 TLWApp.Register 也让 LWIsTemplateProject 的源码判据成立。 }
+  if O.Plugin then
+  begin
+    usesLine := '  Interfaces, Forms, lwapp, lwmodules, ' + O.UnitName + ';' + LineEnding;
+    regLine :=
+      '  { 注册窗体：类名去掉 T 就是浏览器里的窗体名（' + O.FormName + '） }' + LineEnding +
+      '  TLWApp.Register(T' + O.FormName + ');' + LineEnding +
+      '  { 插件模式：注册所有插件模块（见 lwmodules.pas） }' + LineEnding +
+      '  RegisterAllModules;' + LineEnding;
+  end
+  else
+  begin
+    usesLine := '  Interfaces, Forms, lwapp, ' + O.UnitName + ';' + LineEnding;
+    regLine :=
+      '  { 注册窗体：类名去掉 T 就是浏览器里的窗体名（' + O.FormName + '） }' + LineEnding +
+      '  TLWApp.Register(T' + O.FormName + ');' + LineEnding;
+  end;
   Result :=
     'program ' + O.Name + ';' + LineEnding +
     LineEnding +
@@ -230,15 +258,35 @@ begin
     hint + ' }' + LineEnding +
     'uses' + LineEnding +
     '  {$IFDEF UNIX}cthreads,{$ENDIF}' + LineEnding +
-    '  Interfaces, Forms, lwapp, ' + O.UnitName + ';' + LineEnding +
+    usesLine +
     LineEnding +
     'begin' + LineEnding +
     '  Application.Initialize;' + LineEnding +
     '  Application.Title := ' + QuotedStr(O.Title) + ';' + LineEnding +
-    '  { 注册窗体：类名去掉 T 就是浏览器里的窗体名（' + O.FormName + '） }' + LineEnding +
-    '  TLWApp.Register(T' + O.FormName + ');' + LineEnding +
+    regLine +
     '  { 想加更多窗体就继续注册，最后一个 --form=名字 可指定默认窗体 }' + LineEnding +
     '  TLWApp.Run;' + LineEnding +
+    'end.' + LineEnding;
+end;
+
+function LWModulesSource(const O: TLWNewProject): string;
+begin
+  Result :=
+    'unit lwmodules;' + LineEnding +
+    LineEnding +
+    '{$mode objfpc}{$H+}' + LineEnding +
+    LineEnding +
+    'interface' + LineEnding +
+    LineEnding +
+    'procedure RegisterAllModules;' + LineEnding +
+    LineEnding +
+    'implementation' + LineEnding +
+    LineEnding +
+    'procedure RegisterAllModules;' + LineEnding +
+    'begin' + LineEnding +
+    '  { 还没有插件模块；主窗体由 .lpr 里的 TLWApp.Register 注册，照常可用。 }' + LineEnding +
+    'end;' + LineEnding +
+    LineEnding +
     'end.' + LineEnding;
 end;
 
@@ -785,6 +833,9 @@ begin
   if not WriteText(d + O.Name + '.lpi', LWProjectInfo(O), AErr) then Exit;
   if not WriteText(d + O.UnitName + '.pas', LWFormUnitSource(O), AErr) then Exit;
   if not WriteText(d + O.UnitName + '.lfm', LWFormResourceSource(O), AErr) then Exit;
+  { 插件模式额外写 lwmodules.pas 空骨架 }
+  if O.Plugin then
+    if not WriteText(d + 'lwmodules.pas', LWModulesSource(O), AErr) then Exit;
   if not WriteText(d + 'build.bat', LWBuildBatch(O), AErr) then Exit;
   if not WriteText(d + 'build.sh', LWBuildShell(O), AErr) then Exit;
   Result := True;

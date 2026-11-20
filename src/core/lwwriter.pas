@@ -32,7 +32,7 @@ uses
   Classes, SysUtils, Variants, Graphics, Controls, Forms, StdCtrls, ExtCtrls, ComCtrls,
   Grids, Menus, Buttons, MaskEdit, Spin, CheckLst, ValEdit, TypInfo, LCLProc, fpjson,
   EditBtn, GroupedEdit, DB, DBCtrls, DBGrids, lwbase, lwform, lwfileupload, lwdbnav, lwweb,
-  lwchart, lwdbgrid, lwui, lwrlog, lwsidemenu, lwcaptcha, lwcamera;
+  lwchart, lwdbgrid, lwui, lwrlog, lwsidemenu, lwcaptcha, lwcamera, lwlang;
 
 type
   TLWWriter = class
@@ -52,7 +52,7 @@ type
     function FindSideMenu(AForm: TCustomForm): TLWSideMenu;
     function StatusPanels(SB: TStatusBar): TJSONArray;
     function StatusInfo(SB: TStatusBar; AForm: TCustomForm): TJSONObject;
-    { 两级表头分组（TLWDBGrid.HeaderGroups）-> [{t:标题, a:起始可见列, n:跨度}] }
+    { 两级表头分组（TLWDBGrid.HeaderGroups）序列化为 t/a/n 三项的对象数组 }
     function HeaderGroupsJson(G: TLWDBGrid; AVisibleCols: Integer): TJSONArray;
     procedure WriteKindProps(C: TControl; const AKind: string; O: TJSONObject);
     procedure WriteKindPropsBody(C: TControl; const AKind: string; O: TJSONObject);
@@ -326,7 +326,9 @@ begin
     if s = C.Name then Exit;
     if SameText(s, 'pnl' + C.Name) then Exit;
   end;
-  Result := s;
+  { 多语言：界面文本在"输出这一刻"查 PO（msgid 就是中文原文），
+    所以同一个进程里中英文会话可以并存，也不需要改任何业务代码 }
+  Result := LWLangText(s);
 end;
 
 { LCL 里「& 是加速键」这件事是分控件决定的：TLabel/TStaticText/TPanel/
@@ -444,7 +446,7 @@ begin
     （绝大多数控件读出来是 False），按它过滤会把全部提示都关掉。
     全局开关还是尊重的：Application.ShowHint=False 就一个提示都不出。 }
   if (not Assigned(Application)) or Application.ShowHint then
-    o.Add('hint', C.Hint)
+    o.Add('hint', LWLangText(C.Hint))
   else
     o.Add('hint', '');
   o.Add('fg', ColorToCSS(C.Font.Color));
@@ -517,7 +519,7 @@ begin
   for c := 0 to G.ColCount - 1 do
   begin
     if (G.FixedRows > 0) and (G.RowCount > 0) then
-      JArrAddStr(cols, G.Cells[c, 0])
+      JArrAddStr(cols, LWLangText(G.Cells[c, 0]))
     else
       JArrAddStr(cols, 'Col' + IntToStr(c));
   end;
@@ -575,7 +577,7 @@ begin
   cols := TJSONArray.Create;
   for c := 0 to G.ColCount - 1 do
     if G.FixedRows > 0 then
-      JArrAddStr(cols, LWDrawGridCellText(G, c, 0))
+      JArrAddStr(cols, LWLangText(LWDrawGridCellText(G, c, 0)))
     else
       JArrAddStr(cols, '');
   O.Add('cols', cols);
@@ -819,9 +821,9 @@ begin
     col := TColumn(G.Columns[i]);
     if not col.Visible then Continue;
     if col.Title.Caption <> '' then
-      JArrAddStr(cols, col.Title.Caption)
+      JArrAddStr(cols, LWLangText(col.Title.Caption))
     else if col.Field <> nil then
-      JArrAddStr(cols, col.Field.DisplayLabel)
+      JArrAddStr(cols, LWLangText(col.Field.DisplayLabel))
     else
       JArrAddStr(cols, col.FieldName);
     JArrAddStr(fields, col.FieldName);
@@ -1364,6 +1366,8 @@ var
   a: TControl;
   le: TCustomLabeledEdit;
   lx, ly, sp: Integer;
+  lw, lh: Integer;
+  fm: TCustomForm;
   i, j: Integer;
   pvComp: TComponent;
 begin
@@ -1412,7 +1416,7 @@ begin
     { TBoundLabel（TLabeledEdit 的标签）：nogui 下 LCL 的锚点没机会解析，
       位置是 (0,0)。按 LCL 的 DoPositionLabel 语义（枚举 lpAbove/lpBelow/
       lpLeft/lpRight = 0/1/2/3，间距默认 3）+ 宿主编辑框的最终边界重摆；
-      浏览器端渲染后还会按标签真实宽度精修一次 }
+      浏览器端渲染后还会按标签真实宽高精修一次 }
     if C is TBoundLabel then
     begin
       if (C.Owner is TCustomLabeledEdit) then
@@ -1424,13 +1428,30 @@ begin
         O.Add('labelpos', Ord(le.LabelPosition));
         { 浏览器端按这个间距贴编辑框；LCL 的 LabelSpacing 默认 3 }
         O.Add('labelspacing', sp);
+        { 坑 176：TBoundLabel 的运行期宽高没参与 LFM 的 PPI 折算
+          （AutoSize 标签同源，坑 155）—— 144PPI 设计的窗体里标签
+          Height 还是原始 27，而编辑框的 Top 已被折成 96 系的值。
+          直接拿 C.Height/C.Width 摆位是两套坐标混算：lpAbove 时
+          标签和输入框之间多出 (27-18)=9px 的缝。这里先按宿主窗体的
+          DesignTimePPI -> PixelsPerInch 折到同一坐标系再算。
+          编辑框自己（AutoSize 的 TEdit 后代）的 Height 也没折，但
+          浏览器渲染后以真实矩形为准精修，这里只求初值不离谱。 }
+        lw := C.Width;
+        lh := C.Height;
+        fm := RootFormOf(C);
+        if (fm <> nil) and (fm.DesignTimePPI > 0) and (fm.PixelsPerInch > 0) and
+          (fm.DesignTimePPI <> fm.PixelsPerInch) then
+        begin
+          lw := Round(lw * fm.PixelsPerInch / fm.DesignTimePPI);
+          lh := Round(lh * fm.PixelsPerInch / fm.DesignTimePPI);
+        end;
         case le.LabelPosition of
-          lpAbove: begin lx := le.Left; ly := le.Top - C.Height - sp; end;
+          lpAbove: begin lx := le.Left; ly := le.Top - lh - sp; end;
           lpBelow: begin lx := le.Left; ly := le.Top + le.Height + sp; end;
-          lpLeft:  begin lx := le.Left - C.Width - sp;
-                         ly := le.Top + (le.Height - C.Height) div 2; end;
+          lpLeft:  begin lx := le.Left - lw - sp;
+                         ly := le.Top + (le.Height - lh) div 2; end;
           lpRight: begin lx := le.Left + le.Width + sp;
-                         ly := le.Top + (le.Height - C.Height) div 2; end;
+                         ly := le.Top + (le.Height - lh) div 2; end;
         else begin lx := C.Left; ly := C.Top; end;
         end;
         O.Elements['x'] := TJSONIntegerNumber.Create(lx);
@@ -1592,7 +1613,7 @@ begin
   begin
     items := TJSONArray.Create;
     for i := 0 to TRadioGroup(C).Items.Count - 1 do
-      JArrAddStr(items, TRadioGroup(C).Items[i]);
+      JArrAddStr(items, LWLangText(TRadioGroup(C).Items[i]));
     O.Add('items', items);
     O.Add('index', TRadioGroup(C).ItemIndex);
     O.Add('cols', TRadioGroup(C).Columns);
@@ -1603,7 +1624,7 @@ begin
     vals := TJSONArray.Create;
     for i := 0 to TCheckGroup(C).Items.Count - 1 do
     begin
-      JArrAddStr(items, TCheckGroup(C).Items[i]);
+      JArrAddStr(items, LWLangText(TCheckGroup(C).Items[i]));
       vals.Add(TCheckGroup(C).Checked[i]);
     end;
     O.Add('items', items);
@@ -1616,7 +1637,7 @@ begin
     vals := TJSONArray.Create;
     for i := 0 to TCheckListBox(C).Items.Count - 1 do
     begin
-      JArrAddStr(items, TCheckListBox(C).Items[i]);
+      JArrAddStr(items, LWLangText(TCheckListBox(C).Items[i]));
       vals.Add(TCheckListBox(C).Checked[i]);
     end;
     O.Add('items', items);
@@ -1900,7 +1921,7 @@ begin
     else
       O.Add('charttype', 'line');
     end;
-    O.Add('title', TLWChart(C).Title);
+    O.Add('title', LWLangText(TLWChart(C).Title));
     items := TJSONArray.Create;
     for i := 0 to TLWChart(C).Categories.Count - 1 do
       JArrAddStr(items, TLWChart(C).Categories[i]);
@@ -2015,7 +2036,7 @@ begin
     o.Add('id', NodeId(it));
     { 原样下发（保留 & 助记符；分隔线是单独的 '-'）。TMenuItem 的 Caption
       里 &X 由浏览器端 accText/accHtml 画成带下划线的 X，&& 转义成字面 &。 }
-    o.Add('caption', it.Caption);
+    o.Add('caption', LWLangText(it.Caption));
     o.Add('enabled', it.Enabled);
     o.Add('checked', it.Checked);
     o.Add('sep', it.Caption = '-');
@@ -2074,7 +2095,7 @@ begin
     o.Add('id', NodeId(it));
     { 原样下发（保留 & 助记符；分隔线是单独的 '-'）。TMenuItem 的 Caption
       里 &X 由浏览器端 accText/accHtml 画成带下划线的 X，&& 转义成字面 &。 }
-    o.Add('caption', it.Caption);
+    o.Add('caption', LWLangText(it.Caption));
     o.Add('enabled', it.Enabled);
     o.Add('checked', it.Checked);
     o.Add('sep', it.Caption = '-');
@@ -2105,7 +2126,7 @@ begin
   Result.Add('name', SM.Name);
   Result.Add('width', SM.SideWidth);
   Result.Add('itemheight', SM.ItemHeight);
-  Result.Add('header', SM.HeaderCaption);
+  Result.Add('header', LWLangText(SM.HeaderCaption));
   Result.Add('firstopen', SM.FirstGroupOpen);
   Result.Add('items', WriteSideItems(SM.Items));
 end;
@@ -2134,7 +2155,7 @@ begin
   o.Add('kind', 'form');
   o.Add('name', AForm.Name);
   o.Add('cls', AForm.ClassName);
-  o.Add('caption', AForm.Caption);
+  o.Add('caption', LWLangText(AForm.Caption));
   o.Add('x', AForm.Left);
   o.Add('y', AForm.Top);
   o.Add('w', AForm.Width);

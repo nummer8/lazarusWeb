@@ -45,7 +45,7 @@ interface
 uses
   Classes, SysUtils, DateUtils, fphttpserver, httpdefs, httpprotocol, fpjson, jsonparser,
   ssockets, Sockets, Forms, Controls, lwbase, lwsession, lwdispatch, lwform, lwupload, lwdownload,
-  lwajax, lwwebsocket, lwrlog, lwcaptcha, lwroute, opensslsockets;
+  lwajax, lwwebsocket, lwrlog, lwcaptcha, lwroute, lwlang, opensslsockets;
 
 type
   TLWServerConfig = record
@@ -97,6 +97,14 @@ type
       lwhyper 启动时会生成随机令牌并注入到每个 worker 的命令行，
       热更新用它让 worker 自己收尾，而不是 Terminate 强杀。 }
     ShutdownToken: string;
+    { 界面语言（多语言，PO/gettext 模式）：'zh' | 'en'。
+       缺省跟随系统语言（见 lwlang.LWLangSystem）；
+       来自配置文件 language= / 命令行 --lang= / 环境变量 LW_LANG。
+       单个会话可用 ?lwlang=en 覆盖（写进会话变量，见 lwlang）。 }
+    Language: string;
+    { 实际加载的 ini 路径（'' = 没找到配置文件）。启动横幅里报出来，
+       但要等语言定了以后再打 —— 否则 --lang=en 时这一行仍是中文 }
+    IniPath: string;
   end;
 
   { 由 lwapp 提供：按名字创建窗体实例 }
@@ -220,6 +228,11 @@ type
     function ClientIP(var ARequest: TFPHTTPConnectionRequest): string;
     function ParseBody(var ARequest: TFPHTTPConnectionRequest): TJSONObject;
     function QueryP(const ARequest: TFPHTTPConnectionRequest; const AName, ADef: string): string;
+    { 本次请求要用的界面语言：?lwlang= > X-LW-Lang 头 > Cookie(lwlang) > ''
+      （''= 用进程默认）。见 lwlang 的 LWLangSetRequest。 }
+    function ReqLang(const ARequest: TFPHTTPConnectionRequest): string;
+    { 把语言写进 Cookie，让后续页面（/lw/api/* 与刷新）都保持同一语言 }
+    procedure SetLangCookie(const ALang: string; var AResponse: TFPHTTPConnectionResponse);
     { ext 目录下的相对路径是否存在（用来判断 charts 包、主题 CSS 有没有）}
     function ExtFileExists(const AVer, ARel: string): Boolean;
     { 选一个在磁盘上真实存在的主题：新版本 Ext 可能删掉某个主题，
@@ -899,11 +912,11 @@ begin
   begin
     { Alpine.js 渲染层：样式内置（lw-alpine.css），不依赖 ext-<版本> 目录 }
     if FCfg.ClientExplicit then
-      LWLogRaw('  Client    : alpine（Alpine.js ' + ALPINE_VERSION +
-        '，无需 ext 目录）   (切换: /?client=ext)')
+      LWLogRaw(LWLangFmt('  Client    : alpine（Alpine.js %s，无需 ext 目录）   (切换: /?client=ext)',
+        [ALPINE_VERSION]))
     else
-      LWLogRaw('  Client    : alpine（Alpine.js ' + ALPINE_VERSION +
-        '，自动探测优先）   (切换: /?client=ext)');
+      LWLogRaw(LWLangFmt('  Client    : alpine（Alpine.js %s，自动探测优先）   (切换: /?client=ext)',
+        [ALPINE_VERSION]));
     LWLogRaw('  Form      : ' + FCfg.DefaultForm);
     LWLogRaw('  Listen    : ' + scheme + '://127.0.0.1:' + IntToStr(FCfg.Port) + '/');
     { 手机/平板访问要用局域网地址，横幅里直接给出来 —— 只写 127.0.0.1 时
@@ -911,48 +924,48 @@ begin
     lanip := LWOutboundIPv4;
     if (lanip <> '') and (lanip <> '127.0.0.1') then
       LWLogRaw('  LAN       : ' + scheme + '://' + lanip + ':' + IntToStr(FCfg.Port) +
-        '/   <- 手机/平板用这个地址');
+        LWLangText('/   <- 手机/平板用这个地址'));
       { 全设备同时打不开的头号原因不是代码：Windows 防火墙规则只落在另一种
         网络配置文件上（这台电脑从“公用网络”变成“专用网络”后，原有放行失效，
         而 127.0.0.1 走回环不受影响，于是“本机能开、手机全打不开”）。 }
-      LWLogRaw('              仍打不开？管理员运行 tools\allow-firewall.bat' +
-        '（放行 专用+公用 两种配置文件）');
+      LWLogRaw(LWLangText('              仍打不开？管理员运行 tools\allow-firewall.bat' +
+        '（放行 专用+公用 两种配置文件）'));
     if FCfg.UseSSL then
-      LWLogRaw('  TLS       : 开（自签证书时浏览器会告警，点“继续访问”即可；' +
-        '相机取景需 https 或 localhost）');
+      LWLogRaw(LWLangText('  TLS       : 开（自签证书时浏览器会告警，点“继续访问”即可；' +
+        '相机取景需 https 或 localhost）'));
   end
   else
   begin
     if FCfg.ClientExplicit then
-      LWLogRaw('  Client    : ext（Ext JS）   (切换: /?client=alpine)')
+      LWLogRaw(LWLangText('  Client    : ext（Ext JS）   (切换: /?client=alpine)'))
     else
-      LWLogRaw('  Client    : ext（Ext JS，自动探测：未找到 alpine.min.js）   (切换: /?client=alpine)');
+      LWLogRaw(LWLangText('  Client    : ext（Ext JS，自动探测：未找到 alpine.min.js）   (切换: /?client=alpine)'));
     if FCfg.ExtDir <> '' then
-      LWLogRaw('  Ext       : ' + IncludeTrailingPathDelimiter(FCfg.ExtDir) +
-        '  (配置文件 extdir)')
+      LWLogRaw(LWLangFmt('  Ext       : %s  (配置文件 extdir)',
+        [IncludeTrailingPathDelimiter(FCfg.ExtDir)]))
     else
     begin
-      LWLogRaw('  Ext       : ' + ExtRootFor(FCfg.DefaultExt) +
-        '  (版本 ' + FCfg.DefaultExt + ')');
+      LWLogRaw(LWLangFmt('  Ext       : %s  (版本 %s)',
+        [ExtRootFor(FCfg.DefaultExt), FCfg.DefaultExt]));
       { 目录名跟版本号不一致时提示一句，免得以后看到 "/ext/<版本>/..." 犯迷糊 }
       if (FSingleExtDir <> '') and (FSingleExtDir <> 'ext-' + FCfg.DefaultExt) then
-        LWLogRaw('              根目录下只有 ' + FSingleExtDir +
-          '，按它提供所有版本号的请求');
+        LWLogRaw(LWLangFmt('              根目录下只有 %s，按它提供所有版本号的请求',
+          [FSingleExtDir]));
     end;
     if not ExtFileExists(FCfg.DefaultExt, 'build/ext-all.js') then
-      LWLogRaw('  警告      : ' + ExtRootFor(FCfg.DefaultExt) +
-        PathDelim + 'build' + PathDelim + 'ext-all.js 不存在，页面会白屏');
+      LWLogRaw(LWLangFmt('  警告      : %s 不存在，页面会白屏',
+        [ExtRootFor(FCfg.DefaultExt) + PathDelim + 'build' + PathDelim + 'ext-all.js']));
     LWLogRaw('  Form      : ' + FCfg.DefaultForm);
     LWLogRaw('  Listen    : ' + scheme + '://127.0.0.1:' + IntToStr(FCfg.Port) + '/');
     lanip := LWOutboundIPv4;
     if (lanip <> '') and (lanip <> '127.0.0.1') then
       LWLogRaw('  LAN       : ' + scheme + '://' + lanip + ':' + IntToStr(FCfg.Port) +
-        '/   <- 手机/平板用这个地址');
+        LWLangText('/   <- 手机/平板用这个地址'));
       { 全设备同时打不开的头号原因不是代码：Windows 防火墙规则只落在另一种
         网络配置文件上（这台电脑从“公用网络”变成“专用网络”后，原有放行失效，
         而 127.0.0.1 走回环不受影响，于是“本机能开、手机全打不开”）。 }
-      LWLogRaw('              仍打不开？管理员运行 tools\allow-firewall.bat' +
-        '（放行 专用+公用 两种配置文件）');
+      LWLogRaw(LWLangText('              仍打不开？管理员运行 tools\allow-firewall.bat' +
+        '（放行 专用+公用 两种配置文件）'));
     { 根目录里有多个 ext-* 时列出来：?ext=<版本> 可以逐个切（默认走 DefaultExt）}
     if FCfg.ExtDir = '' then
     begin
@@ -967,18 +980,18 @@ begin
         FindClose(sr);
       end;
       if s <> '' then
-        LWLogRaw('  Ext dirs  :' + s + '   (切换: /?ext=<版本>)');
+        LWLogRaw(LWLangFmt('  Ext dirs  :%s   (切换: /?ext=<版本>)', [s]));
     end;
-    LWLogRaw('  Theme      : ' + PickTheme(FCfg.DefaultExt, FCfg.Theme) +
-      '   (切换: /?theme=gray 等)');
+    LWLogRaw(LWLangFmt('  Theme      : %s   (切换: /?theme=gray 等)',
+      [PickTheme(FCfg.DefaultExt, FCfg.Theme)]));
   end;
   if FCfg.LoginForm <> '' then
-    LWLogRaw('  Login      : ' + FCfg.LoginForm + '（未认证会话先显示登录窗体）');
+    LWLogRaw(LWLangFmt('  Login      : %s（未认证会话先显示登录窗体）', [FCfg.LoginForm]));
   LWLogRaw('  --------------------------------------------------');
   if FCfg.NoUI then
-    LWLogRaw('  无窗口模式（--nogui），Ctrl+C 退出')
+    LWLogRaw(LWLangText('  无窗口模式（--nogui），Ctrl+C 退出'))
   else
-    LWLogRaw('  关闭面板窗口 = 隐藏到系统托盘；结束服务请用面板菜单「退出」');
+    LWLogRaw(LWLangText('  关闭面板窗口 = 隐藏到系统托盘；结束服务请用面板菜单「退出」'));
   LWLogRaw('');
 end;
 
@@ -1237,7 +1250,7 @@ begin
     浏览器端 LW.start(...) 变成非法 JS，页面只剩白块。
     分步（s := s + ...）实测逐字节正确，见 docs/NOTES.md 坑 22。 }
   Result := '<!DOCTYPE html>';
-  Result := Result + LineEnding + '<html><head><meta charset="utf-8">';
+  Result := Result + LineEnding + '<html lang="' + LWLangGet + '"><head><meta charset="utf-8">';
   Result := Result + LineEnding + '<meta name="viewport" content="width=device-width, initial-scale=1">';
   Result := Result + LineEnding + '<title>' + FCfg.Title + '</title>';
   { ABase：外壳资源的前缀。直接访问为 '/'（与旧行为逐字节一致）；
@@ -1256,9 +1269,12 @@ begin
     Result := Result + LineEnding + '<script src="' + ABase + 'ext/' + ver + '/build/packages/charts/classic/charts.js"></script>';
   end;
   Result := Result + LineEnding + '<script src="' + ABase + 'lw/lw.js?v=' + LW_VERSION + '"></script>';
+  Result := Result + LineEnding + '<script>window.__LW_LANG={"code":"' + LWLangGet +
+    '","t":' + LWLangJsonFor(LWLangGet, FCfg.Root) + '};</script>';
   Result := Result + LineEnding + '</head><body>';
   Result := Result + LineEnding + '<div id="lw-busy"></div>';
-  Result := Result + LineEnding + '<div id="lw-splash"><div class="lw-splash-box">正在连接 lazarusWeb 服务端…</div></div>';
+  Result := Result + LineEnding + '<div id="lw-splash"><div class="lw-splash-box">' +
+    LWLangText('正在连接 lazarusWeb 服务端…') + '</div></div>';
   Result := Result + LineEnding + '<script>LW.start({form:' + QuotedStr(AForm) + ',ext:' + QuotedStr(ver) + '});</script>';
   Result := Result + LineEnding + '</body></html>';
 end;
@@ -1276,21 +1292,27 @@ end;
   业务控件树由 lw-alpine.js 动态渲染。注意坑 22：分步拼接，别折叠成长链。 }
 function TLWServer.BuildAlpineHtml(const AForm, ABase: string): string;
 var
-  s: string;
+  s, lang, dict: string;
 begin
+  { 界面语言：html lang 属性给浏览器（拼写检查/朗读/字体选择都看它），
+    字典给药 JS。dict 只含 lwclient 域，几十条，直出不心疼。 }
+  lang := LWLangGet;
+  dict := LWLangJsonFor(lang, FCfg.Root);
   s := '<!DOCTYPE html>';
-  s := s + LineEnding + '<html><head><meta charset="utf-8">';
+  s := s + LineEnding + '<html lang="' + lang + '"><head><meta charset="utf-8">';
   s := s + LineEnding + '<meta name="viewport" content="width=device-width, initial-scale=1">';
   s := s + LineEnding + '<title>' + FCfg.Title + '</title>';
   s := s + LineEnding + '<link rel="icon" href="' + ABase + 'favicon.ico" type="image/x-icon">';
   s := s + LineEnding + '<link rel="stylesheet" href="' + ABase + 'lw/lw.css?v=' + LW_VERSION + '">';
   s := s + LineEnding + '<link rel="stylesheet" href="' + ABase + 'lw/lw-alpine.css?v=' + LW_VERSION + '">';
   s := s + LineEnding + '<script src="' + ABase + 'lw/alpine.min.js" defer></script>';
+  s := s + LineEnding + '<script>window.__LW_LANG={"code":"' + lang + '","t":' + dict + '};</script>';
   s := s + LineEnding + '<script src="' + ABase + 'lw/lw-alpine.js?v=' + LW_VERSION + '"></script>';
   s := s + LineEnding + '</head><body>';
   s := s + LineEnding + '<div id="lw-busy" x-data x-show="$store.lw.busy > 0" style="display:none"></div>';
   s := s + LineEnding + '<div id="lw-splash" x-data x-show="$store.lw.splash">';
-  s := s + LineEnding + '<div class="lw-splash-box" x-text="$store.lw.splash">正在连接 lazarusWeb 服务端…</div>';
+  s := s + LineEnding + '<div class="lw-splash-box" x-text="$store.lw.splash">' +
+    LWLangText('正在连接 lazarusWeb 服务端…') + '</div>';
   s := s + LineEnding + '</div>';
   s := s + LineEnding + '<div id="lw-root"></div>';
   { 会话级遮罩（LWShowScreenMask）—— 顶层指令必须在 x-data 作用域内 }
@@ -1316,7 +1338,8 @@ begin
   s := s + LineEnding + '<template x-if="$store.lw.dialog.kind === ''warning''"><span class="lw-dlg-title-icon lw-dlg-i-warn">!</span></template>';
   s := s + LineEnding + '<template x-if="$store.lw.dialog.kind === ''error''"><span class="lw-dlg-title-icon lw-dlg-i-err">✕</span></template>';
   s := s + LineEnding + '<template x-if="$store.lw.dialog.kind === ''question''"><span class="lw-dlg-title-icon lw-dlg-i-ques">?</span></template>';
-  s := s + LineEnding + '<span x-text="$store.lw.dialog.caption || ''消息''"></span>';
+  s := s + LineEnding + '<span x-text="$store.lw.dialog.caption || ''' +
+    LWLangText('消息') + '''"></span>';
   s := s + LineEnding + '<span class="lw-dlg-x" @click="$lwDlgClose()">×</span>';
   s := s + LineEnding + '</div>';
   s := s + LineEnding + '<div class="lw-dlg-body">';
@@ -1325,7 +1348,8 @@ begin
   s := s + LineEnding + '<input type="text" class="lw-input lw-dlg-input" x-model="$store.lw.dlgText" @keydown.enter="$lwDlgKey($event)"/>';
   s := s + LineEnding + '</template>';
   s := s + LineEnding + '<template x-if="$store.lw.dialog.kind === ''openfile''">';
-  s := s + LineEnding + '<div class="lw-dlg-file"><span x-text="$store.lw.dlgUpload || ''点「浏览」选择文件，确认后自动上传''"></span></div>';
+  s := s + LineEnding + '<div class="lw-dlg-file"><span x-text="$store.lw.dlgUpload || ''' +
+    LWLangText('点「浏览」选择文件，确认后自动上传') + '''"></span></div>';
   s := s + LineEnding + '</template>';
   s := s + LineEnding + '</div>';
   s := s + LineEnding + '<div class="lw-dlg-btns">';
@@ -1333,7 +1357,8 @@ begin
   { Alpine x-for 模板要求单根节点，这里用 display:contents 包住两个兄弟节点 }
   s := s + LineEnding + '<span style="display:contents">';
   s := s + LineEnding + '<template x-if="$store.lw.dialog.kind === ''openfile'' && b[''default'']">';
-  s := s + LineEnding + '<button type="button" class="lw-btn" @click="$store.lw.dialog.pick()">浏览…</button>';
+  s := s + LineEnding + '<button type="button" class="lw-btn" @click="$store.lw.dialog.pick()">' +
+    LWLangText('浏览…') + '</button>';
   s := s + LineEnding + '</template>';
   s := s + LineEnding + '<button type="button" class="lw-btn" :class="b[''default''] ? ''lw-dlg-default'' : ''''"';
   { 按钮文字走 $lwCap：LCL Caption 的 &X 加速键显示成下划线（如 rsmbOK 的"确定(&O)"），
@@ -1345,7 +1370,8 @@ begin
   s := s + LineEnding + '</div></div>';
   s := s + LineEnding + '</template>';
   s := s + LineEnding + '</div>';
-  s := s + LineEnding + '<script>LW.start({form:' + QuotedStr(AForm) + '});</script>';
+  s := s + LineEnding + '<script>LW.start({form:' + QuotedStr(AForm) +
+    ',lang:' + QuotedStr(lang) + '});</script>';
   s := s + LineEnding + '</body></html>';
   Result := s;
 end;
@@ -1364,6 +1390,61 @@ begin
   if Assigned(ARequest.QueryFields) then
     s := Trim(ARequest.QueryFields.Values[AName]);
   if s = '' then Result := ADef else Result := s;
+end;
+
+{ Cookie 头里取一个键。fcl-web 的 TRequest.Cookie 是原始头（"a=1; b=2"），
+  这里自己解析，避免依赖不同 FPC 版本上 Cookies 属性的差异。 }
+function LWCookieValue(const ARaw, AName: string): string;
+var
+  rest, item, k, v: string;
+  p: Integer;
+begin
+  Result := '';
+  rest := ARaw;
+  while rest <> '' do
+  begin
+    p := Pos(';', rest);
+    if p > 0 then
+    begin
+      item := Trim(Copy(rest, 1, p - 1));
+      rest := Copy(rest, p + 1, MaxInt);
+    end
+    else
+    begin
+      item := Trim(rest);
+      rest := '';
+    end;
+    if item = '' then Continue;
+    p := Pos('=', item);
+    if p <= 0 then Continue;
+    k := Trim(Copy(item, 1, p - 1));
+    v := Trim(Copy(item, p + 1, MaxInt));
+    if SameText(k, AName) then Exit(v);
+  end;
+end;
+
+function TLWServer.ReqLang(const ARequest: TFPHTTPConnectionRequest): string;
+var
+  s: string;
+begin
+  { 1) 显式 ?lwlang=en（点语言开关时带上来，最权威）}
+  s := LWLangNormalize(QueryP(ARequest, 'lwlang', ''));
+  if s <> '' then Exit(s);
+  { 2) 反向代理/客户端自己带的头 }
+  s := LWLangNormalize(ARequest.GetCustomHeader('X-LW-Lang'));
+  if s <> '' then Exit(s);
+  { 3) 上次选的（Cookie）}
+  s := LWCookieValue(ARequest.GetCustomHeader('Cookie'), 'lwlang');
+  Result := LWLangNormalize(s);
+end;
+
+procedure TLWServer.SetLangCookie(const ALang: string;
+  var AResponse: TFPHTTPConnectionResponse);
+begin
+  if ALang = '' then Exit;
+  { 一年有效；Path=/ 让插件代理前缀下也能带上 }
+  AResponse.CustomHeaders.Add('Set-Cookie: lwlang=' + ALang +
+    '; Path=/; Max-Age=31536000; SameSite=Lax');
 end;
 
 function TLWServer.ParseBody(var ARequest: TFPHTTPConnectionRequest): TJSONObject;
@@ -1424,6 +1505,9 @@ begin
   end;
 
   s := FStore.NewSession(f, ClientIP(ARequest));
+  { 语言跟着会话走：本请求的 ?lwlang= / Cookie 已经决定了语言（HandleRequest
+    设进线程本地），这里落到会话变量上，之后的事件/推送/长轮询都用同一语言 }
+  s.SessionSetVar(LW_SESSION_LANG, LWLangGet);
   s.RequireAuth := FCfg.LoginForm <> '';
   s.LoginForm := f;
   if FCfg.Verbose then
@@ -2092,6 +2176,7 @@ procedure TLWServer.HandleRequest(Sender: TObject; var ARequest: TFPHTTPConnecti
   var AResponse: TFPHTTPConnectionResponse);
 var
   handles: Boolean;
+  rl: string;
 begin
   { FPC 3.2.2 兼容路径：这个版本的 fphttpserver 没有连接升级机制，只能在
     请求回调里自己接管。握手应答、帧循环全部在 WSRun 里同步完成 —— 连接
@@ -2110,24 +2195,35 @@ begin
     end;
   end;
   {$ENDIF}
+  { 界面语言（按请求）：?lwlang= > X-LW-Lang > Cookie。放到线程本地，
+    同一进程里中文会话与英文会话可以同时存在。空串 = 用进程默认。 }
+  rl := ReqLang(ARequest);
+  LWLangSetRequest(rl);
   try
-    Route(ARequest, AResponse);
-  except
-    on E: Exception do
-    begin
-      try
-        Reply('{"ok":false,"err":' + TJSONString.Create(E.Message).AsJSON + '}',
-          'application/json; charset=utf-8', 500, AResponse);
-      except
-      end;
-      LWLog('[lw] ERROR ' + E.ClassName + ': ' + E.Message);
-      if FCfg.Verbose then
+    try
+      Route(ARequest, AResponse);
+      { 用户这次显式选了语言：记进 Cookie，刷新/后续请求都保持 }
+      if QueryP(ARequest, 'lwlang', '') <> '' then
+        SetLangCookie(rl, AResponse);
+    except
+      on E: Exception do
       begin
-        LWLog('[lw] backtrace:');
-        DumpExceptionBackTrace(ErrOutput);
-        Flush(ErrOutput);
+        try
+          Reply('{"ok":false,"err":' + TJSONString.Create(E.Message).AsJSON + '}',
+            'application/json; charset=utf-8', 500, AResponse);
+        except
+        end;
+        LWLog('[lw] ERROR ' + E.ClassName + ': ' + E.Message);
+        if FCfg.Verbose then
+        begin
+          LWLog('[lw] backtrace:');
+          DumpExceptionBackTrace(ErrOutput);
+          Flush(ErrOutput);
+        end;
       end;
     end;
+  finally
+    LWLangSetRequest('');
   end;
 end;
 
@@ -2428,7 +2524,7 @@ begin
     LWLog('[info] 客户端已断开，本次请求/响应中止（正常现象，无需处理）——' +
       '常见于浏览器关页签/刷新或请求超时取消；连接已被 fcl-web 自动回收，服务不受影响。')
   else
-    LWLog('[warn] 处理请求时出错: ' + E.ClassName + ': ' + E.Message);
+    LWLog('[warn] ' + LWLangFmt('处理请求时出错: %s: %s', [E.ClassName, E.Message]));
 end;
 
 procedure TLWServer.WSPushCommand(ASession: TObject; const AJSON: string);

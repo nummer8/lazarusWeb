@@ -24,7 +24,7 @@ unit lwapp;
 interface
 
 uses
-  Classes, SysUtils, Forms, Controls, lwbase, lwhttp, lwajax;
+  Classes, SysUtils, Forms, Controls, lwbase, lwhttp, lwajax, lwlang;
 
 type
   { 窗体工厂：把"按名字建窗体"以对象方法的形式交给 HTTP 层 }
@@ -403,7 +403,8 @@ var
     k: Integer;
   begin
     if ini.Path = '' then Exit;
-    LWLog('配置文件: ' + ini.Path);
+    { 只记住路径：这一行要等语言定下来再打（--lang=en 时也得是英文）}
+    GCfg.IniPath := ini.Path;
     for k := 0 to ini.Notes.Count - 1 do
       LWLog('  ! ' + ini.Notes[k]);
 
@@ -426,14 +427,27 @@ var
         GCfg.Theme := LowerCase(val)
       else
       begin
-        LWLog('警告: 配置文件 theme=' + val +
-          ' 未收录（classic/crisp/gray/material/neptune/graphite），按 crisp 处理');
+        LWLog(LWLangFmt('警告: 配置文件 theme=%s' +
+          ' 未收录（classic/crisp/gray/material/neptune/graphite），按 crisp 处理', [val]));
         GCfg.Theme := 'crisp';
       end;
     end;
 
     if ini.Has(['extdir', 'extjs', 'extroot']) then
       GCfg.ExtDir := Trim(ini.Str(['extdir', 'extjs', 'extroot'], ''));
+
+    { 界面语言：language=en / language=zh（也认 lang / locale）。
+      非法值不报错退出，退回中文并留一条日志 —— 多语言是可选能力，
+      配置写错了不该让服务起不来。 }
+    if ini.Has(['language', 'lang', 'locale']) then
+    begin
+      val := Trim(ini.Str(['language', 'lang', 'locale'], ''));
+      if LWLangNormalize(val) <> '' then
+        GCfg.Language := LWLangNormalize(val)
+      else
+        LWLog(LWLangFmt('警告: 配置文件 language=%s' +
+          ' 未收录（zh/en），忽略（保持系统语言）', [val]));
+    end;
 
     { 增量补丁（阶段 2）：1/0。灰度期间默认 0，出事直接改回 0 重启 }
     if ini.Has(['patch']) then
@@ -463,8 +477,8 @@ var
         GCfg.ClientExplicit := True;
       end
       else
-        LWLog('警告: 配置文件 client=' + ini.Str(['client'], '') +
-          ' 非法（应为 ext 或 alpine），按 ext 处理');
+        LWLog(LWLangFmt('警告: 配置文件 client=%s' +
+          ' 非法（应为 ext 或 alpine），按 ext 处理', [ini.Str(['client'], '')]));
     end;
 
     { 进程级插件路由：plugin.<名>=host:port（或 http://host:port）。
@@ -551,6 +565,15 @@ begin
   GCfg.SessionTimeoutMin := 20;
   GCfg.Verbose := False;
   GCfg.Theme := 'crisp';
+  { 界面语言：默认跟随**系统语言**（Lazarus 的 Translations.GetLanguageID：
+    中文系统给中文 —— 中文就是源码原文，不需要翻译文件；其它系统给英文）。
+    显式 --lang= / 配置文件 / 环境变量都能压过它。 }
+  GCfg.Language := LWLangSystem;
+  if GCfg.Language = '' then GCfg.Language := LW_LANG_ZH;
+  { 环境变量 LW_LANG 作为"部署默认值"：优先级 命令行 > 配置文件 > LW_LANG > 系统语言 }
+  arg := Trim(GetEnvironmentVariable('LW_LANG'));
+  if LWLangNormalize(arg) <> '' then
+    GCfg.Language := LWLangNormalize(arg);
   GCfg.LoginForm := GLoginName;
   GCfg.AjaxCORS := False;
   GCfg.TrustProxy := False;
@@ -583,7 +606,7 @@ begin
     begin
       if not ini.Load(cfgPath) then
       begin
-        LWLog('错误: 找不到配置文件 -> ' + cfgPath);
+        LWLog(LWLangFmt('错误: 找不到配置文件 -> %s', [cfgPath]));
         Halt(1);
       end;
     end
@@ -618,12 +641,20 @@ begin
         GCfg.ClientExplicit := True;
       end
       else
-        LWLog('警告: --client=' + val + ' 非法（应为 ext 或 alpine），忽略');
+        LWLog(LWLangFmt('警告: --client=%s 非法（应为 ext 或 alpine），忽略', [val]));
     end
     else if ValueOf('--extdir=', val) then
       GCfg.ExtDir := val
     else if ValueOf('--theme=', val) then
       GCfg.Theme := val
+    { --lang=en / --language=en：界面语言（PO 文件见 languages\<lang>\）}
+    else if ValueOf('--lang=', val) or ValueOf('--language=', val) then
+    begin
+      if LWLangNormalize(val) <> '' then
+        GCfg.Language := LWLangNormalize(val)
+      else
+        LWLog(LWLangFmt('警告: --lang=%s 未收录（zh/en），忽略（保持系统语言）', [val]));
+    end
     else if ValueOf('--title=', val) then
       GCfg.Title := val
     else if ValueOf('--timeout=', val) then
@@ -677,6 +708,8 @@ begin
       LWLogRaw('  --ext=7.0.0           默认 Ext 版本（对应 ext-<版本> 目录，任意版本号都行）');
       LWLogRaw('  --extdir=目录         ext-js 目录（配置文件 extdir 的等价物）');
       LWLogRaw('  --theme=crisp         主题（classic/crisp/gray/material/neptune/graphite，?theme= 可覆盖）');
+      LWLogRaw('  --lang=zh             界面语言：zh | en；缺省跟随系统语言（中文系统中文，其它英文）');
+      LWLogRaw('                        单会话可用 ?lwlang=en 临时切换（写进会话，不影响别人）');
       LWLogRaw('  --title=标题          浏览器标签页标题（缺省取 Application.Title）');
       LWLogRaw('  --timeout=20          会话空闲超时（分钟）');
       LWLogRaw('  --verbose             打印每个请求');
@@ -700,8 +733,8 @@ begin
       以 HTTP 起来，直到浏览器 https 握手才报一堆看不懂的二进制。现在直接
       说清楚，别让人对着"参数好像没生效"猜半天。 }
     else if Copy(arg, 1, 2) = '--' then
-      LWLog('警告: 未识别的参数 ' + arg + '，已忽略（检查拼写；TLS 参数是 ' +
-        '--ssl / --ssl-host / --ssl-cert / --ssl-key，也接受 --tls-cert / --tls-key）');
+      LWLog(LWLangFmt('警告: 未识别的参数 %s，已忽略（检查拼写；TLS 参数是 ' +
+        '--ssl / --ssl-host / --ssl-cert / --ssl-key，也接受 --tls-cert / --tls-key）', [arg]));
   end;
 
   { TLS 证书路径：相对路径以 exe 目录为基准（服务方式启动时 cwd 常是
@@ -715,7 +748,7 @@ begin
     GCfg.SSLKeyFile := LWResolveExeRelativePath(GCfg.SSLKeyFile);
     if not LWValidateTLSFiles(GCfg.SSLCertFile, GCfg.SSLKeyFile, err) then
     begin
-      LWLog('警告: ' + err + '；已关闭 HTTPS，回退 HTTP 启动（请检查证书路径或改回 ssl=0）');
+      LWLog(LWLangFmt('警告: %s；已关闭 HTTPS，回退 HTTP 启动（请检查证书路径或改回 ssl=0）', [err]));
       GCfg.UseSSL := False;
       GCfg.SSLCertFile := '';
       GCfg.SSLKeyFile := '';
@@ -732,9 +765,28 @@ begin
   GCfg.Root := LWResolveRoot(GCfg.Root, GCfg.DefaultExt);
   if not DirectoryExists(GCfg.Root) then
   begin
-    LWLog('错误: 项目根目录不存在 -> ' + GCfg.Root);
+    LWLog(LWLangFmt('错误: 项目根目录不存在 -> %s', [GCfg.Root]));
     Halt(1);
   end;
+  { 多语言：选语言并预热 PO（languages\<lang>\*.po，见 lwlang）。
+    中文是源码原文、不需要翻译文件；英文缺文件时只告警并回落中文，
+    服务照常起来 —— 多语言是可选能力，不该因为少一个 po 就起不来。 }
+  if not LWLangInit(GCfg.Language, GCfg.Root) then
+  begin
+    LWLog(LWLangFmt('警告: 未找到翻译文件 languages\%s\lazarusweb.po，界面回退中文',
+      [GCfg.Language]));
+    GCfg.Language := LW_LANG_ZH;
+    LWLangInit(GCfg.Language, GCfg.Root);
+  end;
+  { 明确报出实际生效的语言：默认是"跟随系统语言"，用户需要看到判到了哪一种 }
+  if GCfg.IniPath <> '' then
+    LWLog(LWLangFmt('配置文件: %s', [GCfg.IniPath]));
+  if GCfg.Language = LW_LANG_ZH then
+    LWLog(LWLangFmt('界面语言: %s（中文即源码原文；单会话可用 ?lwlang=en 切换）',
+      [GCfg.Language]))
+  else
+    LWLog(LWLangFmt('界面语言: %s（languages\%s\；单会话可用 ?lwlang=zh 切换）',
+      [GCfg.Language, GCfg.Language]));
   { ext-js 目录：配置/命令行给了就用它（相对路径按 exe 目录、当前目录展开），
     没给（或给的空目录/不存在）就退回"从根目录找 ext-<版本>"。
     根目录下只有一个 ext-* 时，服务端会直接用那个目录，不管它叫什么名字；
@@ -754,8 +806,8 @@ begin
       GCfg.DefaultClient := 'alpine'
     else if not extOK then
     begin
-      LWLog('警告: 未找到 alpine.min.js 也没有可用的 ext-all.js，');
-      LWLog('      浏览器渲染层保持 ext 默认值 —— 两种渲染层都会白屏，请部署 src\client\ 或 ext-<版本>\。');
+      LWLog(LWLangText('警告: 未找到 alpine.min.js 也没有可用的 ext-all.js，'));
+      LWLog(LWLangText('      浏览器渲染层保持 ext 默认值 —— 两种渲染层都会白屏，请部署 src\client\ 或 ext-<版本>\。'));
     end;
   end;
 

@@ -24,7 +24,7 @@ unit lwrlog;
 interface
 
 uses
-  Classes, SysUtils;
+  Classes, SysUtils, lwlang;
 
 type
   { 面板等 UI 挂的回调；从 HTTP 线程调用，实现方必须自己处理线程安全 }
@@ -122,7 +122,10 @@ begin
   if LWStdOutOpen then
   begin
     try
-      WriteLn(ALine);
+      { 控制台是"给人看的界面"：按当前界面语言翻译一遍（见 lwlang.LWLangLine，
+        时间戳与 [级别] 前缀原样保留，只翻正文）；--log= 文件那条出口保持
+        原文，便于跨语言排障与 grep。 }
+      WriteLn(LWLangLine(ALine));
     except
       { 输出失败不影响服务运行 }
     end;
@@ -131,7 +134,7 @@ begin
   if Assigned(sink) then
   begin
     try
-      sink(ALine);
+      sink(LWLangLine(ALine));
     except
       { UI 挂了不能拖垮 HTTP 线程 }
     end;
@@ -160,7 +163,8 @@ end;
 
 procedure LWLogFmt(const AFmt: string; const AArgs: array of const);
 begin
-  LWLog(Format(AFmt, AArgs));
+  { 格式串本身就是 msgid：先把模板翻译再填参数（'警告: 端口 %d 被占用'）}
+  LWLog(LWLangFmt(AFmt, AArgs));
 end;
 
 function LWOpenLogFile(const APath: string): Boolean;

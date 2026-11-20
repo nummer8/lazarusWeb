@@ -823,6 +823,77 @@ begin
   end;
 end;
 
+{ TSplitter 拖动：把客户端的相对位移 sd 直接应用到同侧邻居的尺寸上。
+  坑 188（2026-11-19 用户实测「第一次能移到一定位置，之后再拖就不动了」）：
+  nogui / 无 widgetset 下不能走 LCL 的 SetSplitterPosition：
+    1) MoveSplitter 只改邻居 Width/Height，Splitter 自己的 Left/Top 停在
+       设计期值（Panel2 已被拖到 273，Splitter.Left 仍是 260）；
+    2) 下一次拖动的 FindAlignControl 要求「邻居右边界 <= Splitter.Left」，
+       第一次把邻居拖宽后条件就不成立，永远返回 nil —— 只能拖一次；
+    3) 手动改 Splitter.Left 去"修"会更糟：FindAlignOtherControl 靠
+       Splitter.BoundsRect 找 alClient 邻居，位置一动就找不到，EndSize
+       退化成负数，邻居被夹到 1px。
+  所以这里完全绕开 LCL 的坐标状态机：按 Align 找同侧邻居（alLeft 取右边界
+  最大的那个，即紧贴分隔条左侧的控件），直接给它的 Width/Height 加 sd。
+  客户端 runLayout 本来就只按 align + w 重排，服务端坐标不需要自洽。 }
+procedure LWMoveSplitter(sp: TSplitter; ASd: Integer);
+var
+  p: TWinControl;
+  i, v, bestV, newSize: Integer;
+  ctl, target: TControl;
+  horiz, grow: Boolean;
+begin
+  if (sp = nil) or (ASd = 0) then Exit;
+  p := sp.Parent;
+  if p = nil then Exit;
+  horiz := sp.Align in [alLeft, alRight];
+  { 同侧邻居：紧贴分隔条、位于其"被调整侧"的那个控件 }
+  target := nil;
+  bestV := Low(Integer);
+  for i := 0 to p.ControlCount - 1 do
+  begin
+    ctl := p.Controls[i];
+    if (ctl = sp) or (not ctl.Visible) then Continue;
+    if ctl.Align <> sp.Align then Continue;
+    case sp.Align of
+      alLeft:   v := ctl.Left + ctl.Width;
+      alRight:  v := -ctl.Left;
+      alTop:    v := ctl.Top + ctl.Height;
+      alBottom: v := -ctl.Top;
+    else
+      v := Low(Integer);
+    end;
+    if (target = nil) or (v > bestV) then
+    begin
+      target := ctl;
+      bestV := v;
+    end;
+  end;
+  { 没有同侧邻居（只有 alClient）：退回 LCL 原生语义，能调多少算多少 }
+  if target = nil then
+  begin
+    sp.SetSplitterPosition(sp.GetSplitterPosition + ASd);
+    Exit;
+  end;
+
+  { alLeft/alTop：往右/下拖增大邻居；alRight/alBottom：方向相反 }
+  grow := sp.Align in [alLeft, alTop];
+  if horiz then
+  begin
+    if grow then newSize := target.Width + ASd
+    else newSize := target.Width - ASd;
+    if newSize < 8 then newSize := 8;
+    target.Width := newSize;
+  end
+  else
+  begin
+    if grow then newSize := target.Height + ASd
+    else newSize := target.Height - ASd;
+    if newSize < 8 then newSize := 8;
+    target.Height := newSize;
+  end;
+end;
+
 function LWHandleEvent(S: TLWSession; AReq: TJSONObject; out AErr: string): TJSONObject;
 var
   c: TComponent;
@@ -891,6 +962,12 @@ begin
       LWApplyCheckGroupClick(c, AReq)
     else if (c is TValueListEditor) and (ev = 'OnValidate') then
       LWApplyVLEValidate(c, AReq)
+    { TSplitter 拖动：客户端拖完回传位移增量 sd（像素，可正可负）。
+      走 LWMoveSplitter（见坑 188）：SetSplitterPosition 只改邻居尺寸，
+      nogui 下不改 Splitter 自身坐标，必须补一次位置同步，否则第二次拖动
+      FindAlignControl 找不到目标。框架级事件（非业务签名），不进 LWInvokeEvent。 }
+    else if (c is TSplitter) and (ev = 'OnSplitterMove') then
+      LWMoveSplitter(TSplitter(c), JGetInt(AReq, 'sd', 0))
     else
       LWInvokeEvent(c, ev, JGetInt(AReq, 'row', -1), JGetInt(AReq, 'col', -1));
 
