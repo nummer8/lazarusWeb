@@ -1,0 +1,8 @@
+19:16:32  DoStart 进入（OnStart 已触发）
+19:16:32  worker 线程已 Start
+19:16:32  worker.Execute 进入，即将调用 TLWApp.RunService
+19:22:10  TLWApp.RunService 已返回
+19:22:34  DoStart 进入（OnStart 已触发）
+19:22:34  worker 线程已 Start
+19:22:34  worker.Execute 进入，即将调用 TLWApp.RunService
+19:39:06  TLWApp.RunService 已返回

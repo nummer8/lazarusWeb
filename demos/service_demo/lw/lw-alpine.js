@@ -1,0 +1,4747 @@
+/*
+ * lazarusWeb :: lw-alpine.js —— 浏览器端运行时（Alpine.js 3.x）
+ * SPDX-License-Identifier: MIT  (c) 2026 szlbz(秋风) QQ:315795176 -- 见仓库根目录 LICENSE
+ * ------------------------------------------------------------------
+ * 与 lw.js（Ext JS 版）协议完全一致，只是渲染层从 Ext 组件树换成
+ * 「服务端 JSON 树 -> 绝对定位 DOM + Alpine 响应式绑定」：
+ *   1. 向服务端要一棵组件树（JSON）；
+ *   2. 每个节点渲染成一个绝对定位的 div，内部用 Alpine 指令声明行为；
+ *   3. 用户操作 -> {id, ev, val} 发回服务端执行真实的 Pascal 事件；
+ *   4. 事件响应/推送回来的新树做增量协调：值/选中/禁用走 Alpine 响应式
+ *      状态，不重建 DOM；结构性变化（行/列/子树）才重建对应区块。
+ *
+ * 与服务端的约定见 src/core/lwwriter.pas（节点字段完全同 lw.js 消费的那份）。
+ * 会话/事件/轮询/对话框/上传/下载协议见 src/core/lwhttp.pas。
+ */
+var LW = (function () {
+    'use strict';
+
+    /* ---------------- 多语言（PO/gettext 模式的浏览器端） ----------------
+       window.__LW_LANG 由服务端外壳注入：
+         {code:'en', t:{ '中文原文':'English', ... }}
+       字典的键就是中文原文，所以代码里直接写 lwT('保存') —— 翻译在 po 文件
+       （languages\en\lwclient.po）里改，前端代码不用跟着动。
+       没有字典（例如直接打开 html 文件调试）时原样返回中文，不会空白。 */
+    function lwT(s) {
+        var d = window.__LW_LANG;
+        if (!d || !d.t || d.code === 'zh') return s;
+        var v = d.t[s];
+        /* 拼接用的片段在 PO 里存的是去掉首尾空格的键（"共 " -> "共"），
+           所以精确匹配不到时再按 trim 后的文本查一次 */
+        if (v === undefined) v = d.t[String(s).replace(/^\s+|\s+$/g, '')];
+        return (v === undefined || v === null || v === '') ? s : v;
+    }
+    window.lwT = window.lwT || lwT;
+
+    /* API 基路径：本页面所在目录。直接访问为 '/'；经 lwroute 代理时为
+       /p/<插件名>/ —— 所有 /lw/... 调用都挂在它下面，代理剥前缀后
+       原样到达本进程。假设页面 URL 以 '/' 结尾（lwhttp 对无尾斜杠的
+       代理路径补 301）。 */
+    var BASE = location.pathname.replace(/[^\/]*$/, '') || '/';
+
+    /* ---------------- 主题（8 档：7 套配色 + 跟随系统） ----------------
+       固定配色 7 套，分两个色系（CSS 里也按这个分组，见 lw-alpine.css）：
+
+         浅色系：light 亮色 / paper 米黄纸张 / mint 护眼绿 / contrast 高对比
+         深色系：dark 深色 / midnight 深蓝夜色 / forest 墨绿夜色
+
+       偏好存 localStorage['lw-theme']（light/dark/paper/mint/midnight/
+       forest/contrast/auto），刷新、多标签页、多窗体一致；
+       auto = 跟随系统配色，监听 matchMedia，系统深色开关（含 Windows 的
+       定时切换）一变就跟着切，页面不刷新；
+       实际生效的主题写在 <html data-lw-theme="..."> 上（auto 时解析成
+       light 或 dark），CSS 只认这一个属性；
+       服务端窗体属性 LWTheme / LWThemeButton 只在"本地还没有用户选择"
+       时作为首次默认值 —— 用户手动选过就以本地为准。 */
+    var THEME_KEY = 'lw-theme';
+    /* 固定配色（可单独选中）；auto 不在里面，它要按系统解析 */
+    var THEME_FIXED = ['light', 'dark', 'paper', 'mint', 'midnight',
+        'forest', 'contrast'];
+    var THEME_MODES = THEME_FIXED.concat(['auto']);
+    /* 深色系集合：figcaption 图标、图表重绘、业务侧判断"是不是深色"都用它 */
+    var THEME_DARK = ['dark', 'midnight', 'forest'];
+    var themePref = 'auto';
+    var themeSaved = false;     /* 本地是否已有用户选择 */
+    var themeBtns = [];         /* 已创建的标题栏按钮（换主题要一起换图标） */
+    var themeBtnHidden = false; /* 服务端 LWThemeButton = False */
+    var mqDark = (window.matchMedia ?
+        window.matchMedia('(prefers-color-scheme: dark)') : null);
+
+    function themeIsDark(name) { return THEME_DARK.indexOf(name) >= 0; }
+    function themeResolve(p) {
+        if (THEME_FIXED.indexOf(p) >= 0) return p;
+        return (mqDark && mqDark.matches) ? 'dark' : 'light';
+    }
+    function themeLabel(p) {
+        switch (p) {
+            case 'light': return lwT('亮色');
+            case 'dark': return lwT('深色');
+            case 'paper': return lwT('米黄纸张');
+            case 'mint': return lwT('护眼绿');
+            case 'midnight': return lwT('深蓝夜色');
+            case 'forest': return lwT('墨绿夜色');
+            case 'contrast': return lwT('高对比');
+            default: return lwT('跟随系统');
+        }
+    }
+    /* 图标用手绘 SVG：Unicode 的 ☀/☾ 在不同机器上字重、大小差很多，
+       自己画的三枚（太阳 / 月牙 / 半黑半白）在标题栏里尺寸一致。
+       形状只表达色系（浅色系=太阳、深色系=月牙、跟随系统=半圆），
+       具体是哪一套用强调色区分 —— 填充色跟着主题走，一眼能看出当前配色。 */
+    function themeIcon(p) {
+        var real = themeResolve(p);
+        var accent = 'var(--lw-accent)';
+        var s = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" ' +
+            'stroke="currentColor" stroke-width="1.3" stroke-linecap="round">';
+        if (p === 'auto') {
+            s += '<circle cx="8" cy="8" r="5.3"/>' +
+                '<path d="M8 2.7a5.3 5.3 0 0 1 0 10.6z" fill="' + accent + '" stroke="none"/>';
+        } else if (themeIsDark(real)) {
+            s += '<path d="M10.6 2.4a6 6 0 1 0 2.9 10.4A6.9 6.9 0 0 1 10.6 2.4z" ' +
+                'fill="' + accent + '" stroke="none"/>';
+        } else {
+            s += '<circle cx="8" cy="8" r="3.1" fill="' + accent + '" stroke="none"/>';
+            [[13.4, 8, 15.2, 8], [11.82, 11.82, 13.09, 13.09], [8, 13.4, 8, 15.2],
+             [4.18, 11.82, 2.91, 13.09], [2.6, 8, 0.8, 8], [4.18, 4.18, 2.91, 2.91],
+             [8, 2.6, 8, 0.8], [11.82, 4.18, 13.09, 2.91]].forEach(function (l) {
+                s += '<line x1="' + l[0] + '" y1="' + l[1] + '" x2="' + l[2] + '" y2="' + l[3] + '"/>';
+            });
+        }
+        return s + '</svg>';
+    }
+    /* 标题栏窗口按钮图标：最大化 / 还原 / 关闭。
+       与主题按钮同一套画法（内联 SVG，currentColor 跟随文字色）。
+       最大化不用"一个方框"：方框在标题栏里和"复选框/占位方块"没有区别
+       （原字形 ▢ 更是常被字体渲染成缺字方块）。改用标准的双向斜箭头：
+       向外指 = 放大铺满，向内收 = 还原窗口，13px 下方向仍然清楚。 */
+    function winIcon(kind) {
+        var s = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" ' +
+            'stroke="currentColor" stroke-width="1.35" stroke-linecap="round" ' +
+            'stroke-linejoin="round">';
+        if (kind === 'restore') {
+            /* 还原：两层窗口叠角（前窗左下、后窗右上），系统里"还原窗口"
+               就是这个形状 —— 与最大化的斜箭头形成明确对比，不会看混 */
+            s += '<rect x="2.6" y="5.4" width="8" height="8" rx="0.8"/>' +
+                '<path d="M5.2 5.4V3.3a0.9 0.9 0 0 1 0.9-0.9h6.3a0.9 0.9 0 0 1 0.9 0.9v6.3' +
+                'a0.9 0.9 0 0 1-0.9 0.9h-2.2"/>';
+        } else if (kind === 'close') {
+            s += '<path d="M3.6 3.6l8.8 8.8M12.4 3.6l-8.8 8.8"/>';
+        } else {
+            /* 最大化：两支斜向外扩的双箭头，箭头头部贴住外角 */
+            s += '<path d="M9.8 2.8h3.4v3.4"/><path d="M13.0 3.0L9.4 6.6"/>' +
+                '<path d="M6.2 13.2H2.8V9.8"/><path d="M3.0 13.0l3.6-3.6"/>';
+        }
+        return s + '</svg>';
+    }
+
+    function themeBtnSync(b) {
+        b.innerHTML = themeIcon(themePref);
+        b.title = lwT('配色：') + themeLabel(themePref) + lwT('（点击切换）');
+        b.classList.toggle('lw-on', themePref !== 'auto');
+    }
+    function themeApply(p, save) {
+        if (THEME_MODES.indexOf(p) < 0) p = 'auto';
+        themePref = p;
+        var real = themeResolve(p);
+        var de = document.documentElement;
+        de.setAttribute('data-lw-theme', real);
+        de.setAttribute('data-lw-theme-pref', p);
+        if (save) {
+            themeSaved = true;
+            try { localStorage.setItem(THEME_KEY, p); } catch (e) { }
+        }
+        for (var i = 0; i < themeBtns.length; i++) themeBtnSync(themeBtns[i]);
+        /* 图表是静态 SVG 字符串，颜色用类名承载 CSS 变量，换主题自动变色；
+           业务侧若自己画了 canvas/图片，可监听这个事件重绘。
+           detail.theme 是真实生效的配色名（'midnight' 这类具体值），
+           判断"是不是深色"请用 detail.dark —— 别写 theme === 'dark'，
+           深色系有三套。 */
+        try {
+            document.dispatchEvent(new CustomEvent('lw:themechange',
+                { detail: { theme: real, pref: p, dark: themeIsDark(real) } }));
+        } catch (e) { }
+        return real;
+    }
+    function themeInit() {
+        var saved = '';
+        try { saved = localStorage.getItem(THEME_KEY) || ''; } catch (e) { }
+        if (THEME_MODES.indexOf(saved) >= 0) themeSaved = true;
+        themeApply(themeSaved ? saved : 'auto', false);
+        if (mqDark) {
+            var onSys = function () { if (themePref === 'auto') themeApply('auto', false); };
+            if (mqDark.addEventListener) mqDark.addEventListener('change', onSys);
+            else if (mqDark.addListener) mqDark.addListener(onSys);
+        }
+        /* 别的标签页切了主题：storage 事件只在其它文档里派发，跟着改 */
+        window.addEventListener('storage', function (e) {
+            if (e.key !== THEME_KEY) return;
+            themeSaved = true;
+            themeApply(THEME_MODES.indexOf(e.newValue) >= 0 ? e.newValue : 'auto', false);
+        });
+    }
+
+    /* 显式设成 clBlack 的文字：深色主题下必须反色，否则黑底黑字。
+       其它显式色（clRed 之类）原样保留 —— 设计期选了颜色就该照做。 */
+    function themeFg(c) {
+        if (!c) return c;
+        var v = String(c).toLowerCase();
+        return (v === '#000000' || v === '#000') ? 'var(--lw-fg)' : c;
+    }
+
+    /* 立即落主题属性。lw-alpine.js 在 <head> 里同步加载（不带 defer），
+       执行时 body 还是空的 —— 所以不会出现"先白底再闪成深色"。 */
+    themeInit();
+
+    /* 给 HTMLFrame 里的自定义脚本 / 控制台用的简写入口 */
+    window.$lwTheme = {
+        set: function (p) { return themeApply(p, true); },
+        get: function () { return themePref; },
+        cycle: function () {
+            var i = THEME_MODES.indexOf(themePref);
+            return themeApply(THEME_MODES[(i + 1) % THEME_MODES.length], true);
+        }
+    };
+
+    var S = {
+        sid: null,
+        R: {},        /* nodeId -> Alpine.reactive 节点状态（模板绑定的唯一来源） */
+        E: {},        /* nodeId -> 包装 div（绝对定位） */
+        K: {},        /* nodeId -> kind（快速判定） */
+        EV: {},       /* nodeId -> ev 数组（是否有某事件） */
+        ND: {},       /* nodeId -> 最新节点 JSON（patch 对账/闭包外取最新值） */
+        P: {},        /* nodeId -> 父容器包装 el */
+        WIN: {},      /* nodeId -> 所属窗体 id（值快照按窗体收集） */
+        NAME: {},     /* name -> nodeId（绑定标签找编辑框用） */
+        kids: {},     /* 容器元素 -> [child nodeId] */
+        forms: {},    /* formId -> {el, body, f} */
+        sigs: {},     /* nodeId -> 结构指纹（列表/表格/树整块重建用） */
+        busy: 0,
+        pollAlive: false,
+        ws: null,
+        wsCb: null,
+        wsTimer: null,
+        wsConnecting: false,
+        tab: null,
+        primary: false,
+        multiTab: false,
+        after: -1,
+        inflight: 0,
+        tver: -1,     /* 已应用的树版本（增量补丁用；-1 = 未知，下帧要全量） */
+        nPatch: 0,    /* 收到并应用过的补丁数（诊断用，LW.stats() 可见） */
+        nFull: 0,     /* 收到过的全量树数 */
+    };
+
+    /* ---------------- 工具 ---------------- */
+
+    function log() {
+        if (window.console && console.log) {
+            console.log.apply(console, ['[lw]'].concat([].slice.call(arguments)));
+        }
+    }
+
+    function esc(s) {
+        if (s == null) return '';
+        return String(s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    /* LCL Caption 的加速键语义（&X 显示成带下划线的 X，Alt+X 触发；
+       && 是字面 &；孤立的 & 原样显示）。输入必须是「已经 esc 过」的
+       文本，返回 HTML —— 只给 x-html / innerHTML 的渲染点用。 */
+    function accHtml(es) {
+        if (!es || es.indexOf('&amp;') < 0) return es || '';
+        var out = '', i = 0;
+        while (i < es.length) {
+            if (es.charAt(i) === '&' && es.substr(i, 5) === '&amp;') {
+                if (es.substr(i + 5, 5) === '&amp;') {   /* && -> 字面 & */
+                    out += '&amp;'; i += 10; continue;
+                }
+                var ch = es.charAt(i + 5);
+                if (ch && ch !== '&' && ch !== '<' && ch !== '"') {
+                    out += '<u>' + ch + '</u>'; i += 6; continue;
+                }
+                out += '&amp;'; i += 5; continue;
+            }
+            out += es.charAt(i); i++;
+        }
+        return out;
+    }
+    /* 模板里的统一入口：原始 Caption 进，可安全注入的 HTML 出。
+       第二个参数是服务端的 acc 字段：只有 ShowAccelChar=False 时才是 0，
+       那种控件 Caption 里的 & 是字面量（LCL 不解析），这里也不解析。 */
+    window.$lwCap = function (s, on) {
+        return on === 0 ? esc(s) : accHtml(esc(s));
+    };
+    /* 带换行的文本（TLabel/TStaticText 的 Caption 可含 LineEnding）：
+       LCL DrawText 对 Caption 里的 CR/LF 是真的换行，与 WordWrap 无关；
+       HTML 里裸换行会被折叠成空格，必须在 esc 之后补成 <br>。
+       只给 label/static 的渲染点用 —— 按钮/页签/菜单等单行 Caption 不做。 */
+    window.$lwTxt = function (s, on) {
+        var es = esc(s).replace(/\r\n|\r|\n/g, '<br>');
+        return on === 0 ? es : accHtml(es);
+    };
+
+    /* Alt+字母 触发加速键：在可见的可交互元素里找 <u>k</u> 并点击。
+       LCL 的 &O 按钮 = Alt+O；同一套还覆盖复选框/单选钮的 label（点 label
+       就是切状态）、页签、菜单项。对话框与 Ext 部件也走这里，所以
+       .x-btn / .x-tab / .x-menu-item 一并列出。 */
+    var ACCEL_HOSTS = 'button, .x-btn, label, .lw-tab, .lw-menu-top, ' +
+        '.lw-menu-item, .lw-sm-item, .x-tab, .x-menu-item';
+    document.addEventListener('keydown', function (e) {
+        if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+        var k = (e.key || '').toLowerCase();
+        if (!k || k.length !== 1) return;
+        var els = document.querySelectorAll(ACCEL_HOSTS);
+        for (var i = 0; i < els.length; i++) {
+            var el = els[i];
+            if (el.disabled) continue;
+            if (el.getAttribute && el.getAttribute('aria-disabled') === 'true') continue;
+            if (!(el.offsetWidth || el.offsetHeight)) continue;
+            var us = el.querySelectorAll('u');
+            for (var j = 0; j < us.length; j++) {
+                if ((us[j].textContent || '').trim().toLowerCase() === k) {
+                    e.preventDefault();
+                    el.click();
+                    return;
+                }
+            }
+        }
+    });
+
+    function defer(fn, ms) { return setTimeout(fn, ms || 0); }
+
+    function api(path, data, cb, opts) {
+        opts = opts || {};
+        var o = { method: data ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json' } };
+        if (data) o.body = JSON.stringify(data);
+        if (!data && opts.params) {
+            var qs = Object.keys(opts.params).map(function (k) {
+                return encodeURIComponent(k) + '=' + encodeURIComponent(opts.params[k]);
+            }).join('&');
+            path += (path.indexOf('?') >= 0 ? '&' : '?') + qs;
+        }
+        fetch(path, o).then(function (r) {
+            return r.text().then(function (t) {
+                var d = null;
+                try { d = JSON.parse(t); } catch (e) { }
+                cb(d, d ? null : 'bad json');
+            });
+        }).catch(function (e) { cb(null, 'http error: ' + ((e && e.message) || e)); });
+    }
+
+    /* 模板表达式入口（Alpine 表达式里可访问的全局函数） */
+    window.$lwN = function (id) { return S.R[id]; };
+    window.$lwFire = function (id, ev, extra) { fire(id, ev, extra); };
+    window.$lwSet = function (id, k, v) { var r = S.R[id]; if (r) r[k] = v; };
+    window.$lwHas = function (id, ev) {
+        var evs = S.EV[id];
+        return !!(evs && evs.indexOf(ev) >= 0);
+    };
+
+    /* 图形验证码：点图换一张。
+       只改 img 的 src（在基础 URL 后追加 &r=时间戳），服务端见到 r 就
+       重新生成答案；不走事件、不占会话执行锁、零往返等待。
+       刻意不写 r.src —— 响应式变量留给服务端 Refresh 发起的版本号变化，
+       否则一次点击会同时触发"前端换图"和"补丁重设 src"，白白多拉一张。 */
+    window.$lwCaptchaTap = function (el) {
+        var s = String(el.getAttribute('src') || '');
+        var i = s.indexOf('&r=');
+        if (i >= 0) s = s.slice(0, i);
+        el.setAttribute('src', s + '&r=' + Date.now());
+    };
+
+    /* TComboBox 自绘下拉：展开时按输入框矩形算 fixed 坐标。
+       页签卡片 / 滚动区都会裁绝对定位，只有 fixed 能盖出去；
+       下方放不下就翻到上方，再不行贴边（下拉项多时最多显示 10 行再滚）。 */
+    window.$lwComboOpen = function (id, el) {
+        var r = S.R[id];
+        if (!r || r.dis || r.open) return;
+        var rc = el.getBoundingClientRect();
+        var n = (r.items || []).length;
+        var h = Math.min(n, 10) * 26 + 8;
+        var top = rc.bottom + 1;
+        if (top + h > window.innerHeight - 4) top = Math.max(4, rc.top - h - 1);
+        r.px = Math.round(rc.left);
+        r.py = Math.round(top);
+        r.pw = Math.round(rc.width);
+        r.open = true;
+    };
+
+    /* 选中一项：写回文本（服务端确认的树补丁随后会覆盖成权威值），
+       关弹层，并按 LCL 语义发 OnChange */
+    window.$lwComboPick = function (id, t) {
+        var r = S.R[id];
+        if (!r) return;
+        r.txt = (t == null ? '' : String(t));
+        r.open = false;
+        if ($lwHas(id, 'OnChange')) fire(id, 'OnChange', { val: r.txt });
+    };
+    /* 按控件名触发事件（TLWHTMLFrame 里的自定义 HTML 用）
+       帧内容里的脚本拿不到控件 id（id 是服务端序列化时分配的），
+       但控件名在设计期固定，用 S.NAME 映射过去即可。
+       用法：$lwFireByName('edtMenuKey', 'OnChange', { val: 'theory.score' })
+       走的是标准事件通道，响应里带整棵树，控件随之刷新 */
+    window.$lwFireByName = function (name, ev, extra) {
+        var id = S.NAME[String(name)];
+        if (id === undefined) return false;
+        fire(id, ev, extra);
+        return true;
+    };
+
+    /* ---------------- Alpine store（外壳 UI：遮罩/对话框/toast/忙） ---------------- */
+
+    document.addEventListener('alpine:init', function () {
+        Alpine.store('lw', {
+            busy: 0,
+            splash: lwT('正在创建服务端会话…'),
+            mask: { show: false, text: '' },
+            dialog: null,   /* 服务端对话框指令（见 showServerDialog） */
+            dlgText: '',    /* input/savefile 对话框的输入内容 */
+            toasts: []      /* {id,title,text} */
+        });
+    });
+
+    function st() { return window.Alpine ? Alpine.store('lw') : null; }
+
+    function showSplash(txt) { var s = st(); if (s) s.splash = txt || ''; }
+    function hideSplash() { var s = st(); if (s) s.splash = ''; }
+    function setBusy(on) {
+        var s = st(); if (!s) return;
+        if (on) s.busy++; else s.busy = Math.max(0, s.busy - 1);
+    }
+
+    /* ---------------- LCL Hint -> 浏览器提示（轻量 tooltip） ---------------- */
+
+    var tipEl = null, tipTimer = null;
+
+    function initTooltip() {
+        if (tipEl) return;
+        tipEl = document.createElement('div');
+        tipEl.className = 'lw-tip';
+        tipEl.style.display = 'none';
+        document.body.appendChild(tipEl);
+        document.addEventListener('mouseover', function (e) {
+            var t = e.target;
+            while (t && t !== document.body && !(t.getAttribute && t.getAttribute('data-lwhint'))) t = t.parentNode;
+            if (t && t !== document.body && t.getAttribute) {
+                var h = t.getAttribute('data-lwhint');
+                if (!h) { hideTip(); return; }
+                if (tipTimer) clearTimeout(tipTimer);
+                tipTimer = defer(function () { showTip(t, h); }, 400);
+            } else hideTip();
+        });
+        document.addEventListener('mousedown', hideTip);
+    }
+
+    function showTip(target, h) {
+        if (!tipEl) return;
+        tipEl.innerHTML = esc(h).replace(/\r?\n/g, '<br>');
+        tipEl.style.display = 'block';
+        var r = target.getBoundingClientRect();
+        var x = Math.min(r.left, window.innerWidth - tipEl.offsetWidth - 8);
+        var y = r.bottom + 6;
+        if (y + tipEl.offsetHeight > window.innerHeight) y = r.top - tipEl.offsetHeight - 6;
+        tipEl.style.left = Math.max(4, x) + 'px';
+        tipEl.style.top = Math.max(4, y) + 'px';
+    }
+
+    function hideTip() {
+        if (tipTimer) { clearTimeout(tipTimer); tipTimer = null; }
+        if (tipEl) tipEl.style.display = 'none';
+    }
+
+    function applyHint(id, node) {
+        var el = S.E[id];
+        if (!el) return;
+        if (node.hint) el.setAttribute('data-lwhint', String(node.hint));
+        else el.removeAttribute('data-lwhint');
+    }
+
+    /* ---------------- 文件上传 ---------------- */
+
+    function filterToAccept(f) {
+        var out = [], parts = String(f || '').split('|');
+        parts.forEach(function (p) {
+            p.split(';').forEach(function (m) {
+                m = m.trim();
+                if (m.indexOf('*.') === 0) {
+                    var e = m.substring(1).toLowerCase();
+                    if (out.indexOf(e) < 0) out.push(e);
+                }
+            });
+        });
+        return out.join(',');
+    }
+
+    function pickFile(node, onDone) {
+        var inp = document.createElement('input');
+        inp.type = 'file';
+        if (node.multiple) inp.multiple = true;
+        /* 相机控件固定只要图片；capture 决定唤起哪颗摄像头
+           （environment 后置 / user 前置）。桌面浏览器忽略 capture，
+           自动退化成普通的"选择图片文件"对话框。
+           注意：不用 getUserMedia —— 那条路要求安全上下文（HTTPS 或
+           localhost），手机走局域网 http 打开会被浏览器直接拒绝。 */
+        var acc = (node.kind === 'camera') ? 'image/*' : filterToAccept(node.filter);
+        if (acc) inp.accept = acc;
+        if (node.kind === 'camera' && node.capture) inp.setAttribute('capture', node.capture);
+        inp.style.position = 'fixed';
+        inp.style.left = '-9999px';
+        document.body.appendChild(inp);
+        function cleanup() { try { document.body.removeChild(inp); } catch (e) { } }
+        inp.onchange = function () {
+            var files = inp.files;
+            if (!files || !files.length) { cleanup(); return; }
+            if (node.kind === 'camera') showPhoto(node, files[0]);
+            uploadFiles(node, files, cleanup);
+        };
+        inp.click();
+    }
+
+    /* 桌面端能不能用"网页摄像头"（页面内取景）而不是系统相机 App：
+       · 指针必须是"精细"的（鼠标/触控板）—— 手机、平板一律走系统相机，
+         那里 capture 唤起的是原生相机，体验更好；
+       · 必须是安全上下文（HTTPS 或 localhost）—— getUserMedia 的硬性
+         前提，局域网 http 下 navigator.mediaDevices 直接是 undefined；
+       · 该控件还没失败过（失败一次就永久降级为选文件，免得每次点都弹
+         一次权限框；见 openWebcam 的 catch）。 */
+    function canUseWebcam(node) {
+        return !!(node && node.kind === 'camera' && !node._camFail &&
+            window.isSecureContext && navigator.mediaDevices &&
+            navigator.mediaDevices.getUserMedia && window.matchMedia &&
+            window.matchMedia('(hover: hover) and (pointer: fine)').matches);
+    }
+
+    /* 桌面端网页摄像头：getUserMedia 拿 MediaStream 自己画预览，点"拍摄"
+       把当前帧画进 canvas 转 JPEG，走与系统相机完全相同的上传通道。
+       为什么桌面不能也用 capture：桌面浏览器忽略该属性，只会弹文件框。
+       为什么失败后要置 _camFail：getUserMedia 的失败是异步的，catch 里再
+       调 input.click() 已经脱离用户手势，Chrome/Safari 会拒绝弹文件框，
+       所以只能"这次提示、下次点击直接走文件选择"。 */
+    function openWebcam(node) {
+        var constraints = {
+            audio: false,
+            video: {
+                facingMode: node.capture === 'user' ? 'user' : 'environment',
+                width: { ideal: 1280 }, height: { ideal: 720 }
+            }
+        };
+        navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
+            showWebcamDialog(node, stream);
+        }).catch(function (err) {
+            node._camFail = true;
+            var why = (err && err.name === 'NotFoundError')
+                ? lwT('这台电脑上没有检测到摄像头')
+                : (err && err.name === 'NotAllowedError')
+                    ? lwT('浏览器拒绝了摄像头权限（可点地址栏左侧的摄像头图标重新允许）')
+                    : lwT('当前页面不能调用摄像头（网页需为 HTTPS 或 localhost）');
+            showMsg(lwT('无法打开摄像头'),
+                esc(why) + '<br>' + lwT('已改为「选择图片文件」，再点一次拍照按钮即可。'));
+        });
+    }
+
+    function showWebcamDialog(node, stream) {
+        var wrap = document.createElement('div');
+        wrap.style.cssText = 'position:fixed;left:0;top:0;right:0;bottom:0;z-index:99999;' +
+            'background:rgba(0,0,0,.62);display:flex;align-items:center;justify-content:center;';
+        var box = document.createElement('div');
+        box.style.cssText = 'background:#fff;border-radius:10px;padding:12px;' +
+            'box-shadow:0 12px 40px rgba(0,0,0,.4);max-width:94vw;';
+        var vid = document.createElement('video');
+        vid.autoplay = true;
+        vid.playsInline = true;
+        vid.muted = true;
+        vid.srcObject = stream;
+        vid.style.cssText = 'display:block;max-width:86vw;max-height:64vh;' +
+            'border-radius:6px;background:#000;' +
+            (node.capture === 'user' ? 'transform:scaleX(-1);' : '');
+        var bar = document.createElement('div');
+        bar.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;margin-top:10px;';
+        var bFile = document.createElement('button');
+        bFile.type = 'button'; bFile.className = 'lw-btn'; bFile.textContent = lwT('选择图片');
+        var bCancel = document.createElement('button');
+        bCancel.type = 'button'; bCancel.className = 'lw-btn'; bCancel.textContent = lwT('取消');
+        var bShot = document.createElement('button');
+        bShot.type = 'button'; bShot.className = 'lw-btn lw-cam'; bShot.textContent = lwT('拍摄');
+        bar.appendChild(bFile); bar.appendChild(bCancel); bar.appendChild(bShot);
+        box.appendChild(vid); box.appendChild(bar); wrap.appendChild(box);
+        document.body.appendChild(wrap);
+
+        function stop() {
+            try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { }
+            try { document.body.removeChild(wrap); } catch (e) { }
+        }
+        bCancel.onclick = stop;
+        wrap.onclick = function (e) { if (e.target === wrap) stop(); };
+        /* 想在桌面上选已有图片：这里仍在用户手势里，能正常弹文件框 */
+        bFile.onclick = function () { stop(); pickFile(node); };
+        bShot.onclick = function () {
+            var w = vid.videoWidth, h = vid.videoHeight;
+            if (!w || !h) { showMsg(lwT('画面还没准备好'), lwT('摄像头刚打开，稍等一下再拍。')); return; }
+            var scale = Math.min(1, 1600 / Math.max(w, h));  /* 长边压到 1600 以内 */
+            var cv = document.createElement('canvas');
+            cv.width = Math.round(w * scale);
+            cv.height = Math.round(h * scale);
+            cv.getContext('2d').drawImage(vid, 0, 0, cv.width, cv.height);
+            stop();
+            cv.toBlob(function (blob) {
+                if (!blob) return;
+                var file = new File([blob], 'photo-' + Date.now() + '.jpg',
+                    { type: 'image/jpeg' });
+                showPhoto(node, file);
+                uploadFiles(node, [file], null);
+            }, 'image/jpeg', 0.9);
+        };
+    }
+
+    /* 相机本地回显：拍完立刻把 Blob 显示到 TLWCamera.PreviewImage 指定的
+       TImage 上。走本地 ObjectURL 而不是等服务端补丁 —— 手机照片几 MB，
+       转 base64 塞进组件树会让之后每次增量补丁都白跑一遍。
+       服务端那边只有落盘 + OnCapture，组件树里的 image.src 始终为空，
+       所以这里直接改 DOM 不会被增量协调冲掉（src 变了才重设）。 */
+    function showPhoto(node, file) {
+        var pid = node.preview;
+        if (!pid || !file) return;
+        var w = S.E[pid];
+        var img = w && w.querySelector('img.lw-img');
+        if (!img) return;
+        try {
+            var url = URL.createObjectURL(file);
+            img.onload = function () { try { URL.revokeObjectURL(url); } catch (e) { } };
+            img.onerror = function () { try { URL.revokeObjectURL(url); } catch (e) { } };
+            /* 标记属性：CSS 里用 !important 压过 :style 绑定的
+               visibility:hidden（src 为空时 TImage 就是隐藏的） */
+            img.setAttribute('data-lw-photo', '1');
+            img.src = url;
+        } catch (e) { }
+    }
+
+    function uploadFiles(node, files, done) {        var fd = new FormData();
+        for (var i = 0; i < files.length; i++) fd.append('f' + i, files[i], files[i].name);
+        var isCam = (node.kind === 'camera');
+        var base = node.caption || (isCam ? lwT('拍照…') : lwT('上传文件…'));
+        var busyWord = isCam ? lwT('保存中 ') : lwT('上传中 ');
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', BASE + 'lw/api/upload?sid=' + encodeURIComponent(S.sid || '') +
+            '&id=' + node.id, true);
+        xhr.upload.onprogress = function (e) {
+            if (e.lengthComputable) setCaption(node.id, busyWord + Math.round(e.loaded * 100 / e.total) + '%');
+        };
+        function finish() {
+            setBusy(false);
+            setCaption(node.id, base);
+            if (done) done();
+        }
+        xhr.onload = function () {
+            var d = null;
+            try { d = JSON.parse(xhr.responseText); } catch (e) { }
+            finish();
+            if (d && d.ok) applyPayload(d);
+            else showMsg(lwT('上传失败'), esc((d && d.err) || ('HTTP ' + xhr.status)));
+        };
+        xhr.onerror = function () { finish(); showMsg(lwT('上传失败'), lwT('网络错误')); };
+        setBusy(true);
+        xhr.send(fd);
+    }
+
+    function setCaption(id, txt) {
+        var r = S.R[id];
+        if (r) r.cap = txt;
+        var el = S.E[id];
+        if (el) {
+            var b = el.querySelector('button, .lw-btn');
+            if (b) b.innerHTML = accHtml(esc(txt));
+        }
+    }
+
+    /* ---------------- 事件回传 ---------------- */
+
+    /* 会承载"用户输入值"的控件类型（与服务端 LWIsSnapField 对应） */
+    var FIELD_KINDS = ['edit', 'maskedit', 'memo', 'spin', 'floatspin', 'combo',
+        'checkbox', 'radio', 'dbedit', 'dbmemo', 'dbcheckbox', 'dbcombo',
+        'dblookup', 'dateedit', 'timeedit'];
+
+    /* 从 DOM 读控件当前值（正在编辑的输入框以 DOM 为准） */
+    function collectVal(id) {
+        var kind = S.K[id], el = S.E[id];
+        if (!el || !kind) return '';
+        try {
+            var inp = el.querySelector('input,textarea,select');
+            if (kind === 'checkbox' || kind === 'dbcheckbox' || kind === 'radio') {
+                return (inp && inp.checked) ? '1' : '0';
+            }
+            if (inp) return inp.value == null ? '' : String(inp.value);
+        } catch (e) { }
+        return '';
+    }
+
+    /* 同一窗体里所有输入控件的当前值：{控件 id: 值} */
+    function formVals(nodeId) {
+        var winId = S.WIN[nodeId];
+        if (!winId) return null;
+        var out = {}, any = false;
+        Object.keys(S.K).forEach(function (id) {
+            if (S.WIN[id] !== winId) return;
+            if (FIELD_KINDS.indexOf(S.K[id]) < 0) return;
+            out[id] = collectVal(id);
+            any = true;
+        });
+        return any ? out : null;
+    }
+
+    function applyEventResp(resp, err) {
+        if (err) { log('event failed', err); return; }
+        if (resp && resp.ok) {
+            if (resp.patch) applyPatch(resp);
+            else applyPayload(resp);
+        }
+        else if (resp && resp.err) log('event err', resp.err);
+    }
+
+    /* HTTP 兜底发送（与 Ext 版同一语义：超时 > 服务端模态等待上限 180s） */
+    function sendEventHttp(payload) {
+        setBusy(true);
+        S.inflight++;
+        var ctrl = new AbortController();
+        var to = setTimeout(function () { try { ctrl.abort(); } catch (e) { } }, 200000);
+        fetch(BASE + 'lw/api/event', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: ctrl.signal
+        }).then(function (r) { return r.text(); }).then(function (t) {
+            clearTimeout(to);
+            S.inflight--;
+            setBusy(false);
+            var d = null;
+            try { d = JSON.parse(t); } catch (e) { }
+            applyEventResp(d, d ? null : 'bad json');
+        }).catch(function () {
+            clearTimeout(to);
+            S.inflight--;
+            setBusy(false);
+            applyEventResp(null, 'http error');
+        });
+    }
+
+    function fire(id, ev, extra) {
+        if (!S.sid) return;
+        var node = S.ND[id];
+        var payload = { sid: S.sid, id: id, ev: ev, tab: S.tab };
+        /* 增量补丁：patch=1 声明本前端懂 ops，tver 是已应用的树版本。
+           服务端 --patch=0 或没带这两个字段时一律回全量 —— 所以老缓存
+           js、Ext 渲染层不会因为服务端开了补丁而白屏 */
+        payload.patch = 1;
+        if (S.tver >= 0) payload.tver = S.tver;
+        if (extra) Object.keys(extra).forEach(function (k) { payload[k] = extra[k]; });
+        /* 带上窗体值快照：没挂 OnChange 的编辑框平时不回传值，服务端只有
+           初始 Text —— 点"登录"会拿旧密码去校验。 */
+        if (!payload.vals) {
+            var snap = formVals(id);
+            if (snap) payload.vals = snap;
+        }
+        /* WebSocket 已连接：事件走 WS 帧（与 POST /lw/api/event 同构）。
+           同一时刻只允许一个在途事件；连接断了转 HTTP 重发；
+           挂在服务端对话框上的事件最长等 190s（180s + 余量）。 */
+        if (S.ws && S.ws.readyState === 1 && !S.wsCb) {
+            setBusy(true);
+            S.inflight++;
+            var cbSelf = function (resp, err) {
+                if (S.wsTimer) { clearTimeout(S.wsTimer); S.wsTimer = null; }
+                S.inflight--;
+                setBusy(false);
+                if (err) { sendEventHttp(payload); return; }
+                applyEventResp(resp, null);
+            };
+            S.wsCb = cbSelf;
+            var waited = 0;
+            var tick = function () {
+                if (S.wsCb !== cbSelf) return;
+                if (S.ws && S.ws.readyState === 1 && waited < 190000) {
+                    waited += 5000;
+                    S.wsTimer = defer(tick, 5000);
+                    return;
+                }
+                S.wsCb = null;
+                S.inflight--;
+                setBusy(false);
+                try { if (S.ws) S.ws.close(); } catch (e0) { }
+                sendEventHttp(payload);
+            };
+            S.wsTimer = defer(tick, 5000);
+            try { S.ws.send(JSON.stringify(payload)); }
+            catch (e) {
+                if (S.wsTimer) { clearTimeout(S.wsTimer); S.wsTimer = null; }
+                S.wsCb = null; S.inflight--; setBusy(false);
+                sendEventHttp(payload);
+            }
+            return;
+        }
+        sendEventHttp(payload);
+    }
+
+    /* ---------------- 样式 ---------------- */
+
+    function styleOf(node) {
+        var f = node.font || {}, st = '';
+        if (f.size) st += 'font-size:' + Math.round(f.size * 4 / 3) + 'px;';
+        if (f.name && f.name !== 'default') st += 'font-family:' + f.name + ';';
+        if (f.style) {
+            if (f.style.indexOf('b') >= 0) st += 'font-weight:bold;';
+            if (f.style.indexOf('i') >= 0) st += 'font-style:italic;';
+            if (f.style.indexOf('u') >= 0) st += 'text-decoration:underline;';
+        }
+        if (node.fg) st += 'color:' + themeFg(node.fg) + ';';
+        return st;
+    }
+
+    function fieldStyleOf(node) {
+        return styleOf(node);
+    }
+
+    /* ---------------- 节点状态 ----------------
+       每个节点一个 Alpine.reactive 对象，模板指令只读它；
+       补丁轮改状态，Alpine 自动把 DOM 更新到位。 */
+
+    function stateOf(node) {
+        var id = node.id, r = S.R[id];
+        if (r) return r;
+        var k = node.kind;
+        r = Alpine.reactive({
+            dis: node.enabled === false,
+            vis: node.visible !== false,
+            cap: node.caption != null ? String(node.caption) : '',
+            txt: node.text != null ? String(node.text) : '',
+            acc: node.acc === 0 ? 0 : 1,
+            chk: !!node.checked,
+            ind: node.state === 2,
+            down: !!node.down,
+            val: node.value != null ? node.value : 0,
+            idx: node.index != null ? node.index : -1,
+            iso: node.iso || '',
+            src: node.src || '',
+            items: node.items || [],
+            keys: (k === 'dbradiogroup') ? (node.values || []) : (node.keys || []),
+            checked: Array.isArray(node.checked) ? node.checked.slice() : [],
+            cols: node.cols || [],
+            rows: node.rows || [],
+            active: node.active || 0,
+            /* dbgrid 扩展状态 */
+            recno: node.recno || 0,
+            page: node.page || 1,
+            pages: node.pages || 0,
+            ftext: node.filtertext || '',
+            pgtext: '',
+            sumtext: '',
+            /* valeditor 表头 */
+            t0: '', t1: '',
+            /* dblookup 当前键 */
+            key: node.key != null ? String(node.key) : '',
+            /* combo 自绘弹层（open=是否展开，px/py/pw=展开时的 fixed 坐标） */
+            open: false, px: 0, py: 0, pw: 0
+        });
+        if (k === 'combo') {
+            r.txt = node.text || (node.items && node.index >= 0 ? node.items[node.index] : '');
+        }
+        /* TStaticText 早先的服务端只发 caption（没有 text），这里兜一层，
+           避免旧服务端配新客户端时静态文本又变回空 div */
+        if (k === 'static' && node.text == null) r.txt = node.caption != null ? String(node.caption) : '';
+        if (k === 'dbgrid') {
+            r.pgtext = pagerTextOf(node);
+            r.sumtext = node.summary ? summaryTextOf(node.summary) : '';
+        }
+        if (k === 'valeditor') {
+            r.values = (node.values || []).slice();
+            var ts = String(node.titles || '键,值').split(',');
+            r.t0 = ts[0] || 'Key'; r.t1 = ts[1] || 'Value';
+        }
+        S.R[id] = r;
+        return r;
+    }
+
+    /* ---------------- 仪表盘（TLWGauge）：纯 SVG ---------------- */
+
+    function gaugeSig(n) {
+        return [n.value, n.min, n.max, n.unit, n.warn, n.danger, n.w, n.h].join('|');
+    }
+
+    function gaugeSvg(n) {
+        var w = n.w || 220, h = n.h || 140;
+        var min = (n.min == null ? 0 : n.min);
+        var max = (n.max == null ? 100 : n.max);
+        if (max <= min) max = min + 1;
+        var v = n.value == null ? min : n.value;
+        if (v < min) v = min;
+        if (v > max) v = max;
+        var f = (v - min) / (max - min);
+
+        var cx = w / 2, cy = h * 0.8;
+        var r = Math.max(20, Math.min(w * 0.44, h * 0.6));
+        var col = '#188038';
+        if (n.danger && f >= n.danger) col = '#d93025';
+        else if (n.warn && f >= n.warn) col = '#f29900';
+
+        function pt(frac, rad) {
+            var a = Math.PI + Math.PI * frac;
+            return [cx + rad * Math.cos(a), cy + rad * Math.sin(a)];
+        }
+        function arc(f0, f1, rad) {
+            var a = pt(f0, rad), b = pt(f1, rad);
+            /* large-arc 恒为 0：值弧角最大 180°，按给定半径画才与轨道重合 */
+            return 'M ' + a[0].toFixed(1) + ' ' + a[1].toFixed(1) +
+                ' A ' + rad.toFixed(1) + ' ' + rad.toFixed(1) + ' 0 0 1 ' +
+                b[0].toFixed(1) + ' ' + b[1].toFixed(1);
+        }
+
+        var parts = [];
+        parts.push('<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" xmlns="http://www.w3.org/2000/svg">');
+        parts.push('<path d="' + arc(0, 1, r) + '" fill="none" class="lw-ch-track" stroke-width="10" stroke-linecap="round"/>');
+        if (f > 0.001)
+            parts.push('<path d="' + arc(0, f, r) + '" fill="none" stroke="' + col + '" stroke-width="10" stroke-linecap="round"/>');
+        for (var i = 0; i <= 10; i++) {
+            var a1 = pt(i / 10, r - 21), a2 = pt(i / 10, r - 15);
+            parts.push('<line x1="' + a1[0].toFixed(1) + '" y1="' + a1[1].toFixed(1) +
+                '" x2="' + a2[0].toFixed(1) + '" y2="' + a2[1].toFixed(1) +
+                '" class="lw-ch-grid" stroke-width="1"/>');
+        }
+        var tip = pt(f, r * 0.72);
+        parts.push('<line x1="' + cx + '" y1="' + cy + '" x2="' + tip[0].toFixed(1) +
+            '" y2="' + tip[1].toFixed(1) + '" stroke="' + col + '" stroke-width="3" stroke-linecap="round"/>');
+        parts.push('<circle cx="' + cx + '" cy="' + cy + '" r="5" fill="' + col + '"/>');
+        var fs = Math.max(13, Math.min(w / 6, h / 4.2));
+        var txt = (Math.round(v * 100) / 100) + (n.unit || '');
+        parts.push('<text x="' + cx + '" y="' + (cy - 12) + '" text-anchor="middle" font-size="' +
+            fs.toFixed(0) + '" font-weight="bold" fill="' + col + '">' + esc(txt) + '</text>');
+        if (n.caption)
+            parts.push('<text x="' + cx + '" y="14" text-anchor="middle" font-size="12" class="lw-ch-text">' + esc(n.caption) + '</text>');
+        parts.push('</svg>');
+        return parts.join('');
+    }
+
+    /* ---------------- 图表（TLWChart）：内置 SVG 渲染器 ----------------
+       不依赖 Ext charts 包；折线/柱状/饼图三种类型，配色与 Ext 版一致观感 */
+
+    function chartSig(n) {
+        return JSON.stringify([n.charttype, n.title, n.categories, n.series]);
+    }
+
+    var CHART_COLORS = ['#2a7de1', '#e8743b', '#3f9ae0', '#188038', '#f29900',
+        '#a259d9', '#d9534f', '#17a2a2'];
+
+    function chartSvg(n) {
+        var w = n.w || 300, h = n.h || 220;
+        var cats = n.categories || [];
+        var series = n.series || [];
+        var pad = { l: 46, r: 12, t: (n.title ? 26 : 10), b: 42 };
+        var parts = ['<svg width="100%" height="100%" viewBox="0 0 ' + w + ' ' + h +
+            '" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">'];
+
+        /* 颜色用 class 承载（SVG 的 fill 属性不认 var()，换主题要能自动变色） */
+        function textEl(x, y, s, size, anchor, cls, extra) {
+            return '<text x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" text-anchor="' + (anchor || 'middle') +
+                '" font-size="' + (size || 11) + '" class="' + (cls || 'lw-ch-text') + '"' + (extra || '') + '>' + esc(s) + '</text>';
+        }
+
+        if (n.title) parts.push(textEl(w / 2, 16, n.title, 13, 'middle', 'lw-ch-title'));
+
+        if (n.charttype === 'pie') {
+            var s0 = series[0] || { values: [] };
+            var vals = cats.map(function (c, i) { return parseFloat((s0.values || [])[i]) || 0; });
+            var total = vals.reduce(function (a, b) { return a + b; }, 0);
+            var cx = pad.l + (w - pad.l - pad.r) / 2 - 30, cy = pad.t + (h - pad.t - pad.b) / 2;
+            var r = Math.max(20, Math.min((w - pad.l - pad.r) / 2 - 30, (h - pad.t - pad.b) / 2 - 10));
+            var a0 = -Math.PI / 2;
+            if (total <= 0) total = 1;
+            vals.forEach(function (v, i) {
+                var frac = v / total, a1 = a0 + frac * Math.PI * 2;
+                if (frac <= 0) { a0 = a1; return; }
+                var large = (a1 - a0) > Math.PI ? 1 : 0;
+                var x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+                var x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+                parts.push('<path d="M ' + cx + ' ' + cy + ' L ' + x0.toFixed(1) + ' ' + y0.toFixed(1) +
+                    ' A ' + r.toFixed(1) + ' ' + r.toFixed(1) + ' 0 ' + large + ' 1 ' + x1.toFixed(1) + ' ' + y1.toFixed(1) +
+                    ' Z" fill="' + CHART_COLORS[i % CHART_COLORS.length] + '" class="lw-ch-sep" stroke-width="1"/>');
+                var am = (a0 + a1) / 2, lx = cx + (r + 12) * Math.cos(am), ly = cy + (r + 12) * Math.sin(am);
+                parts.push(textEl(lx, ly + 4, cats[i] || '', 11, am > Math.PI / 2 || am < -Math.PI / 2 ? 'end' : 'start'));
+                a0 = a1;
+            });
+            /* 图例（右侧） */
+            var ly0 = pad.t + 8;
+            cats.forEach(function (c, i) {
+                parts.push('<rect x="' + (w - 78) + '" y="' + ly0 + '" width="10" height="10" fill="' + CHART_COLORS[i % CHART_COLORS.length] + '"/>');
+                parts.push(textEl(w - 64, ly0 + 9, c, 11, 'start'));
+                ly0 += 16;
+            });
+            parts.push('</svg>');
+            return parts.join('');
+        }
+
+        /* 折线 / 柱状：统一坐标轴 */
+        var iw = w - pad.l - pad.r, ih = h - pad.t - pad.b;
+        var maxv = 0;
+        series.forEach(function (s) { (s.values || []).forEach(function (v) { var f = parseFloat(v) || 0; if (f > maxv) maxv = f; }); });
+        if (maxv <= 0) maxv = 10;
+        var nice = Math.pow(10, Math.floor(Math.log(maxv) / Math.LN10));
+        maxv = Math.ceil(maxv / nice) * nice;
+        /* 网格 + y 轴刻度 */
+        for (var g = 0; g <= 4; g++) {
+            var gy = pad.t + ih - ih * g / 4;
+            parts.push('<line x1="' + pad.l + '" y1="' + gy.toFixed(1) + '" x2="' + (w - pad.r) + '" y2="' + gy.toFixed(1) +
+                '" class="lw-ch-grid" stroke-width="1"/>');
+            parts.push(textEl(pad.l - 6, gy + 4, String(Math.round(maxv * g / 4 * 100) / 100), 10, 'end', 'lw-ch-axis'));
+        }
+        var ncat = Math.max(cats.length, 1);
+        var step = iw / ncat;
+        cats.forEach(function (c, i) {
+            parts.push(textEl(pad.l + step * i + step / 2, h - pad.b + 14, c, 11));
+        });
+        if (n.charttype === 'bar') {
+            var bw = Math.max(4, step * 0.6 / Math.max(series.length, 1));
+            series.forEach(function (s, si) {
+                (s.values || []).forEach(function (v, i) {
+                    var f = parseFloat(v) || 0;
+                    var bh = ih * f / maxv;
+                    var x = pad.l + step * i + step / 2 - bw * series.length / 2 + bw * si;
+                    parts.push('<rect x="' + x.toFixed(1) + '" y="' + (pad.t + ih - bh).toFixed(1) +
+                        '" width="' + bw.toFixed(1) + '" height="' + bh.toFixed(1) +
+                        '" fill="' + CHART_COLORS[si % CHART_COLORS.length] + '"/>');
+                });
+            });
+        } else {
+            series.forEach(function (s, si) {
+                var d = '', first = true;
+                (s.values || []).forEach(function (v, i) {
+                    var f = parseFloat(v) || 0;
+                    var x = pad.l + step * i + step / 2;
+                    var y = pad.t + ih - ih * f / maxv;
+                    d += (first ? 'M ' : ' L ') + x.toFixed(1) + ' ' + y.toFixed(1);
+                    first = false;
+                    parts.push('<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="3" fill="' + CHART_COLORS[si % CHART_COLORS.length] + '"/>');
+                });
+                if (d) parts.push('<path d="' + d + '" fill="none" stroke="' + CHART_COLORS[si % CHART_COLORS.length] +
+                    '" stroke-width="2"/>');
+            });
+        }
+        /* 多系列图例（底部） */
+        if (series.length > 1) {
+            var lx = pad.l;
+            series.forEach(function (s, si) {
+                parts.push('<rect x="' + lx + '" y="' + (h - 16) + '" width="10" height="10" fill="' + CHART_COLORS[si % CHART_COLORS.length] + '"/>');
+                parts.push(textEl(lx + 14, h - 7, s.name || ('S' + (si + 1)), 11, 'start'));
+                lx += 20 + ((s.name || ('S' + (si + 1))).length) * 12;
+            });
+        }
+        parts.push('</svg>');
+        return parts.join('');
+    }
+
+    /* ---------------- HTMLFrame 里的 <script> 重放 ---------------- */
+
+    function execHtmlScripts(el) {
+        if (!el) return;
+        var list = [];
+        try { list = el.querySelectorAll('script'); } catch (e) { return; }
+        for (var i = 0; i < list.length; i++) {
+            try {
+                (0, eval)(list[i].textContent || list[i].innerHTML || '');
+            } catch (e2) {
+                log('htmlframe script error', e2);
+            }
+        }
+    }
+
+    /* ---------------- 列表行点击（listbox 族） ----------------
+       回传序号：服务端 TListBox 分支文本找不到时按数字解释（兼容两者） */
+
+    window.$lwLbClick = function (id, i, how) {
+        var r = S.R[id];
+        if (!r) return;
+        r.idx = i;
+        var txt = (r.items || [])[i];
+        txt = txt == null ? '' : String(txt);
+        if ($lwHas(id, 'OnClick')) fire(id, 'OnClick', { val: String(i) });
+        if ($lwHas(id, 'OnSelect')) fire(id, 'OnSelect', { val: txt });
+        if (how === 'sel' && $lwHas(id, 'OnChange')) fire(id, 'OnChange', { val: String(i) });
+    };
+
+    /* dblookuplist/dblistbox 的 OnChange 带 KeyField 值 */
+    window.$lwLkClick = function (id, i) {
+        var r = S.R[id];
+        if (!r) return;
+        r.idx = i;
+        var k = (r.keys || [])[i];
+        if ($lwHas(id, 'OnClick')) fire(id, 'OnClick', { val: String(i) });
+        if ($lwHas(id, 'OnChange')) fire(id, 'OnChange', { val: k == null ? '' : String(k) });
+    };
+
+    /* 取色器 ------------------------------------------------------------------
+       色块的点击入口**不再**是 JS 造一个 1px 透明 input 再程序化 click()。
+       那条路桌面 Chromium 认（坑 166 时就是这么过的），移动浏览器普遍不认：
+       它把"脚本触发的 click"当成非用户手势，直接忽略 —— 手机上点了色块
+       什么都没弹（坑 181）。现在色块内部常驻一个真实的 <input type=color>
+       （透明铺满色块），用户手指直接点到它，任何浏览器都会弹原生调色板；
+       桌面点击同样命中它，两端行为一致。 */
+    function lwApplyColor(id, hex) {
+        hex = String(hex || '').toUpperCase();
+        if (!hex) return;
+        var r = S.R[id];
+        if (r) r.txt = hex;
+        if (S.ND[id]) S.ND[id].value = hex;
+        var el = S.E[id];
+        if (!el) return;
+        var sw = el.querySelector('.lw-swatch');
+        if (sw) sw.style.background = hex;
+        var inp = el.querySelector('.lw-cp-inp');
+        if (inp && String(inp.value).toUpperCase() !== hex) inp.value = hex;
+    }
+
+    /* 色块内 input 的 @input：拖动/确认时连续回发（与原实现一致） */
+    window.$lwPickColorChange = function (id, ev) {
+        var hex = ev && ev.target ? ev.target.value : '';
+        lwApplyColor(id, hex);
+        fire(id, 'OnColorChange', { val: String(hex || '').toUpperCase() });
+    };
+
+    /* 兼容入口：模板里写过 @click="$lwPickColor(id)" 的地方仍可用。
+       优先 showPicker()（Chromium 99+ / Safari 16+，明确要求由脚本唤起
+       原生选择器），不支持或被拒时退回 click()。 */
+    window.$lwPickColor = function (id) {
+        var el = S.E[id];
+        var inp = el ? el.querySelector('.lw-cp-inp') : null;
+        if (!inp) {
+            inp = document.createElement('input');
+            inp.type = 'color';
+            inp.value = (S.ND[id] && S.ND[id].value) || '#ffffff';
+            var r = el ? el.getBoundingClientRect() : null;
+            var w = r && r.width > 8 ? Math.round(r.width) : 32;
+            var h = r && r.height > 8 ? Math.round(r.height) : 32;
+            inp.style.cssText = 'position:fixed;left:' +
+                (r ? Math.round(Math.min(Math.max(0, r.left), window.innerWidth - w)) : 40) +
+                'px;top:' +
+                (r ? Math.round(Math.min(Math.max(0, r.top), window.innerHeight - h)) : 40) +
+                'px;width:' + w + 'px;height:' + h +
+                'px;opacity:0.01;border:0;padding:0;margin:0;background:transparent';
+            inp.oninput = function () { lwApplyColor(id, inp.value); };
+            inp.onchange = function () {
+                try { document.body.removeChild(inp); } catch (e) { }
+            };
+            document.body.appendChild(inp);
+        }
+        var opened = false;
+        if (typeof inp.showPicker === 'function') {
+            try { inp.showPicker(); opened = true; } catch (e) { opened = false; }
+        }
+        if (!opened) { try { inp.click(); } catch (e) { } }
+    };
+
+    /* ---------------- 速度按钮组 ---------------- */
+
+    window.$lwBtnClick = function (id, ev) {
+        var r = S.R[id], n = S.ND[id];
+        if (!r || !n) return;
+        if (n.kind === 'speedbutton' && n.groupindex > 0) {
+            /* 互斥组：按下后不允许再点弹起（LCL 语义） */
+            if (!r.down) {
+                r.down = true;
+                fire(id, ev || 'OnClick');
+            }
+        } else if (n.down != null && n.kind !== 'speedbutton') {
+            /* TToggleBox：可保持按下，也允许点起（allowup） */
+            r.down = n.allowup === false ? true : !r.down;
+            fire(id, ev || 'OnClick');
+        } else {
+            fire(id, ev || 'OnClick');
+        }
+    };
+
+    /* ---------------- 页签切换 ---------------- */
+
+    window.$lwTabClick = function (id, i) {
+        /* tabs 模板不引用响应式状态，stateOf 可能还没建 —— 这里兜底建一次 */
+        var r = S.R[id] || (S.ND[id] ? stateOf(S.ND[id]) : null);
+        if (!r || r.active === i) return;
+        r.active = i;
+        /* 页签条是静态 innerHTML（没有 Alpine 绑定），点了不会自己重画：
+           以前只切了卡片，出现"内容换到新页、高亮还停在旧页签"（坑 133）。
+           ND 里的 active 也一并改，这样后续补丁能据此判断要不要重建页签条 */
+        if (S.ND[id]) S.ND[id].active = i;
+        paintTabbar(id, i);
+        applyTabActive(id, i);
+        /* OnChange 无条件回发：服务端 LWApplyValue 会先把 ActivePage 切过去，
+           没挂 handler 时 RTTI 调用是空操作。不回发的话服务端 ActivePage
+           停在第 0 页，之后任何一次重下树/重连都会把页签弹回第一页 */
+        fire(id, 'OnChange', { val: String(i) });
+    };
+
+    /* 页签条高亮：只切 class，不重建 DOM（避免点击时页签条闪一下）。
+       tabs 用 lw-tabbar-<id>，tabctl 用 lw-tabbar2-<id>，两边共用。 */
+    function paintTabbar(id, active) {
+        var ids = ['lw-tabbar-' + id, 'lw-tabbar2-' + id];
+        for (var k = 0; k < ids.length; k++) {
+            var bar = document.getElementById(ids[k]);
+            if (!bar) continue;
+            var tabs = bar.querySelectorAll('.lw-tab');
+            for (var i = 0; i < tabs.length; i++) {
+                if (i === active) tabs[i].classList.add('lw-active');
+                else tabs[i].classList.remove('lw-active');
+            }
+        }
+    }
+
+    /* 把卡片可见性同步到 active（服务端改 ActivePage / 用户点标签共用） */
+    function applyTabActive(id, active) {
+        var el = S.E[id];
+        if (!el) return;
+        /* 页签卡片 = tabs-body 的直接子节点（sheet 的 .lw-n 包装层）；
+           模板结构是 .lw-n > .lw-tabs > .lw-tabbar + .lw-tabs-body，
+           老选择器 ':scope > .lw-tabs-body > .lw-tabcard' 永远匹配不到 */
+        var cards = el.querySelectorAll(':scope > .lw-tabs > .lw-tabs-body > [data-lwid]');
+        for (var i = 0; i < cards.length; i++) {
+            cards[i].style.display = (i === active) ? '' : 'none';
+        }
+    }
+
+    /* ---------------- 节点工厂 ----------------
+       每个节点 = 绝对定位包装 div + kind 专属内部标记（Alpine 指令）。
+       事件统一用 $lwFire 回传；是否绑定看服务端下发的 ev 列表。 */
+
+    var CONTAINER_KINDS = ['form', 'panel', 'groupbox', 'scrollbox', 'frame', 'tabs', 'tabsheet', 'tabctl', 'toolbar'];
+    function isContainer(node) { return CONTAINER_KINDS.indexOf(node.kind) >= 0; }
+
+    /* 容器的"内容容器"：控件子节点真正挂着的那个元素。
+       不能用裸 querySelector('.lw-kids') 一把抓 —— 它是深度优先首匹配：
+       TPageControl（tabs）自己没有 .lw-kids（页签页在 .lw-tabs-body 里），
+       却会命中第一个页签页内部的 .lw-kids（隐藏、尺寸 0），拿它当 body
+       跑 runLayout 直接早退，页签页的拉伸重排就永远轮不到（坑 151）。
+       tabs/tabctl 的差异：tabctl 客户区是公共一块（.lw-kids 在 tabs-body
+       里），tabs 每页独立（.lw-tabs-body 的直接子节点就是各页包装）。 */
+    function containerBody(el, kind) {
+        if (!el) return el;
+        if (kind === 'tabs') return el.querySelector('.lw-tabs-body') || el;
+        return el.querySelector('.lw-kids') || el.querySelector('.lw-body') || el;
+    }
+
+    function wrapHtml(node, inner, cls, style) {
+        return '<div class="lw-n ' + (cls || '') + '" data-lwid="' + node.id + '"' +
+            (style ? ' style="' + style + '"' : '') + '>' + inner + '</div>';
+    }
+
+    function evAttr(id, ev, extra) {
+        return '$lwHas(\'' + id + '\',\'' + ev + '\') && $lwFire(\'' + id + '\',\'' + ev + '\'' +
+            (extra ? ',' + extra : '') + ')';
+    }
+
+    /* DBGrid 单元格标记（首建与列变化重建共用一份，免得两处走样）：
+       布尔列（服务端 cedit=4）里常驻一个勾选框，点一下即写回；
+       其余列就是一段文本，点击由 $lwDbCell 换成对应编辑器。
+       注意 i/j/cell 是外层 x-for 的变量名，两处模板必须保持一致 */
+    function dbCellTd(dgid) {
+        return '<td @click.stop="$lwDbCell(\'' + dgid + '\', i, j, $event)">' +
+            '<template x-if="$lwChk(\'' + dgid + '\', j)">' +
+            '<input type="checkbox" class="lw-chk"' +
+            ' :checked="cell === \'1\' || cell === true"' +
+            ' @click.stop="$lwChkTap(\'' + dgid + '\', i, j, $event)"/>' +
+            '</template>' +
+            '<template x-if="!$lwChk(\'' + dgid + '\', j)"><span x-text="cell"></span></template>' +
+            '</td>';
+    }
+
+    /* 网格 <table> 的 class：配了分组表头时多带一个 lw-hg ——
+       该修饰类把 border-collapse 换成 separate（见 CSS：collapse 下
+       sticky 表头会让数据行文字从表头里透出来） */
+    function tableCls(n) {
+        return 'lw-table' + ((n.hg && n.hg.length) ? ' lw-hg' : '');
+    }
+
+    /* DBGrid 表头（两级表头 TLWDBGrid.HeaderGroups）：
+       没有分组时沿用老的 x-for 模板（Excel 风格，列变化走补丁重建）；
+       有分组时静态拼两行 —— 分组格格 colspan，没进任何分组的列
+       rowspan=2 上下贯通。分组行不挂 OnTitleClick：一块跨列标题
+       没有唯一的列可排序，硬发事件只会让业务代码猜列号。
+       叶子格照旧挂 OnTitleClick（col 仍是"可见列下标"，与 hg 同一套编号）。 */
+    function dbHeadHtml(node, r, id) {
+        var cols = node.cols || [], hg = node.hg || [], i, j;
+        /* 无分组：叶子格在 x-for 里，j 是循环变量 */
+        var click = evAttr(id, 'OnTitleClick', '{col:j}');
+        /* 有分组：表头是静态拼的，不在任何 x-for 作用域里，
+           事件里的列号必须烧成字面量，否则点表头就 "j is not defined" */
+        function leafClick(ci) {
+            return evAttr(id, 'OnTitleClick', '{col:' + ci + '}');
+        }
+        if (!hg.length) {
+            return '<thead><tr><template x-for="(c,j) in ' + r + '.cols" :key="j">' +
+                '<th @click="' + click + '" x-text="c"></th></template></tr></thead>';
+        }
+        /* 先定归属：已被告知"这一列属于第几个分组"，重叠的分组按先来先占 */
+        var owner = [], nc = cols.length;
+        for (i = 0; i < nc; i++) owner[i] = -1;
+        for (i = 0; i < hg.length; i++) {
+            var a = hg[i].a | 0, n = hg[i].n | 0, ok = n > 0 && a >= 0 && a + n <= nc;
+            for (j = a; ok && j < a + n; j++) if (owner[j] !== -1) ok = false;
+            if (ok) for (j = a; j < a + n; j++) owner[j] = i;
+        }
+        var row1 = '', row2 = '';
+        i = 0;
+        while (i < nc) {
+            if (owner[i] >= 0) {
+                var g = hg[owner[i]], ga = g.a | 0, gn = g.n | 0;
+                row1 += '<th class="lw-th-grp" colspan="' + gn + '">' + esc(g.t) + '</th>';
+                for (j = ga; j < ga + gn; j++)
+                    row2 += '<th @click="' + leafClick(j) + '" x-text="' + r + '.cols[' + j + ']"></th>';
+                i = ga + gn;
+            } else {
+                row1 += '<th @click="' + leafClick(i) + '" rowspan="2" x-text="' + r + '.cols[' + i + ']"></th>';
+                i++;
+            }
+        }
+        return '<thead class="lw-thead-hg"><tr>' + row1 + '</tr><tr>' + row2 + '</tr></thead>';
+    }
+
+    /* 内部标记（不含包装 div）。st = 状态对象，node = 最新 JSON */
+    function innerOf(node, st) {
+        var k = node.kind, id = node.id, r = '$lwN(\'' + id + '\')';
+        var dis = ':disabled="' + r + '.dis"';
+        var ro = node.readonly ? ' readonly' : '';
+        var fs = fieldStyleOf(node);
+
+        switch (k) {
+            case 'label': {
+                /* 宽度不到一个汉字（<16px）的 label 不可能真的"折行排版"。
+                   这种窗体在 LCL 里多半是设计期 Width 留成 1 忘了改（或从
+                   代码建窗的老写法搬过来的），浏览器里若按 WordWrap=True
+                   折行，会把它挤成一根"每行一个字"的竖直细线 —— 用户看到
+                   就是页面上一道莫名其妙的竖线，还会把窗体撑出纵向滚动条。
+                   所以窄到这个程度一律按单行排（宁可截断，也不竖排）。 */
+                var lblWrap = node.wordwrap && !(node.w < 16);
+                /* LCL TAlignment 序数：0=左 1=右 2=中（坑 156：之前按
+                   1=中 2=右 映射，taCenter 的标签全被渲染成右对齐） */
+                return '<div class="lw-label" style="white-space:' + (lblWrap ? 'normal' : 'nowrap') +
+                    ';overflow:hidden;' + (node.textalign === 2 ? 'text-align:center;' : node.textalign === 1 ? 'text-align:right;' : '') +
+                    fs + '" x-html="$lwTxt(' + r + '.txt, ' + r + '.acc)" @click="' +
+                    evAttr(id, 'OnClick') + '"></div>';
+            }
+
+            case 'static': {
+                /* TStaticText：一块文字，可选边框（BorderStyle = sbsNone/
+                   sbsSingle/sbsSunken）。服务端已下发 text；老服务端只有
+                   caption，所以状态里的 txt 也带 caption 兜底（见 stateOf），
+                   否则这里就是个空 div —— 控件"在浏览器里看不见"。
+                   用 flex 而不是 text-align：带边框时文字要在框内垂直居中，
+                   Alignment 换成 justify-content 表达。 */
+                var sb = node.staticborder === 1 ? ' lw-static-single'
+                    : node.staticborder === 2 ? ' lw-static-sunken' : '';
+                var sbg = (node.transparent === false && node.bg) ? 'background:' + node.bg + ';' : '';
+                var sj = node.textalign === 2 ? 'center' : (node.textalign === 1 ? 'flex-end' : 'flex-start');
+                return '<div class="lw-label lw-static' + sb + '" style="display:flex;align-items:center;' +
+                    'justify-content:' + sj + ';white-space:nowrap;overflow:hidden;' + sbg + fs +
+                    '" x-html="$lwTxt(' + r + '.txt, ' + r + '.acc)" @click="' +
+                    evAttr(id, 'OnClick') + '"></div>';
+            }
+
+            case 'button':
+            case 'bitbtn':
+            case 'speedbutton':
+            case 'fileupload':
+            case 'camera': {
+                var bic = '';
+                if (k === 'bitbtn' && node.btnkind > 0) {
+                    var BICONS = { 1: 'ok', 2: 'cancel', 3: 'help', 4: 'yes', 5: 'no', 6: 'close', 7: 'abort', 8: 'retry', 9: 'ignore', 10: 'all', 11: 'notoall', 12: 'yestoall' };
+                    if (BICONS[node.btnkind]) bic = ' lw-bic-' + BICONS[node.btnkind];
+                }
+                /* 相机与上传共用按钮外观：前者点开系统相机（.lw-cam 加镜头图标），
+                   后者弹文件对话框。两者都不发 OnClick —— 服务端在文件落盘后
+                   触发 OnUpload / OnCapture */
+                var clickExp = (k === 'fileupload')
+                    ? 'pickUpload(\'' + id + '\')'
+                    : (k === 'camera' ? 'pickPhoto(\'' + id + '\')'
+                        : '$lwBtnClick(\'' + id + '\',\'OnClick\')');
+                var camCls = (k === 'camera') ? ' lw-cam' : '';
+                return '<button type="button" class="lw-btn' + bic + camCls + '" style="' + fs + '" ' + dis +
+                    ' :class="' + r + '.down ? \'lw-btn-pressed\' : \'\'" @click="' + clickExp +
+                    '" x-html="$lwCap(' + r + '.cap, ' + r + '.acc)"></button>';
+            }
+
+            case 'toolbutton':
+                if (node.sep) return '<div class="lw-tbsep"></div>';
+                return '<button type="button" class="lw-btn lw-tool" style="' + fs + '" ' + dis +
+                    ' @click="$lwBtnClick(\'' + id + '\',\'OnClick\')" x-html="$lwCap(' + r + '.cap, ' + r + '.acc)"></button>';
+
+            case 'edit':
+            case 'maskedit':
+            case 'dbedit':
+                return '<input type="' + (node.password ? 'password' : 'text') + '" class="lw-input" style="' + fs +
+                    '" x-model="' + r + '.txt"' + (node.maxlength ? ' maxlength="' + node.maxlength + '"' : '') +
+                    ro + ' ' + dis + ' @change="' + evAttr(id, 'OnChange', '{val:' + r + '.txt}') +
+                    '" @focus="' + evAttr(id, 'OnEnter') + '" @blur="' + evAttr(id, 'OnExit') + '"/>';
+
+            case 'editbtn': {
+                /* 按钮文字/宽度取 LCL 的 ButtonCaption / ButtonWidth；
+                   服务端只在非默认时下发，缺省回退 "…" + CSS 的 26px */
+                var ebCap = (node.btncap != null && node.btncap !== '') ? node.btncap : '…';
+                var ebW = (node.btnw > 0) ? ('width:' + (node.btnw | 0) + 'px;') : '';
+                return '<div class="lw-editbtn"><input type="text" class="lw-input" style="' + fs +
+                    '" x-model="' + r + '.txt"' + ro + ' ' + dis +
+                    ' @change="' + evAttr(id, 'OnChange', '{val:' + r + '.txt}') + '"/>' +
+                    '<button type="button" class="lw-btn lw-eb-btn" style="' + ebW + '" ' + dis +
+                    ' @click="' + evAttr(id, 'OnButtonClick') + '">' +
+                    accHtml(esc(ebCap)) + '</button></div>';
+            }
+
+            case 'memo':
+            case 'dbmemo':
+                return '<textarea class="lw-memo" style="' + fs + '" x-model="' + r + '.txt"' + ro + ' ' + dis +
+                    ' @change="' + evAttr(id, 'OnChange', '{val:' + r + '.txt}') +
+                    '" @focus="' + evAttr(id, 'OnEnter') + '" @blur="' + evAttr(id, 'OnExit') + '"></textarea>';
+
+            case 'spin':
+                return '<input type="number" class="lw-input" style="' + fs + '" x-model.number="' + r + '.val"' +
+                    (node.min != null ? ' min="' + node.min + '"' : '') + (node.max != null ? ' max="' + node.max + '"' : '') +
+                    ' step="1" ' + dis + ' @change="' + evAttr(id, 'OnChange', '{val:String(' + r + '.val)}') + '"/>';
+
+            case 'floatspin':
+                return '<input type="number" class="lw-input" style="' + fs + '" x-model.number="' + r + '.val"' +
+                    (node.min != null ? ' min="' + node.min + '"' : '') + (node.max != null ? ' max="' + node.max + '"' : '') +
+                    ' step="' + (node.decimals != null ? Math.pow(10, -node.decimals) : 0.01) + '" ' + dis +
+                    ' @change="' + evAttr(id, 'OnChange', '{val:String(' + r + '.val)}') + '"/>';
+
+            case 'dateedit':
+                return '<input type="date" class="lw-input" style="' + fs + '" x-model="' + r + '.iso"' + ro + ' ' + dis +
+                    ' @change="' + evAttr(id, 'OnChange', '{val:' + r + '.iso}') + '"/>';
+
+            case 'timeedit':
+                return '<input type="time" step="1" class="lw-input" style="' + fs + '" x-model="' + r + '.iso"' + ro + ' ' + dis +
+                    ' @change="' + evAttr(id, 'OnChange', '{val:' + r + '.iso}') + '"/>';
+
+            case 'checkbox':
+            case 'dbcheckbox':
+                return '<label class="lw-cb" style="' + fs + '"><input type="checkbox" x-model="' + r + '.chk" ' + dis +
+                    ' x-effect="if(' + r + '.ind) $el.indeterminate = true"' +
+                    ' @change="' + evAttr(id, 'OnChange', '{val:' + r + '.chk ? \'1\' : \'0\'}') + '"/>' +
+                    '<span x-html="$lwCap(' + r + '.cap, ' + r + '.acc)"></span></label>';
+
+            case 'radio':
+                return '<label class="lw-cb" style="' + fs + '"><input type="radio" name="lwradio_' +
+                    (node.group || 'g') + '" :checked="' + r + '.chk" ' + dis +
+                    ' @click="' + r + '.chk = true; ' + evAttr(id, 'OnClick') + '" ' +
+                    '@change="' + evAttr(id, 'OnChange', '{val:' + r + '.chk ? \'1\' : \'0\'}') + '"/>' +
+                    '<span x-html="$lwCap(' + r + '.cap, ' + r + '.acc)"></span></label>';
+
+            case 'combo':
+            case 'dbcombo': {
+                /* 自绘下拉，不再用原生控件：
+                   - datalist 弹层会按输入框当前文本过滤，只剩"当前值"一项（坑 126）
+                   - 原生 select 弹层跟随系统主题，深色下是个大黑块，样式不可控
+                   可编辑（csDropDown）= 能打字；csDropDownList = readonly 只能选。
+                   弹层用 position:fixed：页签卡片 .lw-tabcard 是 overflow:hidden，
+                   绝对定位会被裁掉；坐标由 $lwComboOpen 按输入框矩形算。 */
+                var cRo = (node.editable === false || node.readonly) ? ' readonly' : '';
+                return '<div class="lw-combo" style="' + fs + '">' +
+                    '<input type="text" class="lw-input lw-combo-in" style="' + fs + '" x-model="' + r + '.txt"' +
+                    cRo + ' ' + dis +
+                    ' @click="$lwComboOpen(\'' + id + '\',$el)"' +
+                    ' @keydown.escape="' + r + '.open = false"' +
+                    ' @change="' + evAttr(id, 'OnChange', '{val:' + r + '.txt}') + '"/>' +
+                    '<span class="lw-combo-arw"></span>' +
+                    '<div class="lw-combo-pop" x-show="' + r + '.open" x-cloak' +
+                    ' :style="\'left:\' + ' + r + '.px + \'px;top:\' + ' + r + '.py + \'px;min-width:\' + ' + r + '.pw + \'px\'"' +
+                    ' @click.outside="' + r + '.open = false">' +
+                    '<template x-for="(t,i) in ' + r + '.items" :key="i">' +
+                    '<div class="lw-combo-it" :class="(t === ' + r + '.txt) ? \'on\' : \'\'"' +
+                    ' @click="$lwComboPick(\'' + id + '\',t)" x-text="t"></div>' +
+                    '</template></div></div>';
+            }
+
+            case 'dblookup':
+                return '<select class="lw-select" style="' + fs + '" x-model="' + r + '.key" ' + dis +
+                    ' @change="' + evAttr(id, 'OnChange', '{val:' + r + '.key}') + '">' +
+                    '<template x-for="(t,i) in ' + r + '.items" :key="i"><option :value="String(' + r + '.keys[i] == null ? \'\' : ' + r + '.keys[i])" x-text="t"></option></template></select>';
+
+            case 'listbox':
+            case 'dblistbox':
+            case 'dblookuplist': {
+                var selExp = k === 'dblookuplist' ? '$lwLkClick(\'' + id + '\',i)' : '$lwLbClick(\'' + id + '\',i,\'' + (k === 'listbox' ? '' : 'sel') + '\')';
+                return '<div class="lw-list' + (node.border !== 'none' ? ' lw-boxed' : '') + '">' +
+                    '<template x-for="(t,i) in ' + r + '.items" :key="i">' +
+                    '<div class="lw-list-item" :class="i===' + r + '.idx ? \'lw-sel\' : \'\'" @click="' + selExp + '">' +
+                    '<span x-text="t"></span></div></template></div>';
+            }
+
+            case 'radiogroup': {
+                var rgIn = '<template x-for="(t,i) in ' + r + '.items" :key="i">' +
+                    '<label class="lw-cb"><input type="radio" name="lwrg-' + id + '" :checked="i===' + r + '.idx" ' + dis +
+                    ' @click="' + r + '.idx = i; ' + evAttr(id, 'OnClick', '{val:String(i)}') + '"/>' +
+                    '<span x-html="$lwCap(t)"></span></label></template>';
+                return '<div class="lw-group' + (node.border !== 'none' ? ' lw-boxed' : '') + '">' +
+                    '<div class="lw-group-title" x-html="$lwCap(' + r + '.cap, ' + r + '.acc)"></div>' +
+                    '<div class="lw-group-body">' + rgIn + '</div></div>';
+            }
+
+            case 'dbradiogroup': {
+                /* 单选组（DB）：Values[i] 才是写进字段的值（状态放 keys 位） */
+                var drgIn = '<template x-for="(t,i) in ' + r + '.items" :key="i">' +
+                    '<label class="lw-cb"><input type="radio" name="lwdrg-' + id + '" ' + dis +
+                    ' :checked="String(' + r + '.keys[i] == null ? i : ' + r + '.keys[i]) === String(' + r + '.val)"' +
+                    ' @click="' + r + '.val = String(' + r + '.keys[i] == null ? i : ' + r + '.keys[i]); ' +
+                    evAttr(id, 'OnChange', '{val:' + r + '.keys[i] == null ? String(i) : String(' + r + '.keys[i])}') + '"/>' +
+                    '<span x-html="$lwCap(t)"></span></label></template>';
+                return '<div class="lw-group' + (node.border !== 'none' ? ' lw-boxed' : '') + '">' +
+                    '<div class="lw-group-title" x-html="$lwCap(' + r + '.cap, ' + r + '.acc)"></div>' +
+                    '<div class="lw-group-body">' + drgIn + '</div></div>';
+            }
+
+            case 'checkgroup':
+                return '<div class="lw-group' + (node.border !== 'none' ? ' lw-boxed' : '') + '">' +
+                    '<div class="lw-group-title" x-html="$lwCap(' + r + '.cap, ' + r + '.acc)"></div>' +
+                    '<div class="lw-group-body">' +
+                    '<template x-for="(t,i) in ' + r + '.items" :key="i">' +
+                    '<label class="lw-cb"><input type="checkbox" x-model="' + r + '.checked[i]" ' + dis +
+                    ' @change="' + evAttr(id, 'OnItemClick', '{idx:i, val:' + r + '.checked[i] ? \'1\' : \'0\', checked:' + r + '.checked.slice()}') + '"/>' +
+                    '<span x-html="$lwCap(t)"></span></label></template></div></div>';
+
+            case 'checklistbox':
+                return '<div class="lw-list lw-boxed lw-clb">' +
+                    '<template x-for="(t,i) in ' + r + '.items" :key="i">' +
+                    '<label class="lw-cb lw-clb-item"><input type="checkbox" x-model="' + r + '.checked[i]" ' + dis +
+                    ' @change="' + evAttr(id, 'OnClickCheck', '{val:String(i), checked:' + r + '.checked.slice()}') + '" ' +
+                    '@click="$lwSet(\'' + id + '\',\'idx\', i); ' + evAttr(id, 'OnClick', '{val:String(i)}') + '"/>' +
+                    '<span x-text="t"></span></label></template></div>';
+
+            case 'progress':
+                return '<div class="lw-prog">' +
+                    '<div class="lw-prog-bar" :style="\'width:\' + (' + r + '.max ? Math.min(100, ' + r + '.pos * 100 / ' + r + '.max) : 0) + \'%\'"></div>' +
+                    '<div class="lw-prog-text" x-text="' + r + '.pos + \' / \' + ' + r + '.max"></div></div>';
+
+            case 'trackbar':
+                return '<input type="range" class="lw-range' + (node.orientation === 1 ? ' lw-vrange' : '') +
+                    '" x-model.number="' + r + '.val" min="' + (node.min || 0) + '" max="' + (node.max == null ? 100 : node.max) +
+                    '" ' + dis + ' @change="' + evAttr(id, 'OnChange', '{val:String(' + r + '.val)}') + '"/>';
+
+            case 'updown':
+                /* 坑 152：之前误渲染成 <input type=number>（桌面/移动端都一样，
+                   看起来像"多了一个输入框"）。TUpDown 的本体是贴着编辑框的
+                   上下箭头：点箭头本地先步进（即时反馈），再回传 OnClick，
+                   服务端夹 Min/Max 并联动 Associate 编辑框文本。
+                   形态分两端（用户 2026-11-16 定稿）：桌面上下堆叠（LCL 缺省
+                   样子），移动端 −/+ 大号触控区 —— 方向全在 CSS（.lw-ud-a
+                   三角形 / 移动端 ::after 内容切换），按钮语义不变
+                   （第 1 枚=加、第 2 枚=减）；另支持滚轮步进。 */
+                return '<span class="lw-ud" @wheel.prevent="$lwUd(\'' + id + '\', $event.deltaY < 0 ? 1 : -1)">' +
+                    '<button type="button" class="lw-ud-btn lw-ud-up" :disabled="' + r + '.dis" ' +
+                    'aria-label="' + lwT('增加') + '" @click="$lwUd(\'' + id + '\',1)"><i class="lw-ud-a"></i></button>' +
+                    '<button type="button" class="lw-ud-btn lw-ud-dn" :disabled="' + r + '.dis" ' +
+                    'aria-label="' + lwT('减少') + '" @click="$lwUd(\'' + id + '\',-1)"><i class="lw-ud-a"></i></button>' +
+                    '</span>';
+
+            case 'grid':
+            case 'drawgrid':
+            case 'listview': {
+                if (k === 'listview') {
+                    return '<div class="lw-grid lw-boxed"><table class="lw-table"><thead><tr>' +
+                        '<template x-for="(c,j) in ' + r + '.cols" :key="j"><th x-text="c"></th></template>' +
+                        '</tr></thead><tbody>' +
+                        '<template x-for="(row,i) in ' + r + '.rows" :key="i">' +
+                        '<tr :class="i===' + r + '.idx ? \'lw-sel\' : \'\'" @click="$lwLvClick(\'' + id + '\',i)">' +
+                        '<template x-for="(cell,j) in row" :key="j">' +
+                        '<td x-text="cell"></td>' +
+                        '</template></tr></template></tbody></table></div>';
+                }
+                /* rowheight/colwidths：writer 按 LCL RowHeights/ColWidths 下发，
+                   之前整块忽略 -> TDrawGrid 行被压成几像素（坑 95）。
+                   readonly=false（goEditing 开）时点单元格就地编辑（对齐 Ext
+                   版 CellEditing clicksToEdit:1），提交回发 OnEditingDone。
+                   注意 colwidths 是构建期常量：必须用循环生成 th，
+                   不能在模板字符串里引用 x-for 的运行时变量（j is not defined） */
+                var grh = node.rowheight || 22;
+                var gw = node.colwidths || [];
+                var ths = '';
+                (node.cols || []).forEach(function (c, j) {
+                    var st = 'height:' + grh + 'px';
+                    if (gw[j] > 0) st += ';width:' + gw[j] + 'px;min-width:' + gw[j] + 'px';
+                    ths += '<th style="' + st + '" x-text="' + r + '.cols[' + j + ']"></th>';
+                });
+                /* drawgrid 单元格支持自绘标记（@bar/@chip/@spark/@stars），
+                   由 $lwDrawCell 解析成 HTML；TStringGrid 保持纯文本 x-text */
+                var cellTd = (k === 'drawgrid')
+                    ? '<td style="height:' + grh + 'px" @click="$lwGridCellClick($el, \'' + id + '\', i, j)" x-html="$lwDrawCell(cell)"></td>'
+                    : '<td style="height:' + grh + 'px" @click="$lwGridCellClick($el, \'' + id + '\', i, j)" x-text="cell"></td>';
+                return '<div class="lw-grid lw-boxed"><table class="lw-table"><thead><tr>' + ths +
+                    '</tr></thead><tbody>' +
+                    '<template x-for="(row,i) in ' + r + '.rows" :key="i">' +
+                    '<tr :class="i===' + r + '.idx ? \'lw-sel\' : \'\'">' +
+                    '<template x-for="(cell,j) in row" :key="j">' +
+                    cellTd +
+                    '</template></tr></template></tbody></table></div>';
+            }
+
+            case 'valeditor':
+                return '<div class="lw-grid lw-boxed"><table class="lw-table lw-ve"><thead><tr>' +
+                    '<th class="lw-ve-key" x-text="' + r + '.t0"></th><th x-text="' + r + '.t1"></th></tr></thead><tbody>' +
+                    '<template x-for="(k,i) in ' + r + '.keys" :key="i">' +
+                    '<tr :class="i===' + r + '.idx ? \'lw-sel\' : \'\'" @click="$lwVeClick(\'' + id + '\', i)">' +
+                    '<td class="lw-ve-key" x-text="k"></td>' +
+                    '<td class="lw-ve-edit" @click.stop="$lwVeEdit($el, \'' + id + '\', i)" x-text="' + r + '.values[i]"></td>' +
+                    '</tr></template></tbody></table></div>';
+
+            case 'tree':
+                /* 递归结构 Alpine 模板写不了，整棵由 renderTree 生成 */
+                return '<div class="lw-tree' + (node.border !== 'none' ? ' lw-boxed' : '') + '" id="lw-tree-' + id + '"></div>';
+
+            case 'dbgrid': {
+                var dgid = id;
+                var filterBar = node.showfilter
+                    ? '<div class="lw-grid-filter"><span>' + lwT('过滤:') + '</span><input type="text" class="lw-input" placeholder="' + lwT('输入关键字后回车…') + '" ' + dis +
+                      ' x-model="' + r + '.ftext" @keydown.enter.prevent="' + evAttr(dgid, 'OnFilter', '{val:' + r + '.ftext}') + '"/></div>'
+                    : '';
+                var pagerBar = ((node.pages || 0) > 1 || node.summary)
+                    ? '<div class="lw-grid-pager">' +
+                      ((node.pages || 0) > 1
+                          ? '<button type="button" class="lw-btn lw-pg" @click="$lwPage(\'' + dgid + '\',1)">⏮</button>' +
+                            '<button type="button" class="lw-btn lw-pg" @click="$lwPage(\'' + dgid + '\',' + r + '.page - 1)">◀</button>' +
+                            '<span class="lw-pg-text" x-text="' + r + '.pgtext"></span>' +
+                            '<button type="button" class="lw-btn lw-pg" @click="$lwPage(\'' + dgid + '\',' + r + '.page + 1)">▶</button>' +
+                            '<button type="button" class="lw-btn lw-pg" @click="$lwPage(\'' + dgid + '\',' + r + '.pages)">⏭</button>'
+                          : '') +
+                      (node.summary ? '<span class="lw-pg-text" x-text="' + r + '.sumtext"></span>' : '') +
+                      '</div>'
+                    : '';
+                return '<div class="lw-dbgrid">' + filterBar +
+                    '<div class="lw-grid lw-boxed lw-dbgrid-body"><table class="' + tableCls(node) + '">' + dbHeadHtml(node, r, dgid) +
+                    '<tbody>' +
+                    '<template x-for="(row,i) in ' + r + '.rows" :key="i">' +
+                    '<tr :class="i === ' + r + '.recno - 1 ? \'lw-sel\' : \'\'" @click="$lwDbRow(\'' + dgid + '\', i, $event)">' +
+                    '<template x-for="(cell,j) in row" :key="j">' +
+                    dbCellTd(dgid) +
+                    '</template></tr></template></tbody></table></div>' + pagerBar + '</div>';
+            }
+
+            case 'dbnav': {
+                var GLYPH = { first: '|◀', prior: '◀', next: '▶', last: '▶|', insert: '＋', 'delete': '✖', edit: '✎', post: '✓', cancel: '↶', refresh: '↻' };
+                var TIP = { first: lwT('第一条'), prior: lwT('上一条'), next: lwT('下一条'), last: lwT('最后一条'), insert: lwT('插入'), 'delete': lwT('删除'), edit: lwT('编辑'), post: lwT('保存'), cancel: lwT('取消'), refresh: lwT('刷新') };
+                var nav = '';
+                (node.buttons || []).forEach(function (b) {
+                    nav += '<button type="button" class="lw-btn lw-nav"' + (b.en === false ? ' disabled' : '') +
+                        ' title="' + esc(TIP[b.id] || b.id) + '" data-navid="' + esc(b.id) + '" ' + dis +
+                        ' @click="' + evAttr(id, 'OnClick', '{val:\'' + esc(b.id) + '\'}') + '">' + (GLYPH[b.id] || esc(b.id)) + '</button>';
+                });
+                /* 按钮禁用态由服务端按数据集状态下发：patch 时同步 */
+                return '<div class="lw-nav">' + nav + '</div>';
+            }
+
+            case 'captcha':
+                /* 图形验证码（TLWCaptcha）：图片由服务端 /lw/api/captcha 现场画成 PNG。
+                   点一下换一张 —— 只在 URL 后追加 &r=<时间戳>，纯前端、不占会话，
+                   服务端见到 r 就重新生成答案（见 lwhttp.ApiCaptcha）。
+                   属性绑定必须留在 r.src 上：服务端 Refresh 会把版本号 v 改掉，
+                   补丁重设 src 才会真正重拉一次图。 */
+                return '<img class="lw-captcha" :src="' + r + '.src" alt="' + lwT('验证码') + '"' +
+                    ' title="' + lwT('看不清？点击换一张') + '" draggable="false"' +
+                    ' @click="$lwCaptchaTap($el)"' +
+                    ' @dragstart.prevent/>';
+
+            case 'image':
+            case 'dbimage':
+                return '<img class="lw-img" :src="' + r + '.src" :style="' + r + '.src ? \'\' : \'visibility:hidden\'" @click="' + evAttr(id, 'OnClick') + '"/>';
+
+            case 'htmlframe':
+            case 'pdfframe':
+            case 'chart': {
+                /* TLWHTMLFrame / TLWPDFFrame / TLWChart：宿主都是 TCustomPanel，
+                   边框跟随 LCL 的 BevelOuter（默认 bvRaised）+ BorderStyle。
+                   bevel 未下发（旧服务端）时按 LCL 默认值 bvRaised 处理 ——
+                   默认有边框；BevelOuter=bvNone 且 BorderStyle=bsNone 才是无边框 */
+                var fNoBev = (node.bevel === 0 || node.bevel === 'none') && node.border !== 'single';
+                var fCls = fNoBev ? '' : ' lw-boxed';
+                var fPfx = k === 'htmlframe' ? 'hf' : (k === 'pdfframe' ? 'pdf' : 'ch');
+                return '<div class="lw-' + k + fCls + '" id="lw-' + fPfx + '-' + id + '"></div>';
+            }
+
+            case 'chart':
+                return '<div class="lw-chart lw-boxed" id="lw-ch-' + id + '"></div>';
+
+            case 'gauge':
+                return '<div class="lw-gauge" id="lw-gauge-' + id + '"></div>';
+
+            case 'color':
+                /* 透明 input 铺满色块：真实触摸/点击由浏览器自己唤起调色板，
+                   不经脚本 click()（移动端会拒，见坑 181） */
+                return '<div class="lw-swatch" style="background:' + esc(node.value || '#ffffff') + '">' +
+                    '<input class="lw-cp-inp" type="color" value="' + esc(node.value || '#ffffff') +
+                    '" @input="$lwPickColorChange(\'' + id + '\', $event)"></div>';
+
+            case 'panel':
+            case 'scrollbox':
+            case 'frame':
+                { /* TPanel/TScrollBox/TFrame：bevel(bvRaised/bvLowered) 映射边框，
+                    caption 非缺省值时居中显示（设计器里 Caption=控件名的不渲染，
+                    服务端已过滤，这里双保险），scrollbox 内容超出视口必须可滚
+                    （LCL ScrollBox 的滚动语义，否则超出部分"看不见"）
+                    bevel 具体形态交给 CSS：bvRaised(2)/bvLowered(1) 的 3D 明暗
+                    方向相反，bvSpace(3) 占位不画（对应 LCL Frame3d 的行为） */
+                  var bevCls = (node.border === 'single' || node.bevel) ? ' lw-boxed' : '';
+                  if (node.bevel === 2) { bevCls += ' lw-bev-raised'; }
+                  else if (node.bevel === 1) { bevCls += ' lw-bev-lowered'; }
+                  else if (node.bevel === 3) { bevCls += ' lw-bev-space'; }
+                  var pOvf = (node.autoscroll || k === 'scrollbox') ? ';overflow:auto' : '';
+                  var pCap = (node.caption && node.caption !== node.name) ?
+                      '<div class="lw-panel-cap" x-html="$lwCap(' + r + '.cap, ' + r + '.acc)"></div>' : '';
+                  return '<div class="lw-body' + bevCls +
+                      '" style="background:' + (node.bg || 'transparent') + pOvf +
+                      '">' + pCap + '<div class="lw-kids"></div></div>';
+                }
+
+            case 'groupbox': {
+                /* TGroupBox：框线不在控件顶边。LCL 的客户区是"框线以内 + 标题带"
+                   （win32 下 Top=TMHeight+3、Left=2、Right=-2、Bottom=-2），
+                   所以框线落在标题带中线上、标题文字压在框线上、框线在文字处
+                   断开；子控件从客户区原点摆起，比控件左上角低一整个标题带。
+                   AutoScroll 关着时只裁剪不滚动（恒 overflow:auto 会因映射误差
+                   伪造出 LCL 里并不存在的滚动条）。
+                   内缩量由服务端算好下发（cl/ct/cr/cb，见 lwwriter.MakeBase），
+                   这里转成 CSS 变量。用 <fieldset><legend> 而不是自己拼 div：
+                   浏览器本来就会把 legend 的中线压在边框上、并让边框在文字处
+                   断开 —— 正是 BS_GROUPBOX 的画法，省掉"拿底色盖住框线"的补丁。 */
+                var gcl = node.cl == null ? 1 : node.cl;
+                var gct = node.ct == null ? 20 : node.ct;
+                var gcr = node.cr == null ? 1 : node.cr;
+                var gcb = node.cb == null ? 2 : node.cb;
+                return '<div class="lw-group lw-group-abs' + (node.border !== 'none' ? ' lw-boxed' : '') + '"' +
+                    ' style="--lw-gb-left:' + gcl + 'px;--lw-gb-right:' + gcr + 'px;' +
+                    '--lw-gb-top:' + gct + 'px;--lw-gb-bot:' + gcb + 'px">' +
+                    '<fieldset class="lw-gb-frame">' +
+                    '<legend class="lw-group-title" x-html="$lwCap(' + r + '.cap, ' + r + '.acc)"></legend>' +
+                    '</fieldset>' +
+                    '<div class="lw-body lw-group-body" style="overflow:' + (node.autoscroll ? 'auto' : 'hidden') +
+                    '"><div class="lw-kids"></div></div></div>';
+            }
+
+            case 'tabs':
+                return '<div class="lw-tabs"><div class="lw-tabbar" id="lw-tabbar-' + id + '"></div>' +
+                    '<div class="lw-tabs-body lw-boxed"></div></div>';
+
+            case 'tabctl':
+                return '<div class="lw-tabs"><div class="lw-tabbar" id="lw-tabbar2-' + id + '"></div>' +
+                    '<div class="lw-tabs-body lw-boxed lw-tabcard"><div class="lw-kids"></div></div></div>';
+
+            case 'tabsheet':
+                return '<div class="lw-tabcard"><div class="lw-kids"></div></div>';
+
+            case 'toolbar':
+                return '<div class="lw-tbar"><div class="lw-kids lw-kids-flow"></div></div>';
+
+            case 'statusbar':
+                return '<div class="lw-status" x-text="' + r + '.txt"></div>';
+
+            case 'bevel':
+                return '<div class="lw-bevel"></div>';
+
+            case 'shape': {
+                var srad = { 2: '10px', 3: '10px', 4: '50%', 5: '50%' }[node.shapestyle];
+                return '<div style="width:100%;height:100%;background:' + (node.bg || '#ffffff') +
+                    ';border:1px solid rgba(0,0,0,.35);' + (srad ? 'border-radius:' + srad + ';' : '') + '"></div>';
+            }
+
+            case 'splitter':
+                return '<div class="lw-splitter"></div>';
+
+            default:
+                return '<div class="lw-unknown" title="' + esc(node.cls || '') + '">' + esc(node.cls || node.kind) + '</div>';
+        }
+    }
+
+    /* ---------------- 交互辅助（模板里引用） ---------------- */
+
+    window.$lwLvClick = function (id, i) {
+        var r = S.R[id];
+        if (!r) return;
+        r.idx = i;
+        if ($lwHas(id, 'OnClick')) fire(id, 'OnClick', { val: String(i) });
+    };
+
+    /* TUpDown 上下箭头（坑 152）：本地先按 Increment 步进并夹 Min/Max
+       （与 LCL 一致：Max=0 表示不设上限），再回传 OnClick 让服务端
+       联动 Associate 编辑框。服务端是最终裁决，补丁回来会校正 r.val */
+    window.$lwUd = function (id, dir) {
+        var n = S.ND[id], r = S.R[id];
+        if (!n || !r || r.dis) return;
+        var inc = (n.inc > 0) ? n.inc : 1;
+        var v = (r.val || 0) + dir * inc;
+        if (n.min != null) v = Math.max(n.min, v);
+        if (n.max != null && n.max > 0) v = Math.min(n.max, v);
+        if (v === r.val) return;
+        r.val = v;
+        if ($lwHas(id, 'OnClick')) fire(id, 'OnClick', { val: String(v) });
+    };
+
+    /* ---------------- drawgrid 单元格自绘标记 ----------------
+       nogui 是无头 widgetset（假 DC），LCL 级 OnDrawCell 画不出像素，
+       自绘只能在浏览器端做：服务端往 Cells 里放标记字符串，
+       这里解析成 HTML（进度条/徽章/迷你图/星级），纯文本原样转义。
+       标记语法（大小写敏感，必须整格以 @ 开头）：
+         @bar(72)          @bar(72,#dc2626)      进度条（0-100，缺省蓝色）
+         @chip(通过,#16a34a)                    彩色徽章（颜色可省）
+         @spark(4,6,3,8,5) @spark(4,6,3,#16a34a) 迷你折线图（末参为 #色 时是颜色）
+         @stars(4.5)                             星级评分（0-5） */
+    window.$lwDrawCell = function (cell) {
+        var s = String(cell == null ? '' : cell);
+        if (s.charAt(0) !== '@') return esc(s);
+        var i = s.indexOf('('), j = s.lastIndexOf(')');
+        if (i < 1 || j <= i) return esc(s);
+        var kind = s.slice(0, i);
+        var parts = s.slice(i + 1, j).split(',');
+        var colorOf = function (v, def) {
+            v = String(v || '').trim();
+            return (/^#[0-9a-fA-F]{3,8}$/.test(v)) ? v : def;
+        };
+        var k;
+        if (kind === '@bar') {
+            var pct = parseFloat(parts[0]);
+            if (isNaN(pct)) return esc(s);
+            pct = Math.max(0, Math.min(100, pct));
+            var bc = colorOf(parts[1], '#2563eb');
+            return '<div class="lw-cbar"><div class="lw-cbar-fill" style="width:' + pct +
+                '%;background:' + bc + '"></div><span class="lw-cbar-text">' + pct + '%</span></div>';
+        }
+        if (kind === '@chip') {
+            var cc = colorOf(parts[1], '#2563eb');
+            return '<span class="lw-chip" style="color:' + cc + ';background:' + cc +
+                '22;border-color:' + cc + '">' + esc(String(parts[0] || '').trim()) + '</span>';
+        }
+        if (kind === '@stars') {
+            var v = parseFloat(parts[0]);
+            if (isNaN(v)) return esc(s);
+            v = Math.max(0, Math.min(5, v));
+            var full = Math.floor(v), half = (v - full) >= 0.5;
+            var out = '<span class="lw-stars">';
+            for (k = 0; k < 5; k++) {
+                out += '<span class="' + (k < full || (k === full && half) ? 'lw-star-on' : 'lw-star-off') +
+                    '">' + (k < full ? '★' : (k === full && half ? '⯪' : '★')) + '</span>';
+            }
+            return out + '<span class="lw-star-text">' + v + '</span></span>';
+        }
+        if (kind === '@spark') {
+            var sc = colorOf(parts[parts.length - 1], null);
+            var vals = (sc ? parts.slice(0, -1) : parts).map(parseFloat).filter(function (x) { return !isNaN(x); });
+            if (vals.length < 2) return esc(s);
+            var W = 120, H = 22, P = 3;
+            var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals);
+            var rng = (mx - mn) || 1;
+            var pts = vals.map(function (x, n) {
+                var px = P + n * (W - 2 * P) / (vals.length - 1);
+                var py = H - P - (x - mn) * (H - 2 * P) / rng;
+                return px.toFixed(1) + ',' + py.toFixed(1);
+            }).join(' ');
+            var lx = pts.split(' ')[vals.length - 1].split(',');
+            return '<svg class="lw-spark" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">' +
+                '<polyline fill="none" stroke="' + (sc || '#2563eb') + '" stroke-width="1.5" points="' + pts + '"/>' +
+                '<circle cx="' + lx[0] + '" cy="' + lx[1] + '" r="2.2" fill="' + (sc || '#2563eb') + '"/></svg>';
+        }
+        return esc(s);
+    };
+
+    window.$lwGridCellClick = function (td, id, row, col) {
+        var n = S.ND[id], r = S.R[id];
+        /* TStringGrid/TDrawGrid 行选中高亮（对齐 Ext 版行选择） */
+        if (r) r.idx = row;
+        if ($lwHas(id, 'OnClick')) fire(id, 'OnClick', { row: row, col: col });
+        if ($lwHas(id, 'OnCellClick')) fire(id, 'OnCellClick', { row: row, col: col });
+        /* goEditing 开（writer 下发 readonly=false）时单击就地编辑，
+           提交回发 OnEditingDone —— 服务端 LWApplyValue 会把值写进
+           TStringGrid.Cells[col,row]（row 自动加回 FixedRows） */
+        if (!n || n.readonly) return;
+        if (td.__lwEditing) return;
+        var old = (r.rows || [])[row] ? r.rows[row][col] : '';
+        td.__lwEditing = true;
+        var inp = document.createElement('input');
+        inp.type = 'text';
+        inp.className = 'lw-input';
+        inp.value = old == null ? '' : String(old);
+        td.textContent = '';
+        td.appendChild(inp);
+        inp.focus();
+        inp.select();
+        function commit() {
+            if (!td.__lwEditing) return;
+            td.__lwEditing = false;
+            var v = inp.value;
+            td.textContent = v;
+            if (r.rows && r.rows[row]) r.rows[row][col] = v;
+            if (v !== String(old == null ? '' : old)) {
+                fire(id, 'OnEditingDone', { val: v, row: row, col: col });
+            }
+        }
+        inp.addEventListener('blur', commit);
+        inp.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); inp.blur(); }
+            if (e.key === 'Escape') {
+                td.__lwEditing = false;
+                td.textContent = old == null ? '' : String(old);
+            }
+        });
+    };
+
+    window.$lwVeClick = function (id, row) {
+        var r = S.R[id];
+        if (!r) return;
+        r.idx = row;
+        if ($lwHas(id, 'OnClick')) fire(id, 'OnClick', { val: String(row), row: row });
+    };
+
+    /* 键值编辑器：点值格 -> 就地换成输入框，blur/回车提交 OnValidate */
+    window.$lwVeEdit = function (td, id, row) {
+        if (td.__lwEditing) return;
+        var r = S.R[id];
+        if (!r) return;
+        var old = (r.values || [])[row];
+        td.__lwEditing = true;
+        var inp = document.createElement('input');
+        inp.type = 'text';
+        inp.className = 'lw-input';
+        inp.value = old == null ? '' : String(old);
+        /* 覆盖模式（同 dbgrid 的 $lwDbCell）：td 里原文本节点留着当
+           尺寸撑子，编辑器绝对定位铺满 td，行高/列宽进出编辑不变。
+           编辑器背景不透明，正好盖住下面的文本 */
+        td.classList.add('lw-cell-edit');
+        td.appendChild(inp);
+        inp.focus();
+        inp.select();
+        function leave(v) {
+            td.classList.remove('lw-cell-edit');
+            if (inp.parentNode) inp.parentNode.removeChild(inp);
+            td.textContent = v;
+        }
+        function commit() {
+            if (!td.__lwEditing) return;
+            td.__lwEditing = false;
+            var v = inp.value;
+            leave(v);
+            if (v !== String(old == null ? '' : old)) {
+                fire(id, 'OnValidate', { row: row, key: (r.keys || [])[row], val: v });
+            }
+        }
+        inp.addEventListener('blur', commit);
+        inp.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); inp.blur(); }
+            if (e.key === 'Escape') { td.__lwEditing = false; leave(old == null ? '' : String(old)); }
+        });
+    };
+
+    /* DBGrid：行点击定位数据集游标；可编辑列点击开编辑器。
+       LCL 里点 TDBGrid 的任意一行，数据集游标就移过去 —— 这是网格的
+       内部行为，跟业务挂没挂 OnCellClick 无关。以前 fire 套在 $lwHas
+       里：没挂 OnCellClick 的网格（gallery 的 grdDb 就没挂）点了行
+       事件都不发，游标不动、高亮不跟、右侧 DBEdit/TDBMemo 也不换记录。
+       现在无条件发 OnCellClick：服务端 LWApplyGridPos 先定位游标，
+       LWInvokeEvent 没挂 handler 就是空操作，一条往返两件事都做完
+       （Ext 端一直是无条件发的，行为对齐）。 */
+    function lwDbLocate(id, row, col) {
+        var r = S.R[id];
+        /* 乐观高亮：recno 是页内 1 基行号（服务端 WriteDBGrid 同一约定），
+           先亮起来，服务端补丁回来再按权威值校准（不在本页会发 0 取消） */
+        if (r) r.recno = row + 1;
+        fire(id, 'OnCellClick', { row: row, col: col || 0 });
+    }
+
+    window.$lwDbRow = function (id, row, e) {
+        lwDbLocate(id, row, 0);
+    };
+
+    /* DBGrid 布尔列（服务端 cedit=4）：单元格常驻勾选框，点一下即写回
+       '1'/'0'，走与文本编辑同一条 OnSetFieldValue 通道 —— 服务端
+       LWApplyDBGridEdit 用 AsBoolean 赋值。勾选框自己处理点击，
+       不再进 $lwDbCell 的"就地换编辑器"分支。 */
+    window.$lwChk = function (id, col) {
+        var n = S.ND[id];
+        if (!n || n.readonly) return false;
+        return ((n.cedit || [])[col]) === 4;
+    };
+
+    window.$lwChkTap = function (id, row, col, e) {
+        var el = e.currentTarget;
+        var v = el.checked ? '1' : '0';
+        var r = S.R[id];
+        /* 本地行数据先改，服务端确认后的树补丁会覆盖成权威值 */
+        if (r && r.rows && r.rows[row]) r.rows[row][col] = v;
+        fire(id, 'OnSetFieldValue', { val: v, row: row, col: col });
+    };
+
+    window.$lwDbCell = function (id, row, col, e) {
+        /* 定位游标在前：只读列 / 只读网格点了也要移动游标（LCL 同款），
+           不能跟编辑器一起被 readonly 拦掉 */
+        lwDbLocate(id, row, col);
+        var n = S.ND[id], r = S.R[id];
+        if (!n || n.readonly || !r) return;
+        /* 列编辑器类型（服务端 cedit）：0=只读 1=文本 2=PickList 下拉
+           3=日期选择 4=复选框。旧服务端只发 0/1，缺省当文本。 */
+        var et = (n.cedit || [])[col];
+        if (et === 0 || et === 4) return;
+        if (et == null) et = 1;
+        var td = e.currentTarget;
+        if (td.__lwEditing) return;
+        var old = (r.rows || [])[row] ? (r.rows[row][col]) : '';
+        td.__lwEditing = true;
+        var span = td.querySelector('span');
+        var inp;
+        if (et === 2) {
+            /* 下拉：服务端 TColumn.PickList（plist 按列下标带选项） */
+            inp = document.createElement('select');
+            inp.className = 'lw-input';
+            var items = ((n.plist || [])[col]) || [];
+            if (!items.length) items = [old == null ? '' : String(old)];
+            items.forEach(function (it) {
+                var op = document.createElement('option');
+                op.value = it;
+                op.textContent = it;
+                if (String(it) === String(old == null ? '' : old)) op.selected = true;
+                inp.appendChild(op);
+            });
+        } else {
+            inp = document.createElement('input');
+            inp.className = 'lw-input';
+            if (et === 3) {
+                /* 日期：服务端日期列发的就是 ISO 'yyyy-mm-dd' */
+                inp.type = 'date';
+                inp.value = old == null ? '' : String(old).substring(0, 10);
+            } else {
+                inp.type = 'text';
+                inp.value = old == null ? '' : String(old);
+                inp.select();
+            }
+        }
+        /* 覆盖模式：原文本隐藏但留在文档流里当尺寸撑子（行高/列宽进
+           出编辑前后一个像素都不变），编辑器绝对定位铺满 td。
+           不能像旧版那样 td.textContent='' 再塞 input —— 编辑器参与
+           行高计算，22px 固定高度与单元格实际高度不等，整行必然跳动 */
+        td.classList.add('lw-cell-edit');
+        if (span) {
+            span.style.visibility = 'hidden';
+        } else {
+            td.textContent = '';
+        }
+        td.appendChild(inp);
+        inp.focus();
+        /* 离开编辑态：恢复 span 显示与文本（或裸文本），摘掉编辑器 */
+        function leave(v) {
+            td.classList.remove('lw-cell-edit');
+            if (inp.parentNode) inp.parentNode.removeChild(inp);
+            if (span) {
+                span.style.visibility = '';
+                span.textContent = v;
+            } else {
+                td.textContent = v;
+            }
+        }
+        function commit() {
+            if (!td.__lwEditing) return;
+            td.__lwEditing = false;
+            var v = inp.value;
+            leave(v);
+            /* 本地行数据跟着改，服务端确认后的树补丁会覆盖成权威值 */
+            if (r.rows && r.rows[row]) r.rows[row][col] = v;
+            if (v !== String(old == null ? '' : old)) {
+                fire(id, 'OnSetFieldValue', { val: v, row: row, col: col });
+            }
+        }
+        inp.addEventListener('blur', commit);
+        /* 下拉/日期：选中或选好日期即提交（change -> blur 走同一提交） */
+        if (et === 2 || et === 3) {
+            inp.addEventListener('change', function () { inp.blur(); });
+        } else {
+            inp.addEventListener('keydown', function (e2) {
+                if (e2.key === 'Enter') { e2.preventDefault(); inp.blur(); }
+                if (e2.key === 'Escape') {
+                    td.__lwEditing = false;
+                    leave(old == null ? '' : String(old));
+                }
+            });
+        }
+    };
+
+    /* DBGrid 翻页（从最新节点取页号，闭包里的 node 是快照） */
+    window.$lwPage = function (id, p) {
+        var n = S.ND[id];
+        if (!n) return;
+        p = Math.min(Math.max(1, p), n.pages || 1);
+        if (p === (n.page || 1)) return;
+        fire(id, 'OnPageChange', { val: String(p) });
+    };
+
+    /* 文件上传按钮 */
+    window.pickUpload = function (id) {
+        var n = S.ND[id];
+        if (n) pickFile(n);
+    };
+
+    /* 相机按钮（TLWCamera）：
+       桌面浏览器 -> 网页摄像头（页面内取景，需 HTTPS/localhost）；
+       手机/平板  -> 系统相机 App（capture，任何 http 页面都能用）；
+       都不行时   -> 退化成"选择图片文件"。 */
+    window.pickPhoto = function (id) {
+        var n = S.ND[id];
+        if (!n) return;
+        if (canUseWebcam(n)) openWebcam(n);
+        else pickFile(n);
+    };
+
+    /* ---------------- 树（递归结构用命令式 DOM 生成） ---------------- */
+
+    function treeConv(list, out, counter) {
+        (list || []).forEach(function (n) {
+            var me = counter.n++;
+            out.push({ i: me, text: n.text, expanded: !!n.expanded, sel: !!n.selected,
+                kids: treeConv(n.children, [], counter) });
+        });
+        return out;
+    }
+
+    function renderTree(id) {
+        var n = S.ND[id];
+        var host = document.getElementById('lw-tree-' + id);
+        if (!n || !host) return;
+        var flat = [];
+        treeConv(n.nodes, flat, { n: 0 });
+        var html = '';
+        (function walk(nodes, depth) {
+            nodes.forEach(function (nd) {
+                /* 服务端 selected（LCL Selected）也要渲染成高亮：
+                   点击回发后服务端选中态变化 -> 树 JSON 指纹变化 -> 重渲染，
+                   若不渲染 selected，刚点的选中就被这次重渲染抹掉（坑 94） */
+                html += '<div class="lw-tree-node' + (nd.sel ? ' lw-sel' : '') + '" style="padding-left:' + (depth * 16) + 'px" data-tid="' + nd.i + '">' +
+                    (nd.kids.length
+                        ? '<span class="lw-tree-tw' + (nd.expanded ? ' lw-open' : '') + '"></span>'
+                        : '<span class="lw-tree-tw lw-leaf"></span>') +
+                    '<span class="lw-tree-text">' + esc(nd.text) + '</span></div>';
+                if (nd.expanded) walk(nd.kids, depth + 1);
+            });
+        })(flat, 0);
+        host.innerHTML = html;
+        host.__lwFlat = flat;
+        host.querySelectorAll('.lw-tree-node').forEach(function (el) {
+            var tid = parseInt(el.getAttribute('data-tid'), 10);
+            el.addEventListener('click', function (e) {
+                var nd = host.__lwFlat.filter(function (x) { return x.i === tid; })[0];
+                if (nd && nd.kids.length && e.target.classList.contains('lw-tree-tw')) {
+                    nd.expanded = !nd.expanded;
+                    renderTree(id);
+                    return;
+                }
+                host.querySelectorAll('.lw-tree-node.lw-sel').forEach(function (x) { x.classList.remove('lw-sel'); });
+                el.classList.add('lw-sel');
+                if ($lwHas(id, 'OnClick')) fire(id, 'OnClick', { val: String(tid) });
+            });
+        });
+    }
+
+    /* ---------------- 主菜单 / 右键菜单 ---------------- */
+
+    /* 所有 .lw-menu-pop（主菜单下拉、右键菜单、子菜单、主题弹层）共用
+       "当前顶层弹层 + 打开它的锚点"，外部关闭只注册一个常驻监听：
+         · 点弹层内 -> 不关，交给菜单项 click / 子菜单 mouseenter；
+         · 点锚点内 -> 不关，交给锚点 click 做"再点一次收起"；
+         · 点其它处 -> 关。
+       以前只有主题弹层有外部关闭（themePopEl 那一套），主菜单和右键菜单
+       弹出后必须选中菜单项才消失（坑 148）。监听必须是常驻单例：开一次
+       注册一个、关掉时自摘的写法，在"点按钮开第二次"那次不会摘，旧监听
+       会于下一次 mousedown 先把新弹层删掉，click 落在已移除的元素上，
+       表现为"切过一次主题后再也切不动，刷新才好"。捕获阶段是必须的 ——
+       很多控件会 stopPropagation，冒泡阶段收不到这次 mousedown。 */
+    var menuPopEl = null, menuPopAnchor = null;
+
+    function closeAllMenus() {
+        document.querySelectorAll('.lw-menu-pop').forEach(function (m) { m.remove(); });
+        menuPopEl = null;
+        menuPopAnchor = null;
+    }
+
+    /* 建好并登记顶层弹层（先 append 再定位，调用方才能量 offsetWidth）。
+       子菜单由 bindMenuPop 直接 append 到 body，不参与登记。 */
+    function openMenuPop(items, anchor) {
+        closeAllMenus();
+        var host = document.createElement('div');
+        host.innerHTML = menuPopHtml(items);
+        var pop = host.firstChild;
+        document.body.appendChild(pop);
+        /* 弹层内右键不该弹浏览器自带菜单 */
+        pop.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
+        menuPopEl = pop;
+        menuPopAnchor = anchor || null;
+        return pop;
+    }
+
+    function menuOutsideDown(ev) {
+        if (!menuPopEl) return;
+        if (!menuPopEl.parentNode) { menuPopEl = null; menuPopAnchor = null; return; }
+        /* 右键一律先关旧的；若落在带 popup 的控件上，随后的 contextmenu
+           会在新位置重开，和桌面端"右键换地方弹菜单"一致 */
+        if (ev.button === 2) { closeAllMenus(); return; }
+        var t = ev.target;
+        if (t && t.closest && t.closest('.lw-menu-pop')) return;
+        if (menuPopAnchor && t && menuPopAnchor.contains(t)) return;
+        closeAllMenus();
+    }
+    document.addEventListener('mousedown', menuOutsideDown, true);
+    document.addEventListener('touchstart', function (ev) {
+        var t = ev.target;
+        if (!menuPopEl) return;
+        if (t && t.closest && t.closest('.lw-menu-pop')) return;
+        if (menuPopAnchor && t && menuPopAnchor.contains(t)) return;
+        closeAllMenus();
+    }, true);
+    document.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Escape' && menuPopEl) closeAllMenus();
+    }, true);
+    /* 切到别的窗口 / 浏览器标签时收不到 mousedown，按失焦收起 */
+    window.addEventListener('blur', function () {
+        if (menuPopEl) closeAllMenus();
+    });
+
+    function menuPopHtml(items) {
+        var h = '<div class="lw-menu-pop">';
+        (items || []).forEach(function (m) {
+            if (m.sep) { h += '<div class="lw-menu-sep"></div>'; return; }
+            h += '<div class="lw-menu-item' + (m.enabled === false ? ' lw-disabled' : '') +
+                (m.items && m.items.length ? ' lw-has-sub' : '') + '" data-mid="' + esc(m.caption || '') + '">' +
+                accHtml(esc(m.caption || '')) + (m.shortcut ? '<span class="lw-mn">' + esc(m.shortcut) + '</span>' : '') +
+                (m.checked ? '<span class="lw-menu-check">✓</span>' : '') + '</div>';
+        });
+        return h + '</div>';
+    }
+
+    function bindMenuPop(host, items) {
+        /* 分隔线只画 .lw-menu-sep、不生成 .lw-menu-item，绑定时也要按
+           非分隔项重新编号，否则有分隔线的菜单会整体错位一个 id */
+        var clickable = (items || []).filter(function (m) { return m && !m.sep; });
+        host.querySelectorAll('.lw-menu-item').forEach(function (el, i) {
+            var m = clickable[i];
+            if (!m) return;
+            el.addEventListener('click', function (e) {
+                e.stopPropagation();
+                if (m.enabled === false) return;
+                closeAllMenus();
+                /* fire 收数字 id（Ext 版的 fire 才收节点对象），传 m 会把
+                   整个节点当 id 发出去，服务端 JGetInt 直接抛
+                   EJSON —— 菜单点什么都没反应（坑 142） */
+                fire(m.id, 'OnClick');
+            });
+            if (m.items && m.items.length) {
+                el.addEventListener('mouseenter', function () {
+                    closeSubMenus(el);
+                    var sub = document.createElement('div');
+                    sub.innerHTML = menuPopHtml(m.items);
+                    var pop = sub.firstChild;
+                    document.body.appendChild(pop);
+                    var r = el.getBoundingClientRect();
+                    pop.style.left = (r.right - 2) + 'px';
+                    pop.style.top = r.top + 'px';
+                    bindMenuPop(pop, m.items);
+                });
+            }
+        });
+    }
+
+    function closeSubMenus(el) {
+        var p = el.closest('.lw-menu-pop');
+        document.querySelectorAll('.lw-menu-pop').forEach(function (m) {
+            if (m !== p && !p.contains(m) && !m.contains(p)) m.remove();
+        });
+    }
+
+    /* ---------------- 主题切换按钮（标题栏右侧 ☀/☾/◐） ----------------
+       弹层复用 .lw-menu-pop 的三项菜单；标题栏本来就有放大/关闭图标，
+       放这里不会压住状态栏文字，也不用额外的浮层定位。 */
+    function themeMenu(anchor, up) {
+        /* 同一个锚点再点一次 = 收起（外部点击统一由 menuOutsideDown 处理） */
+        if (menuPopEl && menuPopAnchor === anchor) { closeAllMenus(); return; }
+        var pop = openMenuPop(THEME_MODES.map(function (p) {
+            return { caption: themeLabel(p), checked: p === themePref };
+        }), anchor);
+        var r = anchor.getBoundingClientRect();
+        var ph = pop.offsetHeight, pw = pop.offsetWidth;
+        pop.style.left = Math.max(4, Math.round(r.right - pw)) + 'px';
+        /* 标题栏按钮在顶部 → 向下展开；平面模式的浮钮可被拖到任意位置，
+           按上下可用空间选方向，再整体 clamp 进视口，避免盖住按钮/跑出屏幕 */
+        var below = window.innerHeight - r.bottom - 2;
+        var above = r.top - 2;
+        var goUp = up ? (above >= ph || above > below) : false;
+        var top = goUp ? (r.top - ph - 2) : (r.bottom + 2);
+        top = Math.min(Math.max(4, top), Math.max(4, window.innerHeight - ph - 4));
+        pop.style.top = Math.round(top) + 'px';
+        pop.querySelectorAll('.lw-menu-item').forEach(function (el, i) {
+            el.addEventListener('click', function (e) {
+                e.stopPropagation();
+                themeApply(THEME_MODES[i], true);
+                closeAllMenus();
+            });
+        });
+    }
+
+    function themeButton(title) {
+        var b = document.createElement('span');
+        b.className = 'lw-win-theme';
+        b.addEventListener('click', function (e) {
+            e.stopPropagation();
+            themeMenu(b);
+        });
+        themeBtnSync(b);
+        themeBtns.push(b);
+        var before = title.querySelector('.lw-win-max') || title.querySelector('.lw-win-x');
+        if (before) title.insertBefore(b, before); else title.appendChild(b);
+        return b;
+    }
+
+    /* ---------------- 平面模式的主题入口（右下角浮动按钮） ----------------
+       平面模式把整条标题栏 display:none 掉了（.lw-flat-form > .lw-win-title），
+       标题栏里的 ☀/☾/◐ 跟着消失，用户就没有换配色的入口了。手机上没有
+       Alt 键，靠快捷键也不成立 —— 所以在平面窗体右下角浮一个小圆钮，
+       点击向上展开同一份主题菜单（复用 themeMenu）。
+       服务端 LWThemeButton=False 时不建；模态窗体沿用标题栏按钮的规则。 */
+    /* 平面模式的主题浮钮：可拖动（位置记在 localStorage），点一下才弹菜单。
+       拖动与点击用「位移阈值」区分：手指按下到抬起移动超过 6px 算拖动，
+       否则算点击 —— 移动端没有 hover/鼠标，只能靠这个判定。 */
+    var FAB_POS_KEY = 'lw.themeFab.pos';
+
+    /* 位置记忆分两套：平面模式（整页、客户区全是模板）与窗口模式（浮窗，
+       视口右下角往往压着状态栏/控件）的合理落点不一样。共用一套会把平面
+       模式拖到的位置带到窗口模式上，一打开就压在控件中间。 */
+    function themeFabKey(fm) {
+        return fm && fm.flatMode ? FAB_POS_KEY : FAB_POS_KEY + '.win';
+    }
+
+    function themeFabClamp(b, x, y) {
+        var w = b.offsetWidth || 34, h = b.offsetHeight || 34;
+        return {
+            x: Math.min(Math.max(0, x), Math.max(0, window.innerWidth - w)),
+            y: Math.min(Math.max(0, y), Math.max(0, window.innerHeight - h))
+        };
+    }
+
+    function themeFabRestore(b) {
+        var pos = null;
+        var key = b.__fabKey || FAB_POS_KEY;
+        try { pos = JSON.parse(localStorage.getItem(key) || 'null'); } catch (e) { }
+        if (!pos || typeof pos.x !== 'number' || typeof pos.y !== 'number') return;
+        var p = themeFabClamp(b, pos.x, pos.y);
+        b.style.left = p.x + 'px';
+        b.style.top = p.y + 'px';
+        b.style.right = 'auto';
+        b.style.bottom = 'auto';
+    }
+
+    function themeFabDrag(b) {
+        var dragging = false, moved = false;
+        var sx = 0, sy = 0, ox = 0, oy = 0;
+        b.addEventListener('pointerdown', function (e) {
+            if (e.button !== undefined && e.button !== 0) return;
+            var r = b.getBoundingClientRect();
+            sx = e.clientX; sy = e.clientY; ox = r.left; oy = r.top;
+            dragging = true; moved = false;
+            try { b.setPointerCapture(e.pointerId); } catch (er) { }
+        });
+        b.addEventListener('pointermove', function (e) {
+            if (!dragging) return;
+            var dx = e.clientX - sx, dy = e.clientY - sy;
+            if (!moved && Math.abs(dx) + Math.abs(dy) < 6) return;
+            moved = true;
+            var p = themeFabClamp(b, ox + dx, oy + dy);
+            b.style.left = p.x + 'px';
+            b.style.top = p.y + 'px';
+            b.style.right = 'auto';
+            b.style.bottom = 'auto';
+        });
+        function end() {
+            if (!dragging) return;
+            dragging = false;
+            if (!moved) return;              /* 没移动 → 交给 click 弹菜单 */
+            /* 拖动结束：记住位置，并吃掉随之而来的 click（否则拖完会弹菜单） */
+            b.__fabMoved = true;
+            try {
+                localStorage.setItem(b.__fabKey || FAB_POS_KEY, JSON.stringify({
+                    x: parseFloat(b.style.left) || 0,
+                    y: parseFloat(b.style.top) || 0
+                }));
+            } catch (e) { }
+            if (menuPopEl) closeAllMenus();
+        }
+        b.addEventListener('pointerup', end);
+        b.addEventListener('pointercancel', end);
+    }
+
+    /* 视口变化（旋转/键盘）时把拖出去的位置拉回来 */
+    window.addEventListener('resize', function () {
+        var list = document.querySelectorAll('.lw-theme-fab');
+        for (var i = 0; i < list.length; i++) {
+            var b = list[i];
+            if (!b.style.left) continue;
+            var p = themeFabClamp(b, parseFloat(b.style.left) || 0,
+                                  parseFloat(b.style.top) || 0);
+            b.style.left = p.x + 'px';
+            b.style.top = p.y + 'px';
+        }
+    });
+
+    function themeFabAdd(fm) {
+        if (!fm || themeBtnHidden || (fm.f && fm.f.modal)) return;
+        var win = fm.el;
+        if (!win) return;
+        var key = themeFabKey(fm);
+        if (fm.themeFab) {
+            if (fm.themeFab.__fabKey === key) return;   /* 已挂且形态没变 */
+            themeFabDrop(fm);                           /* 形态变了：按新键重摆 */
+        }
+        var b = document.createElement('span');
+        b.className = 'lw-theme-fab';
+        b.__fabKey = key;
+        b.title = lwT('主题（可拖动）');
+        b.addEventListener('click', function (e) {
+            e.stopPropagation();
+            if (b.__fabMoved) { b.__fabMoved = false; return; }
+            themeMenu(b, true);
+        });
+        themeFabDrag(b);
+        themeBtnSync(b);
+        themeBtns.push(b);
+        win.appendChild(b);
+        themeFabRestore(b);   /* 进 DOM 后再摆：clamp 需要真实尺寸 */
+        fm.themeFab = b;
+    }
+
+    function themeFabDrop(fm) {
+        var b = fm && fm.themeFab;
+        if (!b) return;
+        if (b.parentNode) b.parentNode.removeChild(b);
+        var i = themeBtns.indexOf(b);
+        if (i >= 0) themeBtns.splice(i, 1);
+        fm.themeFab = null;
+    }
+
+    /* 主题入口用哪种形态（标题栏图标 / 右下角浮钮）：
+       - 平面模式：标题栏整条被 display:none，只能浮钮；
+       - 移动布局：窗口模式的标题栏只有 28px 高，图标 22×20，手指点不准，
+         用户要求统一改成浮钮（可拖动、38px）；桌面窗口模式仍用标题栏图标。
+       模态窗体与服务端 LWThemeButton=False 一律不建（沿用原规则）。 */
+    function themeEntryWanted(fm) {
+        if (!fm || !fm.el) return false;
+        if (themeBtnHidden || (fm.f && fm.f.modal)) return false;
+        if (fm.flatMode) return true;
+        return lwLayoutNow() === 'mobile';
+    }
+
+    /* 幂等：该挂的挂上、该摘的摘掉。布局切换 / 模板切换 / 窗体新建都走这里，
+       避免出现"标题栏图标和浮钮同时存在"或"移动端两个都没有"。 */
+    function themeEntrySync(fm) {
+        if (!fm) return;
+        if (themeEntryWanted(fm)) themeFabAdd(fm);
+        else themeFabDrop(fm);
+    }
+
+    function themeEntrySyncAll() {
+        Object.keys(S.forms).forEach(function (k) { themeEntrySync(S.forms[k]); });
+    }
+
+    /* ---------------- 自适应布局 + 窗体模板（方案 B，自研） ----------------
+       不判「设备」，判「布局模式」：是否把窗体顶层控件从绝对定位搬进
+       HTML 模板的 {%控件名%} 占位符，由可用宽度决定（断点 834px 进 /
+       1100px 出，835~1099 回滞区保持上一态，首次落点看指针能力）。
+       模板按窗体名取：移动端 /lw/tpl/<窗体名>.m.html，桌面
+       /lw/tpl/<窗体名>.html（404 = 该窗体没有该端模板）。没模板的窗体
+       两端都保持设计期所见即所得（桌面=绝对定位原样；移动=平移模式，
+       设计尺寸原样由 #lw-root 滚动）。搬迁的是同一批 DOM 节点：不重建、
+       不重取树，S.P 仍指向窗体 kids（逻辑父级不变），事件 id 与增量补丁
+       照旧。事件只当触发器：媒体查询 change 在首次断点变化 / 指针变化会
+       漏发（CDP 实测），resize 与 visualViewport.resize 会成组重复，状态
+       一律现读 + 回滞。全部为 Web 标准 API，细节见 docs/MOBILE.md 第 8 节。 */
+    var TPL_MQ_IN = '(max-width: 834px)';
+    var TPL_MQ_OUT = '(min-width: 1100px)';
+    var TPL_KEY = 'lw-layout';      /* ?layout= / sessionStorage 硬覆盖 */
+    var layoutState = null;         /* null=未定；'desktop' | 'mobile' */
+    var tplCache = {};              /* 窗体名 -> 模板串 | null（404 也缓存） */
+
+    function lwIsTouch() {
+        return matchMedia('(any-pointer: coarse)').matches &&
+               matchMedia('(hover: none)').matches;
+    }
+
+    function lwLayoutNow() {
+        var force = null;
+        try {
+            force = new URLSearchParams(location.search).get('layout') ||
+                    sessionStorage.getItem(TPL_KEY);
+        } catch (e) { }
+        if (force === 'desktop' || force === 'mobile') return force;
+        var enter = matchMedia(TPL_MQ_IN).matches;
+        var leave = matchMedia(TPL_MQ_OUT).matches;
+        if (layoutState === null) {
+            /* 首次落点：回滞区用指针能力定（平板进、桌面窄窗不进） */
+            if (enter) return 'mobile';
+            if (leave) return 'desktop';
+            return lwIsTouch() ? 'mobile' : 'desktop';
+        }
+        if (enter) return 'mobile';
+        if (leave) return 'desktop';
+        return layoutState;
+    }
+
+    function lwSetAttr() {
+        document.documentElement.setAttribute('data-lw-layout', layoutState);
+        document.documentElement.setAttribute('data-lw-input',
+            lwIsTouch() ? 'touch' : 'mouse');
+    }
+
+    function lwFetchTpl(name, suffix, cb) {
+        /* 缓存 key 带后缀：同名窗体的桌面/移动模板分开缓存（404 也缓存） */
+        var key = name + '|' + suffix;
+        if (key in tplCache) { cb(tplCache[key]); return; }
+        fetch(BASE + 'lw/tpl/' + encodeURIComponent(name) + suffix,
+            { credentials: 'same-origin' })
+            .then(function (r) { return r.ok ? r.text() : null; })
+            .then(function (t) { tplCache[key] = t; cb(t); })
+            .catch(function () { tplCache[key] = null; cb(null); });
+    }
+
+    /* 模板串 -> 骨架。{%控件名%} 换成占位容器；引用了不存在的控件名
+       返回 null —— 整体回退桌面绝对定位，不做半套 */
+    function lwTplHost(formId, tpl) {
+        var bad = null;
+        var html = tpl.replace(/\{%\s*([A-Za-z_][A-Za-z0-9_]*)\s*%\}/g,
+            function (_, name) {
+                if (!(name in S.NAME)) { bad = name; return ''; }
+                return '<span class="lw-ph" data-lw-ph="' + esc(name) + '"></span>';
+            });
+        if (bad) { log('tpl 占位符无此控件:', bad, '-> 回退桌面布局'); return null; }
+        var host = document.createElement('div');
+        host.className = 'lw-tpl';
+        host.setAttribute('data-lw-form', formId);
+        host.innerHTML = html;
+        return host;
+    }
+
+    /* 新建窗体先隐藏，等模板模式判定完（flat/window/无模板）再显示：
+       否则浮窗会以设计期几何 + 标题栏先闪一下，异步回包再变平面/装饰层，
+       空窗体尤其明显（看起来像"闪一下消失"）。visibility 不影响布局测量，
+       buildForm 里的 getBoundingClientRect / offsetHeight 照常可用。 */
+    function lwRevealForm(fm) {
+        if (!fm || !fm.el) return;
+        fm.el.style.visibility = '';
+        if (fm.mask) fm.mask.style.visibility = '';
+    }
+
+    /* 拆掉已套用的模板装饰层。控件从未被搬动（两种模式都保持 LFM
+       绝对定位），所以只需摘掉宿主 DOM，不做任何搬回/清类操作 */
+    function lwClearFormTpl(fm) {
+        var kids = S.E[fm.f.id];
+        if (!kids || !fm.tplApplied) return;
+        if (fm.tplEl && fm.tplEl.parentNode) fm.tplEl.parentNode.removeChild(fm.tplEl);
+        fm.tplApplied = false;
+        fm.tplEl = null;
+        fm.tplOrder = null;
+        kids.classList.remove('lw-kids-tpl');
+        /* 可能是"平面 -> 窗口"或"有模板 -> 无模板"，入口形态交给统一判定：
+           移动布局的窗口模式仍要浮钮，不能无条件摘掉 */
+        themeEntrySync(fm);
+    }
+
+    /* 把模板骨架挂进窗体客户区当背景层：顶层控件留在原地，继续按
+       LFM 的 Left/Top 绝对定位。layout 记成 'flat'/'desktop'/'mobile'，
+       避免布局切换时反复重套。 */
+    function lwApplyTplHost(fm, tpl, layout, host) {
+        var formId = fm.f.id;
+        var kids = S.E[formId];
+        if (!host) host = tpl ? lwTplHost(formId, tpl) : null;
+        if (!host || !kids) return false;
+        kids.classList.add('lw-kids-tpl');
+        host.classList.add('lw-tpl-backdrop');
+        /* 插到最前：控件是后面的绝对定位兄弟，自然盖在装饰层之上 */
+        if (kids.firstChild) kids.insertBefore(host, kids.firstChild);
+        else kids.appendChild(host);
+        fm.tplApplied = true;
+        fm.tplEl = host;
+        fm.tplFallback = false;
+        fm.tplLayout = layout;
+        themeEntrySync(fm);   /* 移动布局的窗口模式也要浮钮 */
+        lwRevealForm(fm);
+        return true;
+    }
+
+    /* 平面模式：模板头写 lw-tpl-mode:flat 时，该窗体不显示标题栏/边框/
+       缩放手柄，整块铺满视口；控件仍按 LFM 绝对坐标摆放，不重排。 */
+    function lwApplyFlatTpl(fm, tpl) {
+        var formId = fm.f.id;
+        var kids = S.E[formId];
+        var win = fm.el;
+        var body = null;
+        var host;
+        var i;
+        if (!kids || !win) return false;
+        host = lwTplHost(formId, tpl);
+        if (!host) { lwRevealForm(fm); return false; } /* 占位符对不上退回浮窗流程 */
+        lwClearFormTpl(fm);
+        for (i = 0; i < win.children.length; i++) {
+            if (win.children[i].classList &&
+                win.children[i].classList.contains('lw-win-body')) {
+                body = win.children[i];
+                break;
+            }
+        }
+        win.classList.add('lw-flat-form');
+        win.classList.remove('lw-resizable');
+        win.classList.remove('lw-max');
+        win.style.left = '0px';
+        win.style.top = '0px';
+        /* 平面模式**不能**把窗宽压成视口宽：模板只是装饰层，控件仍按设计期
+           绝对坐标摆放，而页签页（alClient）/容器会跟着窗宽收缩 —— 设计坐标
+           x>窗宽 的控件被页签页内部裁掉，滚都滚不到，用户点不到（坑 181，
+           与坑 179 同族）。这里与窗口模式统一：窗宽高取
+           max(设计值, 视口值)，超出部分由 #lw-root 平移查看。窄屏不再"整页
+           自适应"，但控件不会被裁。 */
+        win.style.width = Math.max(fm.f.w || 300, window.innerWidth) + 'px';
+        win.style.height = Math.max(fm.f.h || 400, window.innerHeight) + 'px';
+        if (body) {
+            body.style.height = '100%';
+            body.style.overflow = 'auto';
+        }
+        fm.savedPos = null;
+        if (!lwApplyTplHost(fm, tpl, 'flat', host)) { lwRevealForm(fm); return false; }
+        fm.flatMode = true;
+        /* 窗比视口宽时需要平移滚动（桌面视口一般装得下，只在移动布局开）。
+           这里用 lwLayoutNow() 而不是 layoutState：冷启动时模板回包可能早于
+           首次 lwApplyLayout，那时 layoutState 还是 null，会漏开平移。 */
+        if (lwLayoutNow() === 'mobile') fm.tplFallback = true;
+        lwRevealForm(fm);
+        themeEntrySync(fm);   /* 标题栏隐藏了：主题入口改挂浮钮 */
+        lwUpdatePan();
+        return true;
+    }
+
+    /* 没有可用模板：设计期所见即所得。控件本来就没被模板搬动，这里只处理
+       窗体几何（移动端平移模式）与平移开关，再按 LFM 绝对坐标重算一次 */
+    function lwApplyNoTpl(fm, mode) {
+        var win = fm.el;
+        var kids = S.E[fm.f.id];
+        if (!win || !kids) return;
+        lwRevealForm(fm);
+        if (mode === 'desktop') {
+            fm.tplFallback = false;
+            if (fm.savedPos) {
+                win.style.left = fm.savedPos.left;
+                win.style.width = fm.savedPos.width;
+                win.style.height = fm.savedPos.height;
+                fm.savedPos = null;
+            }
+        } else {
+            /* 移动端无模板：不做整体等比缩放（字号太小，用户 2026-11-16 拍板
+               放弃），改为平移模式：窗体保持设计宽高，超出视口的部分由
+               #lw-root 滚动平移查看 */
+            fm.tplFallback = true;
+            win.style.width = Math.max(fm.f.w || 300, window.innerWidth - 8) + 'px';
+            win.style.height = Math.max(fm.f.h || 400, window.innerHeight - 12) + 'px';
+            win.style.left = '0px';
+            win.style.top = '6px';
+        }
+        lwUpdatePan();
+        themeEntrySync(fm);   /* 移动布局的窗口模式也用浮钮 */
+        runLayout({ body: kids }, fm.f.children || []);
+    }
+
+    /* 单窗体模板切换。mode='mobile'|'desktop'：
+       统一请求同名 <窗体名>.html（窗口/平面共用一个文件名）：
+         lw-tpl-mode:flat → 整页平面模式，不再跟随布局切换；
+         lw-tpl-mode:window → 浮窗背景装饰层；
+         两种标记同时出现 → flat 优先；
+         没有模板 → 设计期所见即所得。
+       控件在三种情况下都保持 LFM 的 Left/Top 绝对坐标，不重排。
+       兼容旧 .flat.html：仍存在时平面优先。 */
+    function lwApplyFormTpl(fm, mode) {
+        var formId = fm.f.id;
+        var kids = S.E[formId];
+        var win = fm.el;
+        var fname;
+        var fseq;
+        if (!kids || !win) return;
+        if (!fm.tplChecked) {
+            fname = fm.f.name || String(formId);
+            fm.tplChecked = true;
+            fm.tplSeq = (fm.tplSeq || 0) + 1;
+            fseq = fm.tplSeq;
+            fm.tplPending = true;
+            lwFetchTpl(fname, '.flat.html', function (legacyFlat) {
+                if (fseq !== fm.tplSeq || !S.forms[formId]) return;
+                if (legacyFlat && lwApplyFlatTpl(fm, legacyFlat)) {
+                    fm.tplPending = false;
+                    return;
+                }
+                lwApplyFormTpl(fm, mode);
+            });
+            return;
+        }
+        if (fm.flatMode && fm.tplApplied) return;
+        if (fm.tplApplied && fm.tplLayout === mode) return;
+        lwClearFormTpl(fm);
+        if (mode === 'mobile') {
+            if (!fm.savedPos) {
+                fm.savedPos = { left: win.style.left, width: win.style.width,
+                                height: win.style.height };
+            }
+            /* 移动端保持设计宽高（不小于视口），超出视口的部分由 #lw-root 滚动
+               平移查看。不能把窗宽压成 min(设计宽, 视口宽)：模板只是装饰层，
+               控件仍按设计期绝对坐标摆放，窗一窄右侧控件就被裁掉、页签页按窄
+               宽重排 → gallery TPageControl 右边一片空白（坑 150/151 同类）。 */
+            fm.tplFallback = true;
+            win.style.width = Math.max(fm.f.w || 300, window.innerWidth - 8) + 'px';
+            win.style.height = Math.max(fm.f.h || 400, window.innerHeight - 12) + 'px';
+            win.style.left = '0px';
+            win.style.top = '6px';
+        } else {
+            /* 桌面不改窗体几何：从移动态切回时先恢复原几何 */
+            fm.tplFallback = false;
+            if (fm.savedPos) {
+                win.style.left = fm.savedPos.left;
+                win.style.width = fm.savedPos.width;
+                win.style.height = fm.savedPos.height;
+                fm.savedPos = null;
+            }
+        }
+        lwUpdatePan();
+        fname = fm.f.name || String(formId);
+        fm.tplSeq = (fm.tplSeq || 0) + 1;
+        fseq = fm.tplSeq;
+        fm.tplPending = true;
+
+        /* 套用一份模板串：flat 标记 -> 整页平面；否则作背景装饰层。
+           返回 true 表示已接管。控件在两种情况下都保持 LFM 绝对坐标。 */
+        function lwUseTpl(tpl) {
+            /* flat 优先：同一文件里两种标记并存时也按平面渲染 */
+            if (/lw-tpl-mode\s*:\s*flat/i.test(tpl) && lwApplyFlatTpl(fm, tpl)) return true;
+            var host = lwTplHost(formId, tpl);
+            if (!host) return false;
+            if (!lwApplyTplHost(fm, tpl, mode, host)) return false;
+            /* 移动端模板同样是装饰层：窗体保持设计宽高、开平移滚动。lwApplyTplHost
+               会把 tplFallback 清成 false（桌面语义），这里按移动端重新置位。 */
+            if (mode === 'mobile') {
+                fm.tplFallback = true;
+                win.style.width = Math.max(fm.f.w || 300, window.innerWidth - 8) + 'px';
+                win.style.height = Math.max(fm.f.h || 400, window.innerHeight - 12) + 'px';
+                win.style.left = '0px';
+                win.style.top = '6px';
+                lwUpdatePan();
+                /* 窗宽从窄改回设计宽后，页签页/alClient 子项按新客户区重算一遍 */
+                runLayout({ body: kids }, fm.f.children || []);
+            }
+            return true;
+        }
+        /* fetch 异步：回来时模式可能已切换或窗体已关，按序号丢弃 */
+        if (mode === 'mobile') {
+            /* 移动端与桌面端对称：有 .m.html 就用移动模板布局，
+               没有就直接用 LCL 布局（不读桌面 .html、不重排控件）。
+               找不到模板时把设计期几何完整还原，别残留移动几何。 */
+            lwFetchTpl(fname, '.m.html', function (mtpl) {
+                if (fseq !== fm.tplSeq || !S.forms[formId]) return;
+                fm.tplPending = false;
+                if (mtpl && lwUseTpl(mtpl)) return;
+                lwApplyNoTpl(fm, 'desktop');   /* 回 LCL 布局，与桌面端无模板一致 */
+            });
+        } else {
+            lwFetchTpl(fname, '.html', function (tpl) {
+                if (fseq !== fm.tplSeq || !S.forms[formId]) return;
+                fm.tplPending = false;
+                if (!tpl || !lwUseTpl(tpl)) lwApplyNoTpl(fm, mode);
+            });
+        }
+    }
+
+    function lwRelayout(mode) {
+        Object.keys(S.forms).forEach(function (k) {
+            lwApplyFormTpl(S.forms[k], mode);
+        });
+    }
+
+    /* 无模板回退窗体的视口跟随（不整体缩放，超界由根容器滚动查看）：窗体保持设计宽高
+       （字号原大），固定 left=0；设计尺寸小于视口时撑满视口。旋转/改窗/
+       键盘弹出时重算。超出视口的内容由 #lw-root 的滚动平移查看（见
+       lwUpdatePan 与 html[data-lw-pan] CSS）——既不裁内容，也不会出现
+       "拖动窗体后右侧一片空白"。尺寸变化由 ResizeObserver 触发 runLayout
+       重排拉伸型子控件。 */
+    function lwFallbackSize(fm) {
+        var win = fm.el;
+        if (!win || fm.flatMode || layoutState !== 'mobile') return;
+        win.style.width = Math.max(fm.f.w || 300, window.innerWidth - 8) + 'px';
+        win.style.height = Math.max(fm.f.h || 400, window.innerHeight - 12) + 'px';
+        win.style.left = '0px';
+        win.style.top = '6px';
+    }
+
+    /* 平移模式开关：存在无模板回退窗体时允许 #lw-root 滚动，其余情况
+       （全部有模板 / 桌面模式）关闭，恢复桌面"窗体自由摆放不滚动"。 */
+    function lwUpdatePan() {
+        var any = false;
+        /* 用 lwLayoutNow() 而不是 layoutState：冷启动时模板回包可能早于首次
+           lwApplyLayout，layoutState 还是 null，会漏开平移（窗比视口宽却滑不动） */
+        if (lwLayoutNow() === 'mobile') {
+            Object.keys(S.forms).some(function (k) {
+                if (S.forms[k] && S.forms[k].tplFallback) { any = true; return true; }
+                return false;
+            });
+        }
+        document.documentElement.setAttribute('data-lw-pan', any ? '1' : '0');
+    }
+
+    /* 平面模式窗体尺寸：与窗口模式同一规则（不小于设计宽高），
+       旋转/键盘弹出/改窗时按新视口重算，否则窄屏下页签页会按旧宽裁控件。
+       平移开关也在这里跟着布局走 —— lwApplyFormTpl 对已套用的平面窗直接
+       return，切换布局时不会重进 lwApplyFlatTpl，只能靠这里同步。 */
+    function lwFlatSize(fm) {
+        var win = fm.el;
+        if (!win || !fm.flatMode) return;
+        win.style.width = Math.max(fm.f.w || 300, window.innerWidth) + 'px';
+        win.style.height = Math.max(fm.f.h || 400, window.innerHeight) + 'px';
+        fm.tplFallback = (lwLayoutNow() === 'mobile');
+    }
+
+    function lwFallbackSizeAll() {
+        Object.keys(S.forms).forEach(function (k) {
+            var fm = S.forms[k];
+            if (!fm) return;
+            if (fm.flatMode) lwFlatSize(fm);
+            else if (fm.tplFallback) lwFallbackSize(fm);
+        });
+        lwUpdatePan();
+    }
+
+    function lwApplyLayout() {
+        var want = lwLayoutNow();
+        if (want === layoutState) return;
+        layoutState = want;
+        lwSetAttr();
+        lwRelayout(want);
+        /* lwApplyFormTpl 对已套模板的窗体直接 return，切换布局不会重走套用
+           流程 —— 主题入口形态只能在这里统一纠正（桌面↔移动互斥） */
+        themeEntrySyncAll();
+    }
+
+    var lwPending = false;
+    function lwScheduleLayout() {
+        if (lwPending) return;
+        lwPending = true;
+        requestAnimationFrame(function () {
+            lwPending = false;
+            lwApplyLayout();
+            lwFallbackSizeAll();   /* 布局模式没变但视口变了（旋转/键盘）也要跟随 */
+        });
+    }
+    [TPL_MQ_IN, TPL_MQ_OUT, '(any-pointer: coarse)', '(orientation: landscape)']
+        .forEach(function (q) {
+            var mq = matchMedia(q);
+            if (mq.addEventListener) mq.addEventListener('change', lwScheduleLayout);
+            else if (mq.addListener) mq.addListener(lwScheduleLayout);
+        });
+    window.addEventListener('resize', lwScheduleLayout);
+    window.addEventListener('orientationchange', lwScheduleLayout);
+    if (window.visualViewport) {
+        visualViewport.addEventListener('resize', lwScheduleLayout);
+    }
+    layoutState = lwLayoutNow();
+    lwSetAttr();
+
+    /* ---------------- 节点创建 / 子节点同步 ---------------- */
+
+    function createNode(node, ct) {
+        var id = node.id, k = node.kind;
+        var w = document.createElement('div');
+        w.className = 'lw-n';
+        w.setAttribute('data-lwid', id);
+        var st = stateOf(node);
+        S.K[id] = k;
+        S.ND[id] = node;
+        S.EV[id] = node.ev || [];
+        S.E[id] = w;
+        S.P[id] = ct.body;
+        S.WIN[id] = ct.winId;
+        if (node.name) S.NAME[node.name] = id;
+
+        try {
+            w.innerHTML = innerOf(node, st);
+        } catch (e) {
+            log('create failed', k, node.name, e);
+            w.innerHTML = '<div class="lw-unknown">' + esc(node.cls || k) + '</div>';
+        }
+        ct.body.appendChild(w);
+        if (ct.flow) w.classList.add('lw-flow');
+
+        try { if (window.Alpine) Alpine.initTree(w); } catch (e) { }
+        placeNode(id, node);
+        applyHint(id, node);
+        bindNodeEvents(id, node, w);
+
+        /* TLabeledEdit 的绑定标签：服务端摆位用的是"运行期边界"，而 nogui 下
+           TBoundLabel 的宽高没参与 LFM 的 PPI 折算（编辑框 Top 是折算后的
+           96 值、标签 Height 还是 144 的原始值），首屏位置必然带缝；渲染
+           后按真实矩形重贴一次。之前只在补丁轮（updateNode）里精修，首次
+           创建没挂 —— 首屏永远错，直到第一次事件往返才被纠正。 */
+        try { if (node.boundfor) fixBoundLabel(id); } catch (e) { }
+
+        /* 容器：递归渲染子节点 */
+        if (isContainer(node)) {
+            var body = containerBody(w, k);
+            syncChildren({ body: body, winId: ct.winId, flow: (k === 'toolbar'), parentKind: k, parentId: id }, node);
+            if (k === 'tabs') buildTabbar(id, node);
+            if (k === 'tabctl') buildTabCtl(id, node);
+        }
+        /* 后补进来的页签：不在活动页就先藏起来 */
+        if (k === 'tabsheet' && ct.parentKind === 'tabs') {
+            var pn = S.ND[ct.parentId] || {};
+            var act = (typeof pn.active === 'number') ? pn.active : 0;
+            var myIdx = 0;
+            var sibs = w.parentNode ? Array.prototype.slice.call(w.parentNode.children) : [];
+            for (var si = 0; si < sibs.length; si++) if (sibs[si] === w) { myIdx = si; break; }
+            if (myIdx !== act) w.style.display = 'none';
+        }
+        /* 非响应式区块的首绘 */
+        if (k === 'tree') renderTree(id);
+        if (k === 'gauge') {
+            var g = document.getElementById('lw-gauge-' + id);
+            if (g) { g.innerHTML = gaugeSvg(node); g.__lwSig = gaugeSig(node); }
+        }
+        if (k === 'chart') {
+            var ch = document.getElementById('lw-ch-' + id);
+            if (ch) { ch.innerHTML = chartSvg(node); ch.__lwSig = chartSig(node); }
+        }
+        if (k === 'htmlframe') {
+            var hf = document.getElementById('lw-hf-' + id);
+            if (hf) {
+                hf.innerHTML = node.html || '';
+                hf.__lwSig = node.html || '';
+                execHtmlScripts(hf);
+            }
+        }
+        if (k === 'pdfframe') {
+            renderPdf(id, node);
+        }
+        if (k === 'image' || k === 'dbimage') {
+            if (!node.src) { var im = w.querySelector('img'); if (im) im.style.visibility = 'hidden'; }
+        }
+        if (k === 'dbgrid') syncDbGridExtras(id, node);
+        return w;
+    }
+
+    function renderPdf(id, node) {
+        var host = document.getElementById('lw-pdf-' + id);
+        if (!host) return;
+        host.__lwUrlSig = node.url || '';
+        if (node.url) {
+            host.innerHTML = '<iframe src="' + esc(node.url) + '" frameborder="0" style="width:100%;height:100%;border:0"></iframe>';
+        } else {
+            host.innerHTML = '<div class="lw-unknown">' + lwT('PDF：尚未指定文件') + '</div>';
+        }
+    }
+
+    /* dbgrid 的分页/汇总文案状态 */
+    function pagerTextOf(n) {
+        var total = (n.total != null ? n.total : (n.count || 0));
+        if ((n.pages || 0) > 1)
+            return lwT('第 ') + (n.page || 1) + ' / ' + n.pages + lwT(' 页 · 共 ') + total + lwT(' 条');
+        return lwT('共 ') + total + lwT(' 条');
+    }
+    function summaryTextOf(sm) {
+        var names = { sum: lwT('合计'), avg: lwT('平均'), count: lwT('计数') };
+        return (names[sm.type] || '') + ' ' + (sm.field || '') + ' = ' + (sm.value == null ? '' : sm.value);
+    }
+    /* 这张网格里是否正有一个单元格处于就地编辑状态（编辑器是 td 里的
+       input/select）。补丁若此时重灌行，编辑器会连同 td 一起被换掉 */
+    function dbCellEditing(id) {
+        var el = S.E[id];
+        if (!el) return false;
+        return !!el.querySelector('.lw-dbgrid-body input.lw-input,' +
+            '.lw-dbgrid-body select.lw-input,.lw-dbgrid-body textarea.lw-input');
+    }
+
+    /* 行数据内容是否一致。x-for 按数组引用判断，赋一个新数组就整表重建，
+       所以内容没变时不要赋值（点击单元格回发的补丁就是这种） */
+    function sameRows(a, b) {
+        var x = a || [], y = b || [];
+        if (x.length !== y.length) return false;
+        try { return JSON.stringify(x) === JSON.stringify(y); } catch (e) { return false; }
+    }
+
+    function syncDbGridExtras(id, n) {
+        var r = S.R[id];
+        if (!r) return;
+        r.ftext = n.filtertext || '';
+        r.page = n.page || 1;
+        r.pages = n.pages || 0;
+        r.recno = n.recno || 0;
+        r.pgtext = pagerTextOf(n);
+        r.sumtext = n.summary ? summaryTextOf(n.summary) : '';
+        /* 选中行滚进可视区 */
+        var el = S.E[id];
+        if (el && r.recno > 0) {
+            defer(function () {
+                var row = el.querySelector('.lw-dbgrid-body tbody tr:nth-child(' + r.recno + ')');
+                if (row && row.scrollIntoView) row.scrollIntoView({ block: 'nearest' });
+            }, 30);
+        }
+    }
+
+    /* 页签条（tabs：每页一套子控件；tabctl：公共客户区） */
+    function buildTabbar(id, node) {
+        var bar = document.getElementById('lw-tabbar-' + id);
+        if (!bar) return;
+        var active = (S.ND[id] && typeof S.ND[id].active === 'number') ? S.ND[id].active : 0;
+        var html = '';
+        (node.children || []).forEach(function (ts, i) {
+            html += '<div class="lw-tab' + (i === active ? ' lw-active' : '') + '" data-ti="' + i + '">' +
+                accHtml(esc(ts.caption || ts.name || '')) + '</div>';
+        });
+        bar.innerHTML = html;
+        bar.querySelectorAll('.lw-tab').forEach(function (el) {
+            el.addEventListener('click', function () {
+                $lwTabClick(id, parseInt(el.getAttribute('data-ti'), 10));
+            });
+        });
+        applyTabActive(id, active);
+        if (node.tabpos === 1) {   /* TPageControl.TabPosition = tpBottom */
+            var tabsEl = S.E[id];
+            if (tabsEl) { tabsEl.appendChild(tabsEl.querySelector('.lw-tabs-body')); }
+        }
+    }
+
+    function buildTabCtl(id, node) {
+        var bar = document.getElementById('lw-tabbar2-' + id);
+        if (!bar) return;
+        /* 点击必须本地先切换高亮：服务端 TTabControl 没有独立的页内容
+           （客户区是公共的一块），树补丁只带新 tabindex，不会重建页签条；
+           之前只在建树时设一次 active，点了永远停在旧页签上。
+           OnChange 无条件回发：服务端 LWApplyValue 先同步 TabIndex（供
+           序列化和业务读取），RTTI 调用在没挂 handler 时是空操作 */
+        function render(active) {
+            if (S.ND[id]) S.ND[id].tabindex = active;
+            var html = '';
+            (node.tabitems || []).forEach(function (t, i) {
+                html += '<div class="lw-tab' + (i === active ? ' lw-active' : '') + '" data-ti="' + i + '">' +
+                    accHtml(esc(t)) + '</div>';
+            });
+            bar.innerHTML = html;
+            bar.querySelectorAll('.lw-tab').forEach(function (el) {
+                el.addEventListener('click', function () {
+                    var i = parseInt(el.getAttribute('data-ti'), 10);
+                    var cur = (S.ND[id] && typeof S.ND[id].tabindex === 'number') ? S.ND[id].tabindex : 0;
+                    if (i === cur) return;
+                    render(i);
+                    fire(id, 'OnChange', { val: String(i) });
+                });
+            });
+        }
+        render(node.tabindex || 0);
+    }
+
+    /* TBoundLabel：按编辑框实测位置精修标签坐标（服务端量 CJK 会偏） */
+    function fixBoundLabel(id) {
+        var n = S.ND[id];
+        if (!n || !n.boundfor) return;
+        var edId = S.NAME[n.boundfor];
+        if (!edId) return;
+        var le = S.E[id], ee = S.E[edId];
+        if (!le || !ee) return;
+        defer(function () {
+            try {
+                var er = ee.getBoundingClientRect(), lr = le.getBoundingClientRect();
+                if ((!er.width && !er.height) || (!lr.width && !lr.height)) return;
+                var sp = (n.labelspacing != null && n.labelspacing >= 0) ? n.labelspacing : 4;
+                var par = S.P[id].getBoundingClientRect();
+                var ox = 0, oy = 0;
+                if (n.labelpos === 0) oy = -lr.height - sp;
+                else if (n.labelpos === 1) oy = er.height + sp;
+                else if (n.labelpos === 2) { ox = -lr.width - sp; oy = (er.height - lr.height) / 2; }
+                else if (n.labelpos === 3) { ox = er.width + sp; oy = (er.height - lr.height) / 2; }
+                /* 目标页面位置 -> 父容器局部坐标 */
+                var nx = (er.left - par.left) + ox;
+                var ny = (er.top - par.top) + oy;
+                le.style.left = Math.round(nx) + 'px';
+                le.style.top = Math.round(ny) + 'px';
+                le.style.height = 'auto';
+                if (S.ND[id]) { S.ND[id].x = Math.round(nx); S.ND[id].y = Math.round(ny); }
+            } catch (e) { }
+        }, 60);
+    }
+
+    /* 包装 div 的定位（align 拉伸由 runLayout 精修） */
+    function placeNode(id, node) {
+        var w = S.E[id];
+        if (!w) return;
+        /* 统一模板只是背景装饰层：顶层控件始终写 LFM 的绝对坐标，
+           窗口/平面模式都不重排、不进占位符（tplApplied/tplPending 不再改写定位） */
+        if (node.kind === 'toolbutton' || w.classList.contains('lw-flow')) {
+            w.style.position = 'static';
+            return;
+        }
+        w.style.left = (node.x || 0) + 'px';
+        w.style.top = (node.y || 0) + 'px';
+        if (node.kind === 'label' || node.kind === 'static') {
+            if (!node.boundfor) {
+                if (node.autosize && !node.wordwrap) {
+                    /* LCL AutoSize：单行标签盒子缩到文字宽，文字贴 Left，
+                       Alignment(taCenter) 因此不起作用。nogui 服务端量不准
+                       CJK 字宽，宽高都不下发，绝对定位的盒子按内容自适应
+                       （否则 taCenter 会在整窗宽的盒子里把文字推到中央）。 */
+                } else {
+                    if (node.w) w.style.width = node.w + 'px';
+                    if (node.h) w.style.height = node.h + 'px';
+                }
+            }
+        } else {
+            if (node.w) w.style.width = node.w + 'px';
+            if (node.h) w.style.height = node.h + 'px';
+        }
+        w.style.zIndex = node.zi || '';
+        /* tabsheet 的显隐由页签容器 active 管理（服务端 TTabSheet.Visible 恒 False） */
+        if (node.visible === false && node.kind !== 'tabsheet') w.style.display = 'none';
+        else if (node.kind !== 'tabsheet') w.style.display = '';
+    }
+
+    /* 服务端已算好坐标；这里只处理 align 拉伸（与 lw.js runLayout 同语义） */
+    function runLayout(ct, list) {
+        var body = ct.body;
+        if (!body) return;
+        var w = body.clientWidth, h = body.clientHeight;
+        if (!w && !h) return;
+        var curTop = 0, curBottom = h, curLeft = 0, curRight = w, i, n, el;
+        for (i = list.length - 1; i >= 0; i--) {
+            n = list[i];
+            if (!n.align || n.align === 'client' || n.align === 'none') continue;
+            el = S.E[n.id];
+            if (!el) continue;
+            var x = n.x || 0, y = n.y || 0, wd = n.w || 0, ht = n.h || 0;
+            switch (n.align) {
+                case 'top': x = curLeft; wd = curRight - curLeft; y = curTop; curTop += ht; break;
+                case 'bottom': curBottom -= ht; x = curLeft; wd = curRight - curLeft; y = curBottom; break;
+                case 'left': x = curLeft; curLeft += wd; y = curTop; ht = curBottom - curTop; break;
+                case 'right': curRight -= wd; x = curRight; y = curTop; ht = curBottom - curTop; break;
+                default: continue;
+            }
+            applyRect(el, n, x, y, Math.max(0, wd), Math.max(0, ht));
+        }
+        /* 第二趟：alClient 拿剩余矩形（与 lw.js 同语义） */
+        for (i = 0; i < list.length; i++) {
+            n = list[i];
+            if (n.align !== 'client') continue;
+            el = S.E[n.id];
+            if (!el) continue;
+            applyRect(el, n, curLeft, curTop, Math.max(0, curRight - curLeft), Math.max(0, curBottom - curTop));
+        }
+        for (i = 0; i < list.length; i++) {
+            n = list[i];
+            if (n.align !== 'client') continue;
+            el = S.E[n.id];
+            if (!el) continue;
+            applyRect(el, n, curLeft, curTop, Math.max(0, curRight - curLeft), Math.max(0, curBottom - curTop));
+        }
+    }
+
+    function applyRect(el, n, x, y, w, h) {
+        el.style.left = x + 'px';
+        el.style.top = y + 'px';
+        el.style.width = w + 'px';
+        el.style.height = h + 'px';
+        if (S.ND[n.id]) { S.ND[n.id].x = x; S.ND[n.id].y = y; S.ND[n.id].w = w; S.ND[n.id].h = h; }
+        /* 容器尺寸变了，内部 align 子项跟着重排 */
+        if (isContainer(n) && S.kids[n.id]) {
+            defer(function () { runLayout({ body: containerBody(S.E[n.id], S.K[n.id]) }, S.ND[n.id].children || []); }, 0);
+        }
+    }
+
+    function syncChildren(ct, node) {
+        var list = node.children || [];
+        var body = ct.body;
+        if (!body) return;
+        var keep = {};
+        list.forEach(function (n) {
+            keep[n.id] = true;
+            if (S.E[n.id] && S.P[n.id] === body) {
+                patchNode(n);
+            } else {
+                destroyNode(n.id);
+                createNode(n, ct);
+            }
+        });
+        /* 清掉已经不在树里的旧子节点（按 DOM 实况清，比记清单可靠） */
+        Array.prototype.slice.call(body.children).forEach(function (el) {
+            var cid = el.getAttribute && el.getAttribute('data-lwid');
+            if (cid && !keep[cid]) destroyNode(cid);
+        });
+        S.kids[body.__lwid || node.id || ''] = list.map(function (n) { return n.id; });
+        /* 模板只是背景层：顶层排布仍由 runLayout 按 LFM 绝对定位计算，
+           窗口/平面/等待回包都照常跑（装饰层没有 data-lwid，不会被清掉） */
+        runLayout(ct, list);
+    }
+
+    function destroyNode(id) {
+        if (!S.E[id]) return;
+        /* 先递归销毁子节点状态，再摘自己的 DOM */
+        Object.keys(S.P).filter(function (k) { return S.P[k] === S.E[id] && k !== id; })
+            .forEach(function (k) { destroyNode(k); });
+        var w = S.E[id];
+        try { if (window.Alpine) Alpine.destroyTree(w); } catch (e2) { }
+        if (w.parentNode) w.parentNode.removeChild(w);
+        delete S.E[id]; delete S.R[id]; delete S.K[id]; delete S.EV[id];
+        delete S.ND[id]; delete S.P[id]; delete S.WIN[id]; delete S.NAME[id];
+        Object.keys(S.sigs).forEach(function (k) { if (k.indexOf(id + '|') === 0) delete S.sigs[k]; });
+        if (S.forms[id]) delete S.forms[id];
+    }
+
+    /* TSplitter 拖动（坑 186）：LCL 语义是分隔条按 Align 吸附一侧，拖动改变
+       同侧邻居尺寸。这里 pointerdown/move/up 只做本地即时反馈——拖动中把分隔条
+       DOM 临时挪到指针位置（邻居暂不动），松手时把新位置回传服务端；服务端调
+       LCL 原生 SetSplitterPosition 按 Align 重排邻居，下一轮补丁带回所有控件
+       的新坐标，applyRect/runLayout 一次落地。不在每次 move 都 fire（在途事件
+       只允许一个），本地拖动不会丢。触摸用 pointer 事件天然兼容，setPointerCapture
+       保证指针移出分隔条仍能收到 move/up。 */
+    function bindSplitterDrag(id, node, w) {
+        var n = S.ND[id] || node;
+        /* 竖向分隔条（col-resize）水平拖，改 Left；横向（row-resize）垂直拖，改 Top。
+           优先按 Align 判定，未设 Align 时按设计期宽高比推断（细长竖条=水平拖）。 */
+        var al = n.align;
+        var horiz = (al === 'left' || al === 'right') ||
+                    ((!al || al === 'none') && ((n.w || 0) <= (n.h || 0)));
+        var dragging = false, moved = false;
+        var sx = 0, sy = 0, start = 0, cur = 0, pid = null;
+        w.style.touchAction = 'none';
+        /* 光标按方向：竖向分隔条左右拖 col-resize，横向上下拖 row-resize。
+           .lw-splitter 默认 col-resize，这里只覆盖横向，避免动全局样式。 */
+        if (!horiz) w.style.cursor = 'row-resize';
+        /* 拖动反馈加在分隔条内部元素上（wrapper 本身要保留 absolute 定位） */
+        var bar = w.querySelector('.lw-splitter') || w;
+        w.addEventListener('pointerdown', function (e) {
+            if (e.button !== undefined && e.button !== 0) return;
+            var live = S.ND[id];
+            if (!live) return;
+            sx = e.clientX; sy = e.clientY;
+            start = cur = horiz ? (live.x || 0) : (live.y || 0);
+            dragging = true; moved = false; pid = e.pointerId;
+            if (bar.classList) bar.classList.add('lw-splitter-dragging');
+            if (w.setPointerCapture) { try { w.setPointerCapture(e.pointerId); } catch (er) { } }
+            e.preventDefault();
+        });
+        w.addEventListener('pointermove', function (e) {
+            if (!dragging || (pid !== null && e.pointerId !== pid)) return;
+            var d = horiz ? (e.clientX - sx) : (e.clientY - sy);
+            if (!moved && Math.abs(d) < 4) return;  /* 阈值：区分点击与拖动 */
+            moved = true;
+            cur = start + d;
+            if (horiz) w.style.left = cur + 'px';
+            else w.style.top = cur + 'px';
+            e.preventDefault();
+        });
+        function finish(e) {
+            if (!dragging) return;
+            if (pid !== null && e && e.pointerId !== undefined && e.pointerId !== pid) return;
+            dragging = false; pid = null;
+            if (bar.classList) bar.classList.remove('lw-splitter-dragging');
+            if (!moved) return;
+            /* 回传相对位移 sd（像素）：浏览器 clientX 原点与 LCL 控件坐标系不同，
+               不能传绝对位置。服务端以 GetSplitterPosition+sd 作目标调
+               SetSplitterPosition，按 Align 重排邻居并回包校正。 */
+            fire(id, 'OnSplitterMove', { sd: Math.round(cur - start) });
+        }
+        w.addEventListener('pointerup', finish);
+        w.addEventListener('pointercancel', finish);
+    }
+
+    function bindNodeEvents(id, node, w) {
+        var ev = node.ev || [];
+        function has(n) { return ev.indexOf(n) >= 0; }
+        if (node.kind === 'splitter') bindSplitterDrag(id, node, w);
+        if (node.popup && node.popup.length) {
+            w.addEventListener('contextmenu', function (e) {
+                e.preventDefault();
+                /* 用最新下发的节点：菜单项的 checked / enabled 可能被服务端改过 */
+                var cur = S.ND[id] || node;
+                var items = cur.popup || node.popup;
+                var pop = openMenuPop(items, null);
+                pop.style.left = e.clientX + 'px';
+                pop.style.top = e.clientY + 'px';
+                bindMenuPop(pop, items);
+            });
+        }
+        if (has('OnDblClick')) {
+            w.addEventListener('dblclick', function () { fire(id, 'OnDblClick'); });
+        }
+    }
+
+    /* ---------------- 窗体 ---------------- */
+
+    var TITLE_H = 28, STATUS_H = 24;
+
+    /* ---------------- 状态栏 ----------------
+
+       LCL 的 TStatusBar 不是"一行文本"，是"一格一格的栏"：每格有宽度、
+       对齐方式、边框（Bevel），最后一格一直延到右边缘（win32 下发分区
+       时 Rights[last] := -1），高度由 Height 决定（缩放后可能是 23/28…）。
+
+       以前前端只拿到 Panels[i].Text，于是高度写死 24px、每格按内容撑开
+       —— 空文本 + 1px 分隔线 = 21px 的小方块，整条栏看上去"只有左边
+       两个小格子，其余全空"，和桌面端完全不是一回事。现在服务端把结构
+       发在 f.sb 里，这里按它画；f.status 只当文本。 */
+
+    function statusInfo(f) { return f.sb || null; }
+
+    function statusH(f) {
+        var sb = statusInfo(f);
+        if (sb) return sb.h > 0 ? sb.h : STATUS_H;
+        return (f.status && f.status.length) ? STATUS_H : 0;
+    }
+
+    function hasStatusbar(f) {
+        if (statusInfo(f)) return true;
+        return !!(f.status && f.status.length);
+    }
+
+    function paintStatusbar(el, f) {
+        var sb = statusInfo(f) || {};
+        var texts = f.status || [];
+        var h = sb.h > 0 ? sb.h : STATUS_H;
+        el.style.height = h + 'px';
+        el.style.lineHeight = h + 'px';
+
+        var html = '';
+        if (sb.simple) {
+            html = '<span class="lw-status-item" style="flex:1 1 auto;min-width:0;">' +
+                esc(sb.simpletext == null ? '' : String(sb.simpletext)) + '</span>';
+        } else {
+            var panels = sb.panels || [];
+            var n = Math.max(panels.length, texts.length);
+            for (var i = 0; i < n; i++) {
+                var p = panels[i] || {};
+                var w = parseInt(p.w, 10) || 0;
+                var st = 'text-align:' +
+                    (p.al === 1 ? 'right' : (p.al === 2 ? 'center' : 'left')) + ';';
+                if (i === n - 1) st += 'flex:1 1 auto;min-width:0;';
+                else if (w > 0) st += 'flex:0 0 ' + w + 'px;';
+                else st += 'flex:1 1 0;';      /* 宽度 0 = 平分剩余空间 */
+                /* 最后一格右边缘没有分界线（LCL 只在格与格之间画 bevel） */
+                if (p.bev === 0 || i === n - 1) st += 'border-right:0;';
+                html += '<span class="lw-status-item" style="' + st + '">' +
+                    esc(texts[i] == null ? '' : String(texts[i])) + '</span>';
+            }
+            if (!n) html = '<span class="lw-status-item" style="flex:1 1 auto;"></span>';
+        }
+        el.innerHTML = html;
+    }
+
+    /* 状态栏的位置交给 CSS（bottom:0 贴客户区底边），这里只管宽度与高度：
+       宽度取客户区实宽（左侧有折叠菜单时 applySideLayout 会再收窄），
+       高度取 LFM 里的 TStatusBar.Height —— 这样窗口拖大拖小都不会浮空 */
+    function placeStatusbar(win, body, f) {
+        var el = win.__lwStatus;
+        if (!el) return;
+        var h = statusH(f);
+        el.style.width = (body.clientWidth || f.w || 300) + 'px';
+        el.style.height = h + 'px';
+        el.style.lineHeight = h + 'px';
+    }
+
+    function buildForm(f) {
+        if (S.forms[f.id]) return S.forms[f.id];
+
+        /* 主题：服务端的窗体属性只当"首次默认值"。本地已经有用户选择时
+           不动（用户的显式选择优先于设计期默认值） */
+        if (!S.themeSeen) {
+            S.themeSeen = true;
+            /* 7 套配色都能当默认值（服务端 LWTheme 下拉里就是这 7 个 + auto） */
+            if (!themeSaved && THEME_FIXED.indexOf(f.theme) >= 0) {
+                themeApply(f.theme, false);
+            }
+        }
+
+        var fx = f.x, fy = f.y;
+        /* 模态/非模态一律在视口里居中（坑 93）：LFM 的 Left/Top 常是 0 或
+           设计时随手摆的位置，模态窗体沿用会怼在左上角 */
+        fx = Math.max(8, Math.floor((window.innerWidth - (f.w || 300)) / 2));
+        fy = Math.max(8, Math.floor((window.innerHeight - (f.h || 300)) / 3));
+
+        var root = document.getElementById('lw-root');
+        var clientH = f.ch || f.h || 200;
+        var win = document.createElement('div');
+        win.className = 'lw-win';
+        win.setAttribute('data-lwid', f.id);
+        win.style.left = fx + 'px';
+        win.style.top = fy + 'px';
+        win.style.width = (f.w || 300) + 'px';
+        /* 窗口总高 = 标题栏 + 客户区。与 Ext 版 show() 后的 dh 补偿同语义
+           （lw.js：窗口 height 含标题栏，LCL ClientHeight 不含，差值补回去），
+           否则 .lw-win-body 只剩 h-28，客户区底部（如模态窗体的关闭按钮）被裁掉 */
+        win.style.height = (clientH + TITLE_H) + 'px';
+        win.style.zIndex = 100 + Object.keys(S.forms).length;
+        /* 先隐藏：模板（尤其平面模式）是异步 fetch 后才套用的，若先显示浮窗
+           再改成整页，用户会看到带标题栏的窗体闪一下再消失（空窗体最明显）。
+           visibility 保留布局尺寸，下面 getBoundingClientRect 的 dh 补偿照常；
+           lwApplyFormTpl 的所有终态分支都会 lwRevealForm 把它显示出来。 */
+        win.style.visibility = 'hidden';
+        /* 可调大小：LFM 的 bsSizeable/bsSizeToolWin 才给拖角调整（与 Ext 版
+           resizable: !!f.resizable 同语义），用 CSS resize + ResizeObserver */
+        if (f.resizable) win.classList.add('lw-resizable');
+
+        /* 模态窗体遮罩：垫在窗体下面一层，ShowModal 期间背景不可点（对齐 Ext modal:true） */
+        var maskEl = null;
+        if (f.modal) {
+            maskEl = document.createElement('div');
+                maskEl.className = 'lw-win-mask';
+                maskEl.style.zIndex = 99 + Object.keys(S.forms).length;
+                maskEl.style.visibility = 'hidden';   /* 与窗体一起等模板判定完再显示 */
+                root.appendChild(maskEl);
+        }
+
+        var title = document.createElement('div');
+        title.className = 'lw-win-title';
+        title.innerHTML = '<span class="lw-win-cap">' + esc(f.caption || f.name) + '</span>' +
+            /* 右上角图标（对齐 Ext 版 maximizable: true）：最大化/还原 +
+               模态窗体的 × 关闭。图标是手绘 SVG 而不是 ▢ / × 这些字形：
+               ▢（U+25A2）在很多字体里会落成"缺字方块"，看起来像坏掉的
+               边框，完全没有"放大"的含义；自绘的方形描边（还原时是双框
+               叠角）在 14px 下轮廓稳定，配 hover 底色就是标准窗口按钮。 */
+            '<span class="lw-win-max" title="' + lwT('最大化') + '">' + winIcon('max') + '</span>' +
+            (f.modal ? '<span class="lw-win-x" title="' + lwT('关闭') + '">' + winIcon('close') + '</span>' : '');
+        win.appendChild(title);
+        /* 配色切换按钮：只放在非模态窗口（模态对话框标题栏已经够挤，
+           而且它往往只显示几秒，不给它加控件） */
+        if (!themeBtnHidden && !f.modal) themeButton(title);
+
+        var body = document.createElement('div');
+        body.className = 'lw-win-body';
+        body.style.height = clientH + 'px';
+        body.style.background = f.bg || 'var(--lw-win-bg)';
+        body.style.overflow = 'auto';
+        var kids = document.createElement('div');
+        kids.className = 'lw-kids';
+        kids.style.position = 'relative';
+        kids.style.minHeight = '100%';
+        body.appendChild(kids);
+        win.appendChild(body);
+        root.appendChild(win);
+
+        /* 主菜单：插在标题栏与客户区之间（appendChild 会排到 body 之后，
+           flex 列布局下菜单会被挤到客户区下面去），并把高度补进窗口总高 */
+        var mbH = 0;
+        if (f.menu && f.menu.length) {
+            var mb = document.createElement('div');
+            mb.className = 'lw-menubar';
+            mb.innerHTML = f.menu.map(function (m, i) {
+                return '<div class="lw-menu-top" data-mi="' + i + '">' + accHtml(esc(m.caption || '')) + '</div>';
+            }).join('');
+            win.insertBefore(mb, body);
+            mbH = mb.offsetHeight || 26;
+            mb.querySelectorAll('.lw-menu-top').forEach(function (el) {
+                var mi = parseInt(el.getAttribute('data-mi'), 10);
+                el.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    var m = f.menu[mi];
+                    if (!m) return;
+                    if (!m.items || !m.items.length) {
+                        closeAllMenus();
+                        fire(m.id, 'OnClick');
+                        return;
+                    }
+                    /* 开关状态看真实弹层，别再用 100ms 计时器猜：外部点击
+                       现在会关掉弹层，计时器那套会把"再点一次收起"变成重开 */
+                    if (menuPopEl && menuPopAnchor === el) { closeAllMenus(); return; }
+                    var pop = openMenuPop(m.items, el);
+                    var r = el.getBoundingClientRect();
+                    pop.style.left = r.left + 'px';
+                    pop.style.top = r.bottom + 'px';
+                    bindMenuPop(pop, m.items);
+                });
+            });
+        }
+
+        /* 实测补偿（与 Ext 版 show() 后的 dh 补偿同语义）：窗口边框 +
+           标题栏分隔线的 1px 误差会让 body 比 ch 矮一点，按实际读数补齐，
+           保证 body 的坐标空间精确等于 LCL 客户区（子控件按 ch 布局） */
+        try {
+            var bh = body.getBoundingClientRect().height;
+            var dh = clientH - bh;
+            if (dh) win.style.height = (win.offsetHeight + dh) + 'px';
+        } catch (e) { }
+
+        /* 状态栏：贴客户区底边（CSS bottom:0）。
+           高度/分格宽度由 LFM 里的 TStatusBar 决定（f.sb），不是写死 24 */
+        if (hasStatusbar(f)) {
+            var sb = document.createElement('div');
+            sb.className = 'lw-statusbar';
+            sb.style.width = (body.clientWidth || f.w || 300) + 'px';
+            paintStatusbar(sb, f);
+            win.appendChild(sb);
+            win.__lwStatus = sb;
+            /* 建窗时 body 还没量出宽度（同下面空载体的处理）：下一拍按实际
+               客户区宽度再贴一次，避免状态栏宽出窗体/短一截 */
+            defer(function () { placeStatusbar(win, body, f); }, 0);
+        }
+
+        /* 模态窗体右上角 × == OnClose。必须传 f.id：fire 的第一参数是
+           组件 id（S.ND 按 id 查），传节点对象服务端找不到组件，事件被
+           静默吞掉 —— × 点了没反应（服务端 lwdispatch 的
+           "OnClose on 模态窗体 -> SessionEndModal(mrCancel)" 永远收不到） */
+        var xBtn = title.querySelector('.lw-win-x');
+        if (xBtn) xBtn.addEventListener('click', function () { fire(f.id, 'OnClose'); });
+
+        /* 最大化/还原：CSS 类切换（!important 覆盖内联 left/top/w/h），
+           尺寸变化由 ResizeObserver 统一重排布局与状态栏 */
+        var maxBtn = title.querySelector('.lw-win-max');
+        if (maxBtn) maxBtn.addEventListener('click', function () {
+            win.__lwMax = !win.__lwMax;
+            win.classList.toggle('lw-max', win.__lwMax);
+            /* 图标与提示同步：最大化后换成"双框叠角"的还原图标，
+               否则用户只看到一个方框，分不清当前是放大还是缩回 */
+            maxBtn.innerHTML = winIcon(win.__lwMax ? 'restore' : 'max');
+            maxBtn.title = win.__lwMax ? lwT('还原') : lwT('最大化');
+        });
+
+        /* 标题栏拖动 */
+        title.addEventListener('mousedown', function (e) {
+            if (e.target.classList.contains('lw-win-x') ||
+                e.target.classList.contains('lw-win-max') ||
+                e.target.classList.contains('lw-win-theme')) return;
+            if (win.__lwMax) return;   /* 最大化时不可拖 */
+            /* 平移模式（移动端无模板回退）下窗体固定 left=0、靠滚动查看，
+               拖走会让右侧/下方露出页面底色，禁止拖动 */
+            if (document.documentElement.getAttribute('data-lw-pan') === '1') return;
+            var sx = e.clientX - win.offsetLeft, sy = e.clientY - win.offsetTop;
+            function mv(ev2) {
+                win.style.left = Math.max(0, ev2.clientX - sx) + 'px';
+                win.style.top = Math.max(0, ev2.clientY - sy) + 'px';
+            }
+            function up() { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); }
+            document.addEventListener('mousemove', mv);
+            document.addEventListener('mouseup', up);
+        });
+        title.addEventListener('mousedown', function () {
+            /* 置顶：点谁谁在最上面 */
+            var top = 100;
+            Object.keys(S.forms).forEach(function (k) {
+                var el = S.forms[k].el;
+                if (el) top = Math.max(top, parseInt(el.style.zIndex || 100, 10));
+            });
+            win.style.zIndex = top + 1;
+        });
+
+        S.forms[f.id] = {
+            el: win, body: kids, bodyEl: body, f: f, mask: maskEl,
+            sideSig: f.sidemenu ? smSig(f.sidemenu) : ''
+        };
+        S.K[f.id] = 'form';
+        S.ND[f.id] = f;
+        S.EV[f.id] = f.ev || [];
+        S.E[f.id] = kids;
+        S.WIN[f.id] = f.id;
+        S.P[f.id] = kids;
+        stateOf(f);
+
+        /* 窗体尺寸变化（用户拖角 / 最大化还原）→ 状态栏跟随 + align 子项重排。
+           CSS resize 不派发任何事件，ResizeObserver 是唯一可靠的钩子 */
+        if (typeof ResizeObserver !== 'undefined') {
+            var roPending = false;
+            var ro = new ResizeObserver(function () {
+                if (roPending) return;
+                roPending = true;
+                requestAnimationFrame(function () {
+                    roPending = false;
+                    try {
+                        var fm = S.forms[f.id];
+                        if (!fm) return;
+                        if (win.__lwStatus) placeStatusbar(win, body, fm.f);
+                        /* 侧栏高度与客户区右移量跟着窗口尺寸走 */
+                        if (win.__lwSide) applySideLayout(win, body, kids, fm.f);
+                        /* 模板不接管排布：尺寸变化时始终按 LFM 绝对坐标重算 */
+                        runLayout({ body: kids }, fm.f.children || []);
+                    } catch (e) { }
+                });
+            });
+            ro.observe(win);
+            S.forms[f.id].ro = ro;
+        }
+
+        /* 左侧折叠菜单必须在 syncChildren 之前建：它会先给 kids 让出
+           侧栏宽度，随后 runLayout 才能按变窄后的客户区算 alClient */
+        if (f.sidemenu) buildSideMenu(win, body, kids, f);
+
+        var that = { body: kids, winId: f.id };
+        syncChildren(that, f);
+        /* 窗体建好即按当前布局模式套模板（两端都会尝试；无模板各自回退
+           设计期所见即所得） */
+        lwApplyFormTpl(S.forms[f.id], layoutState || 'desktop');
+        return S.forms[f.id];
+    }
+
+    function closeFormWin(id) {
+        var fm = S.forms[id];
+        if (!fm) return;
+        /* 先递归销毁子节点状态，再摘 DOM */
+        (fm.f.children || []).forEach(function (n) { destroyNode(n.id); });
+        delete S.K[id]; delete S.ND[id]; delete S.EV[id]; delete S.E[id];
+        delete S.P[id]; delete S.WIN[id]; delete S.R[id];
+        delete S.forms[id];
+        if (fm.mask && fm.mask.parentNode) fm.mask.parentNode.removeChild(fm.mask);
+        if (fm.ro) { try { fm.ro.disconnect(); } catch (e) { } }
+        if (fm.el.parentNode) fm.el.parentNode.removeChild(fm.el);
+    }
+
+    /* ---------------- 左侧折叠菜单（TLWSideMenu） ----------------
+
+       LCL 组件 TLWSideMenu 是 TMenu 的后裔（设计期有 IDE 原生菜单编辑器），
+       writer 把它序列化到窗体级的 f.sidemenu：
+         { width, itemheight, header, firstopen, items:[{id,caption,
+           enabled,checked,sep,shortcut,icon(dataURI),ev,items}] }
+
+       前端把顶层项渲染成可折叠分组、叶子项渲染成可点击行（点击回发
+       服务端 OnClick），并把客户区 kids 整体右移让位 —— kids 变窄之后，
+       框架自己的 runLayout 会把 alTop/alClient 的子控件按新宽度重算，
+       所以 LCL 那边不用为侧栏做任何布局妥协。 */
+
+    function smSig(sm) {
+        try { return JSON.stringify(sm); } catch (e) { return ''; }
+    }
+
+    function smOpenMap(formName) {
+        try { return JSON.parse(localStorage.getItem('lwSide:' + formName) || '{}'); }
+        catch (e) { return {}; }
+    }
+
+    function smOpenSave(formName, gi, val) {
+        try {
+            var m = smOpenMap(formName);
+            m[gi] = val;
+            localStorage.setItem('lwSide:' + formName, JSON.stringify(m));
+        } catch (e) { }
+    }
+
+    function smIcon(it) {
+        if (it.icon) return '<img class="lw-sm-ic" src="' + it.icon + '" alt="">';
+        return '<span class="lw-sm-ic"></span>';
+    }
+
+    function buildSideMenu(win, body, kids, f) {
+        var sm = f.sidemenu;
+        if (!sm) return;
+        var old = win.__lwSide;
+        if (old && old.parentNode) old.parentNode.removeChild(old);
+
+        var W = sm.width || 260;
+        var open = smOpenMap(f.name);
+        var h = '';
+        (sm.items || []).forEach(function (g, gi) {
+            var subs = g.items || [];
+            if (g.sep) { h += '<div class="lw-sm-sep"></div>'; return; }
+            /* 顶层叶子：直接是可点的菜单行（没有分组外壳） */
+            if (!subs.length) {
+                h += '<div class="lw-sm-item lw-sm-top' + (g.checked ? ' on' : '') +
+                    (g.enabled === false ? ' dis' : '') + '" data-mid="' + g.id + '">' +
+                    smIcon(g) + '<span class="lw-sm-t">' + accHtml(esc(g.caption || '')) + '</span></div>';
+                return;
+            }
+            var isOpen = (open[gi] === undefined) ?
+                (gi === 0 ? !!sm.firstopen : false) : !!open[gi];
+            h += '<div class="lw-sm-grp">' +
+                '<div class="lw-sm-grphead' + (isOpen ? ' open' : '') + '" data-gi="' + gi + '">' +
+                '<span class="lw-sm-arw">\u25B6</span>' +
+                '<span class="lw-sm-t">' + accHtml(esc(g.caption || '')) + '</span></div>' +
+                '<div class="lw-sm-items"' + (isOpen ? '' : ' style="display:none"') + '>';
+            subs.forEach(function (it) {
+                if (it.sep) { h += '<div class="lw-sm-sep"></div>'; return; }
+                h += '<div class="lw-sm-item' + (it.checked ? ' on' : '') +
+                    (it.enabled === false ? ' dis' : '') + '" data-mid="' + it.id + '">' +
+                    smIcon(it) + '<span class="lw-sm-t">' + accHtml(esc(it.caption || '')) + '</span>' +
+                    (it.shortcut ? '<i class="lw-sm-sc">' + esc(it.shortcut) + '</i>' : '') +
+                    '</div>';
+            });
+            h += '</div></div>';
+        });
+
+        var el = document.createElement('div');
+        el.className = 'lw-sidemenu';
+        el.style.width = W + 'px';
+        if (sm.itemheight) el.style.setProperty('--lw-sm-h', sm.itemheight + 'px');
+        el.innerHTML = (sm.header ? '<div class="lw-sm-head">' + esc(sm.header) + '</div>' : '') +
+            '<div class="lw-sm-body">' + h + '</div>';
+        body.insertBefore(el, body.firstChild);
+        win.__lwSide = el;
+
+        el.querySelectorAll('.lw-sm-grphead').forEach(function (gh) {
+            gh.addEventListener('click', function () {
+                var gi = parseInt(gh.getAttribute('data-gi'), 10);
+                var box = gh.nextElementSibling;
+                var nowOpen = !gh.classList.contains('open');
+                gh.classList.toggle('open', nowOpen);
+                if (box) box.style.display = nowOpen ? '' : 'none';
+                smOpenSave(f.name, gi, nowOpen);
+            });
+        });
+
+        /* 叶子项点击：本地先高亮，随后服务端 Checked/状态栏回来以后
+           以服务端为准（补丁里的 sidemenu 会整块重渲） */
+        el.querySelectorAll('.lw-sm-item[data-mid]').forEach(function (itEl) {
+            itEl.addEventListener('click', function () {
+                if (itEl.classList.contains('dis')) return;
+                el.querySelectorAll('.lw-sm-item.on').forEach(function (p) { p.classList.remove('on'); });
+                itEl.classList.add('on');
+                fire(parseInt(itEl.getAttribute('data-mid'), 10), 'OnClick');
+            });
+        });
+
+        applySideLayout(win, body, kids, f);
+        /* 首次建树时 body 可能还没量出宽度，下一拍补一次 */
+        if (!body.clientWidth) defer(function () { applySideLayout(win, body, kids, f); }, 0);
+    }
+
+    function applySideLayout(win, body, kids, f) {
+        var el = win.__lwSide;
+        if (!el) return;
+        var W = parseInt(el.style.width, 10) || 260;
+        var cw = body.clientWidth, ch = body.clientHeight;
+        if (cw > 0) {
+            kids.style.marginLeft = W + 'px';
+            kids.style.width = Math.max(0, cw - W) + 'px';
+            /* 状态栏也属于客户区：从侧栏右边开始，不再横跨侧栏下方 */
+            if (win.__lwStatus) {
+                win.__lwStatus.style.left = W + 'px';
+                win.__lwStatus.style.width = Math.max(0, cw - W) + 'px';
+            }
+        }
+        if (ch > 0) {
+            var sbH = hasStatusbar(f) ? statusH(f) : 0;
+            el.style.height = Math.max(0, ch - sbH) + 'px';
+        }
+    }
+
+    /* ---------------- 补丁（增量协调） ---------------- */
+
+    function patchNode(n) {
+        var id = n.id;
+        var prev = S.ND[id] || {};
+        var r = S.R[id];
+        S.ND[id] = n;
+        S.EV[id] = n.ev || [];
+        var el = S.E[id];
+        if (!el || !r) { return; }
+
+        try {
+            if (prev.enabled !== n.enabled) r.dis = n.enabled === false;
+            if (n.kind !== 'tabsheet' && prev.visible !== n.visible) {
+                el.style.display = (n.visible === false) ? 'none' : '';
+            }
+            applyHint(id, n);
+        } catch (e) { }
+
+        /* 文本/标题 */
+        try {
+            if (n.kind === 'label' || n.kind === 'static' || n.kind === 'statusbar') {
+                if (prev.text !== n.text) r.txt = n.text != null ? String(n.text) : (n.caption || '');
+                else if (prev.caption !== n.caption) r.txt = n.caption || '';
+            } else if (n.kind === 'button' || n.kind === 'bitbtn' || n.kind === 'speedbutton' ||
+                n.kind === 'toolbutton' || n.kind === 'fileupload' || n.kind === 'camera') {
+                if (prev.caption !== n.caption) r.cap = n.caption || '';
+                if (n.kind === 'speedbutton' && prev.down !== undefined && prev.down !== n.down) r.down = !!n.down;
+            } else if (n.kind === 'groupbox' || n.kind === 'radiogroup' || n.kind === 'checkgroup' || n.kind === 'dbradiogroup') {
+                if (prev.caption !== n.caption) r.cap = n.caption || '';
+            }
+            /* ShowAccelChar 运行期被改（少见但合法）：0/1 切换后重画 */
+            if ((prev.acc === 0) !== (n.acc === 0)) r.acc = n.acc === 0 ? 0 : 1;
+        } catch (e) { }
+
+        /* 绑定标签重新贴 */
+        try { if (n.boundfor) fixBoundLabel(id); } catch (e) { }
+
+        /* 值（不要覆盖正在编辑的输入框） */
+        try {
+            var focused = el.contains(document.activeElement);
+            if (n.kind === 'edit' || n.kind === 'maskedit' || n.kind === 'memo' ||
+                n.kind === 'dbedit' || n.kind === 'dbmemo') {
+                if (!focused && prev.text !== n.text) r.txt = (n.text || '').replace(/\r\n/g, '\n');
+            } else if (n.kind === 'checkbox' || n.kind === 'dbcheckbox') {
+                if (prev.checked !== n.checked) r.chk = !!n.checked;
+                if (prev.state !== n.state) r.ind = n.state === 2;
+            } else if (n.kind === 'radio') {
+                if (prev.checked !== n.checked) r.chk = !!n.checked;
+            } else if (n.kind === 'spin' || n.kind === 'floatspin' || n.kind === 'updown') {
+                if (prev.value !== n.value && !focused) r.val = n.value;
+            } else if (n.kind === 'combo' || n.kind === 'dbcombo') {
+                if (prev.text !== n.text && !focused) r.txt = n.text || '';
+                if (JSON.stringify(prev.items) !== JSON.stringify(n.items)) r.items = n.items || [];
+            } else if (n.kind === 'dblookup') {
+                if (prev.key !== n.key && !focused) r.key = n.key != null ? String(n.key) : '';
+                if (JSON.stringify(prev.items) !== JSON.stringify(n.items)) r.items = n.items || [];
+                if (JSON.stringify(prev.keys) !== JSON.stringify(n.keys)) r.keys = n.keys || [];
+            } else if (n.kind === 'dateedit' || n.kind === 'timeedit') {
+                if (prev.iso !== n.iso && !focused) r.iso = n.iso || '';
+            } else if (n.kind === 'progress') {
+                r.pos = n.pos || 0; r.max = n.max || 0;
+            } else if (n.kind === 'trackbar') {
+                if (prev.pos !== n.pos && !focused) r.val = n.pos || 0;
+            } else if (n.kind === 'listbox' || n.kind === 'dblistbox') {
+                if (JSON.stringify(prev.items) !== JSON.stringify(n.items)) r.items = n.items || [];
+                if (prev.index !== n.index) r.idx = (typeof n.index === 'number') ? n.index : -1;
+            } else if (n.kind === 'dblookuplist') {
+                if (JSON.stringify(prev.items) !== JSON.stringify(n.items)) r.items = n.items || [];
+                if (JSON.stringify(prev.keys) !== JSON.stringify(n.keys)) r.keys = n.keys || [];
+                var ki = (n.keys || []).map(String).indexOf(String(n.key));
+                r.idx = ki;
+            } else if (n.kind === 'radiogroup') {
+                if (prev.index !== n.index) r.idx = (typeof n.index === 'number') ? n.index : -1;
+                if (JSON.stringify(prev.items) !== JSON.stringify(n.items)) r.items = n.items || [];
+            } else if (n.kind === 'dbradiogroup') {
+                if (prev.value !== n.value) r.val = n.value != null ? String(n.value) : '';
+                if (JSON.stringify(prev.items) !== JSON.stringify(n.items)) r.items = n.items || [];
+                if (JSON.stringify(prev.values) !== JSON.stringify(n.values)) r.keys = n.values || [];
+            } else if (n.kind === 'checkgroup' || n.kind === 'checklistbox') {
+                /* 指纹必须存 S.sigs（key 带 id），不能存 prev 上 —— patchNode
+                   每次都用新节点替换 S.ND[id]，存 prev 等于每次都丢，
+                   丢一次就按"内容变了"用服务端旧状态覆盖 r.checked，
+                   用户刚点勾的复选框立刻被打回（坑 94 的根因） */
+                var csig = JSON.stringify(Array.isArray(n.checked) ? n.checked : []);
+                if (S.sigs[id + '|cg'] !== csig) {
+                    S.sigs[id + '|cg'] = csig;
+                    r.checked = Array.isArray(n.checked) ? n.checked.slice() : [];
+                }
+                if (JSON.stringify(prev.items) !== JSON.stringify(n.items)) r.items = n.items || [];
+                if (n.kind === 'checklistbox' && n.index != null &&
+                    prev.index !== n.index && typeof n.index === 'number') r.idx = n.index;
+            } else if (n.kind === 'image' || n.kind === 'dbimage' || n.kind === 'captcha') {
+                /* captcha 的 src 只在服务端 Refresh（版本号变化）后才变，
+                   平时补丁不会动它 —— 用户已经看清的码不会中途被换掉 */
+                if (prev.src !== n.src) r.src = n.src || '';
+            }
+        } catch (e) { }
+
+        /* 列表/网格/树/帧：内容指纹变了才整块重建 */
+        try {
+            if (n.kind === 'grid' || n.kind === 'drawgrid' || n.kind === 'listview') {
+                var sig = JSON.stringify(n.rows) + '#' + JSON.stringify(n.cols);
+                if (S.sigs[id + '|grid'] !== sig) {
+                    S.sigs[id + '|grid'] = sig;
+                    r.rows = n.rows || [];
+                    r.cols = n.cols || [];
+                    r.idx = (n.kind === 'listview') ? (n.index != null ? n.index : -1) : -1;
+                }
+                /* 服务端 ItemIndex 变化（数据没变也要跟随） */
+                if (n.kind === 'listview' && n.index != null &&
+                    prev.index !== n.index && typeof n.index === 'number') r.idx = n.index;
+            } else if (n.kind === 'valeditor') {
+                var vsig = JSON.stringify(n.keys) + '#' + JSON.stringify(n.values);
+                if (S.sigs[id + '|ve'] !== vsig) {
+                    S.sigs[id + '|ve'] = vsig;
+                    r.keys = n.keys || [];
+                    r.values = n.values || [];
+                }
+                if (n.selrow !== prev.selrow && (n.selrow || -1) >= 0) r.idx = n.selrow;
+                if (n.titles) {
+                    var ts = String(n.titles).split(',');
+                    r.t0 = ts[0] || 'Key'; r.t1 = ts[1] || 'Value';
+                }
+            } else if (n.kind === 'dbgrid') {
+                var dsig = JSON.stringify(n.rows || null) + '#' + JSON.stringify(n.cols || null) +
+                    '#' + JSON.stringify(n.hg || null);
+                var csig2 = JSON.stringify(n.cols || null) + '|' + JSON.stringify(n.hg || null);
+                if (prev.__dbSig !== dsig) {
+                    if (n.rows) {
+                        /* 就地编辑中：整表重灌行会把刚建出来的编辑器拆掉，
+                           用户看到的就是"点不开/改不了"。编辑器提交或取消
+                           时自己会发事件并带来新一轮补丁，这里先不记签名，
+                           等编辑器摘掉后再同步（否则这次变化就永远丢了） */
+                        if (dbCellEditing(id)) {
+                            /* 只放过列变化的重建以外的一切，等编辑结束 */
+                        } else if (prev.__dbColSig === csig2) {
+                            /* 列没变只灌行数据；内容其实没变就不要赋新数组 ——
+                               x-for 按引用比较，赋新数组会整表重建 */
+                            if (!sameRows(r.rows, n.rows)) r.rows = n.rows || [];
+                            prev.__dbColSig = csig2;
+                            prev.__dbSig = dsig;
+                        } else {
+                            /* 列变了整块重建（表头 + 行） */
+                            rebuildDbGrid(id, n);
+                            prev.__dbColSig = csig2;
+                            prev.__dbSig = dsig;
+                        }
+                    } else {
+                        prev.__dbSig = dsig;
+                    }
+                }
+                syncDbGridExtras(id, n);
+            } else if (n.kind === 'tree') {
+                var tsig = JSON.stringify(n.nodes || null);
+                if (S.sigs[id + '|tree'] !== tsig) {
+                    S.sigs[id + '|tree'] = tsig;
+                    renderTree(id);
+                }
+            } else if (n.kind === 'gauge') {
+                var gs = gaugeSig(n);
+                var g = document.getElementById('lw-gauge-' + id);
+                if (g && g.__lwSig !== gs) {
+                    g.__lwSig = gs;
+                    g.innerHTML = gaugeSvg(n);
+                }
+            } else if (n.kind === 'chart') {
+                var cs = chartSig(n);
+                var chh = document.getElementById('lw-ch-' + id);
+                if (chh && chh.__lwSig !== cs) {
+                    chh.__lwSig = cs;
+                    chh.innerHTML = chartSvg(n);
+                }
+            } else if (n.kind === 'htmlframe') {
+                var hs = n.html || '';
+                var hf = document.getElementById('lw-hf-' + id);
+                if (hf && hf.__lwSig !== hs) {
+                    hf.__lwSig = hs;
+                    hf.innerHTML = hs;
+                    execHtmlScripts(hf);
+                }
+            } else if (n.kind === 'pdfframe') {
+                var us = n.url || '';
+                var pf = document.getElementById('lw-pdf-' + id);
+                if (pf && pf.__lwUrlSig !== us) renderPdf(id, n);
+            } else if (n.kind === 'dbnav') {
+                /* 导航按钮 Enabled 跟随服务端按数据集状态算出的结果 */
+                var btns = el.querySelectorAll('.lw-nav');
+                (n.buttons || []).forEach(function (nb) {
+                    btns.forEach(function (b) {
+                        if (b.getAttribute('data-navid') === nb.id) b.disabled = (nb.en === false);
+                    });
+                });
+            } else if (n.kind === 'tabs') {
+                if (typeof n.active === 'number' && prev.active !== n.active && prev.active !== undefined) {
+                    r.active = n.active;
+                    buildTabbar(id, n);   /* 标签高亮 + 卡片可见性 */
+                }
+            } else if (n.kind === 'tabctl') {
+                /* 服务端改 TabIndex（代码赋值）时页签高亮跟着切 */
+                if (typeof n.tabindex === 'number' && prev.tabindex !== n.tabindex && prev.tabindex !== undefined) {
+                    buildTabCtl(id, n);
+                }
+            } else if (n.kind === 'color') {
+                if (prev.value !== n.value) {
+                    var sw = el.querySelector('.lw-swatch');
+                    if (sw) sw.style.background = n.value || '#ffffff';
+                    /* 色块内的 input 也要跟着走，否则下次点开还是旧颜色 */
+                    var cinp = el.querySelector('.lw-cp-inp');
+                    if (cinp && n.value) cinp.value = n.value;
+                }
+            }
+        } catch (e) { }
+
+        /* 容器：递归同步子节点 */
+        if (isContainer(n) && n.kind !== 'form') {
+            var body = containerBody(el, n.kind);
+            if (body) syncChildren({ body: body, winId: S.WIN[id], flow: (n.kind === 'toolbar'), parentKind: n.kind, parentId: id }, n);
+        }
+    }
+
+    /* ---------------- 增量补丁（服务端 --patch=1） ----------------
+       ops 形如 ["p",id,{props}] / ["a",父id,下标,node] / ["d",id] / ["m",id,父id,下标]。
+       和"全量重下"相比只是少传数据，界面上走的仍是同一套 patchNode /
+       createNode / destroyNode，所以两条路的渲染行为天然一致。
+
+       版本（tver）对不上、窗体不认识、节点找不到 —— 一律退回全量（refreshTree），
+       不尝试修补。丢帧/多页签/重连都靠这一条自愈，不需要重传队列。 */
+
+    function applyPatch(p) {
+        if (!p || !p.patch) return false;
+        S.nPatch++;
+        if (typeof p.base === 'number' && S.tver >= 0 && p.base !== S.tver) {
+            log('patch ver mismatch', p.base, S.tver);
+            S.tver = -1;
+            refreshTree();
+            return true;
+        }
+        var bad = false;
+        try {
+            p.patch.forEach(function (fp) {
+                var fm = S.forms[fp.f];
+                if (!fm) { bad = true; return; }
+                var idx = null, dirty = false;
+                (fp.ops || []).forEach(function (op) {
+                    if (!idx) idx = treeIndexOf(fp.f);
+                    var tag = op[0];
+                    if (tag === 'p') {
+                        applyPropsOp(fp.f, fm, op[1], op[2], idx);
+                    } else {
+                        applyStructOp(fp.f, fm, op, idx);
+                        dirty = true;
+                        idx = null;       /* 结构变了，索引作废，下一条重算 */
+                    }
+                });
+                if (dirty && !S.forms[fp.f]) bad = true;
+            });
+        } catch (e) {
+            log('patch failed', e);
+            bad = true;
+        }
+        if (bad) {
+            S.tver = -1;
+            refreshTree();
+            return true;
+        }
+        S.tver = (typeof p.tver === 'number') ? p.tver : -1;
+        return true;
+    }
+
+    /* 窗体当前的节点索引：id -> {n: 节点对象, p: 父节点} */
+    function treeIndexOf(formId) {
+        var fm = S.forms[formId];
+        var out = {};
+        if (!fm) return out;
+        (function walk(n, parent) {
+            out[n.id] = { n: n, p: parent };
+            (n.children || []).forEach(function (c) { walk(c, n); });
+        })(fm.f, null);
+        return out;
+    }
+
+    /* 容器上下文（createNode / runLayout 要的 ct） */
+    function ctOfNode(n, formId) {
+        if (!n || n.id === formId) {
+            var fm = S.forms[formId];
+            return fm ? { body: fm.body, winId: formId } : null;
+        }
+        var el = S.E[n.id];
+        if (!el) return null;
+        var body = containerBody(el, n.kind);
+        if (!body) return null;
+        return {
+            body: body, winId: S.WIN[n.id], flow: (n.kind === 'toolbar'),
+            parentKind: n.kind, parentId: n.id
+        };
+    }
+
+    /* 按 list 的顺序把 body 里的元素排好（appendChild/insertBefore 都只是搬动，
+       不会重建，所以焦点和滚动位置都保得住） */
+    function reorderDom(body, list) {
+        if (!body) return;
+        var ref = null;
+        for (var i = list.length - 1; i >= 0; i--) {
+            var el = S.E[list[i].id];
+            if (!el) continue;
+            if (el.parentNode !== body || el.nextSibling !== ref) body.insertBefore(el, ref);
+            ref = el;
+        }
+    }
+
+    function applyPropsOp(formId, fm, id, props, idx) {
+        if (!props) return;
+        var cur = (id === formId) ? fm.f : S.ND[id];
+        if (!cur) return;
+        var merged = {};
+        Object.keys(cur).forEach(function (k) { merged[k] = cur[k]; });
+        Object.keys(props).forEach(function (k) {
+            /* null = 服务端明确"这个属性没了"（如 TImage 清空图片） */
+            merged[k] = props[k];
+        });
+        if (id === formId) {
+            fm.f = merged;
+            S.ND[id] = merged;
+            var cap = fm.el.querySelector('.lw-win-cap');
+            if (cap) cap.textContent = merged.caption || merged.name || '';
+            if (fm.el.__lwStatus && merged.status) {
+                fm.el.__lwStatus.innerHTML = merged.status.map(function (t) {
+                    return '<span class="lw-status-item">' + esc(t == null ? '' : String(t)) + '</span>';
+                }).join('');
+            }
+            if (merged.children) runLayout({ body: fm.body }, merged.children);
+            /* 侧栏菜单（TLWSideMenu）整块重渲：Checked（选中高亮）、
+               Caption、Enabled 变了都要跟着刷新，一个窗体只有一块侧栏 */
+            if (merged.sidemenu) {
+                var ssig = smSig(merged.sidemenu);
+                if (fm.sideSig !== ssig) {
+                    fm.sideSig = ssig;
+                    buildSideMenu(fm.el, fm.bodyEl, fm.body, merged);
+                    runLayout({ body: fm.body }, merged.children || []);
+                }
+            }
+            return;
+        }
+        var info = idx[id];
+        if (info && info.p && info.p.children) {
+            var at = info.p.children.indexOf(cur);
+            if (at >= 0) info.p.children[at] = merged;   /* 保持树里指向新对象 */
+        }
+        patchNode(merged);
+        /* 几何补丁落地（坑 188）：--patch=1 时服务端只回变化的几何属性，
+           但 patchNode 不写 DOM 坐标、也不重排 align 兄弟 —— 这正是
+           TSplitter 拖动后「分隔条动了、邻居 Panel 不变」的根因：全量路径
+           的 syncChildren 末尾会 runLayout，增量路径此前没有。这里把几何
+           变化补到 DOM 并按 align 重排父容器，让两条路径行为一致。 */
+        if (props && (('x' in props) || ('y' in props) || ('w' in props) ||
+                      ('h' in props) || ('align' in props))) {
+            applyGeomPatch(formId, merged, info);
+        }
+    }
+
+    /* 把几何属性的变化落到 DOM（增量补丁专用，见坑 188）。runLayout 只按
+       align 拉伸有 align 的兄弟、跳过 none/无 align 的控件，所以分两类：
+       none 控件自己写服务端绝对坐标，其余交给父容器 runLayout 重排。 */
+    function applyGeomPatch(formId, n, info) {
+        var el = S.E[n.id];
+        if (el && (!n.align || n.align === 'none')) {
+            el.style.left = (n.x || 0) + 'px';
+            el.style.top = (n.y || 0) + 'px';
+            el.style.width = (n.w || 0) + 'px';
+            el.style.height = (n.h || 0) + 'px';
+        }
+        var p = info && info.p;
+        if (!p) return;
+        var ct = ctOfNode(p, formId);
+        var list = p.children || [];
+        if (ct && ct.body && list.length) runLayout(ct, list);
+    }
+
+    function applyStructOp(formId, fm, op, idx) {
+        var tag = op[0];
+        var pid = (tag === 'a') ? op[1] : (tag === 'm' ? op[2] : 0);
+        var pnode = (pid === formId) ? fm.f : (pid ? S.ND[pid] : null);
+
+        if (tag === 'a') {
+            if (!pnode) return;
+            var arr = pnode.children || (pnode.children = []);
+            var at = op[2];
+            if (!(at >= 0) || at > arr.length) at = arr.length;
+            arr.splice(at, 0, op[3]);
+            var ct1 = ctOfNode(pnode, formId);
+            if (!ct1) return;
+            destroyNode(op[3].id);          /* 万一有残留 */
+            createNode(op[3], ct1);
+            reorderDom(ct1.body, arr);
+            runLayout(ct1, arr);
+            return;
+        }
+
+        if (tag === 'd') {
+            var info = idx[op[1]];
+            if (!info) return;
+            if (info.p && info.p.children) {
+                var k = info.p.children.indexOf(info.n);
+                if (k >= 0) info.p.children.splice(k, 1);
+            }
+            var ct2 = ctOfNode(info.p, formId);
+            destroyNode(op[1]);
+            if (ct2) runLayout(ct2, (info.p && info.p.children) || []);
+            return;
+        }
+
+        if (tag === 'm') {
+            if (!pnode) return;
+            var ma = pnode.children || [];
+            var mi = -1, q;
+            for (q = 0; q < ma.length; q++) if (ma[q].id === op[1]) { mi = q; break; }
+            if (mi < 0) return;
+            var mv = ma.splice(mi, 1)[0];
+            var mat = op[3];
+            if (!(mat >= 0) || mat > ma.length) mat = ma.length;
+            ma.splice(mat, 0, mv);
+            var ct3 = ctOfNode(pnode, formId);
+            if (!ct3) return;
+            reorderDom(ct3.body, ma);
+            runLayout(ct3, ma);
+        }
+    }
+
+    /* dbgrid 列变化：整个网格块重建（表头列数变了，x-for 补不了） */
+    function rebuildDbGrid(id, n) {
+        var el = S.E[id];
+        if (!el) return;
+        var host = el.querySelector('.lw-dbgrid');
+        if (!host) return;
+        var r = S.R[id];
+        r.cols = n.cols || [];
+        r.rows = n.rows || [];
+        var keep = host.querySelectorAll('.lw-grid-filter,.lw-grid-pager');
+        var gridBox = host.querySelector('.lw-dbgrid-body');
+        if (gridBox) {
+            var fresh = document.createElement('div');
+            fresh.className = 'lw-grid lw-boxed lw-dbgrid-body';
+            fresh.innerHTML = '<table class="' + tableCls(n) + '">' + dbHeadHtml(n, '$lwN(\'' + id + '\')', id) + '<tbody>' +
+                '<template x-for="(row,i) in $lwN(\'' + id + '\').rows" :key="i">' +
+                '<tr :class="i === $lwN(\'' + id + '\').recno - 1 ? \'lw-sel\' : \'\'" @click="$lwDbRow(\'' + id + '\', i, $event)">' +
+                '<template x-for="(cell,j) in row" :key="j">' +
+                dbCellTd(id) +
+                '</template></tr></template></tbody></table>';
+            gridBox.parentNode.replaceChild(fresh, gridBox);
+            try { if (window.Alpine) Alpine.initTree(fresh); } catch (e) { }
+        }
+    }
+
+    /* ---------------- 载荷应用 ---------------- */
+
+    function applyPayload(p) {
+        if (!p || !p.forms) return;
+        var winsBefore = document.querySelectorAll('.lw-win').length;
+        S.sid = p.sid || S.sid;
+        S.nFull++;
+        S.tver = (typeof p.tver === 'number') ? p.tver : -1;
+        var seen = {};
+        p.forms.forEach(function (f) {
+            seen[f.id] = true;
+            if (!S.forms[f.id]) { buildForm(f); return; }
+            var fm = S.forms[f.id];
+            var prevF = fm.f;
+            fm.f = f;
+            S.ND[f.id] = f;
+            /* 标题/状态栏文本 */
+            var cap = fm.el.querySelector('.lw-win-cap');
+            if (cap && prevF.caption !== f.caption) cap.textContent = f.caption || f.name;
+            if (!fm.el.__lwStatus && hasStatusbar(f)) {
+                /* 建窗时没有、后来才加上（运行时 Create 的 TStatusBar） */
+                var sbEl = document.createElement('div');
+                sbEl.className = 'lw-statusbar';
+                paintStatusbar(sbEl, f);
+                fm.el.appendChild(sbEl);
+                fm.el.__lwStatus = sbEl;
+                placeStatusbar(fm.el, fm.body, f);
+            } else if (fm.el.__lwStatus && (JSON.stringify(prevF.status || []) !== JSON.stringify(f.status || []) ||
+                JSON.stringify(prevF.sb || null) !== JSON.stringify(f.sb || null))) {
+                paintStatusbar(fm.el.__lwStatus, f);
+                placeStatusbar(fm.el, fm.body, f);
+            }
+            syncChildren({ body: fm.body, winId: f.id }, f);
+        });
+        Object.keys(S.forms).forEach(function (id) {
+            if (!seen[id]) closeFormWin(id);
+        });
+        /* 所有窗体都关了且没有登录窗体可回（点主窗体菜单"退出"）：
+           给个明确的结束提示，别留一张白纸 —— 那看起来更像"坏了"
+           （坑 35 的无登录版） */
+        if (winsBefore > 0 && document.querySelectorAll('.lw-win').length === 0 &&
+            !document.getElementById('lw-end')) {
+            var end = document.createElement('div');
+            end.id = 'lw-end';
+            end.innerHTML =
+                '<div class="lw-end-box"><div class="lw-end-t">' + lwT('会话已结束') + '</div>' +
+                '<div class="lw-end-s">' + lwT('窗体已全部关闭。服务端仍在运行时，刷新本页可重新进入。') + '</div></div>';
+            document.body.appendChild(end);
+        }
+        hideSplash();
+    }
+
+    /* 主动拉一次完整树（重发对话框被应答后用） */
+    function refreshTree() {
+        if (!S.sid) return;
+        api(BASE + 'lw/api/tree', null, function (resp, err) {
+            if (!err && resp) { try { applyPayload(resp); } catch (e) { log('refresh failed', e); } }
+        }, { params: { sid: S.sid }, timeout: 20000 });
+    }
+
+    /* ---------------- 服务端对话框 ----------------
+       ShowMessage / MessageDlg / InputQuery / Application.MessageBox /
+       QuestionDlg / TOpenDialog.Execute 全都在服务端挂起等待，
+       这里把描述渲染成模态窗口（Alpine store 驱动），用户一操作
+       就把结果 POST 回去。 */
+
+    /* 对话框类型的中文标题；PO 里给出各语言的译法 */
+    var DLG_TITLE = {
+        info: lwT('提示'), warning: lwT('警告'), error: lwT('错误'), question: lwT('确认'),
+        none: lwT('消息'), input: lwT('输入'), openfile: lwT('打开文件'), savefile: lwT('保存文件')
+    };
+
+    function dlgPost(id, r, text, cb) {
+        api(BASE + 'lw/api/dlg', { sid: S.sid, id: id, r: r, text: text == null ? '' : String(text) },
+            cb || function () { });
+    }
+
+    function showServerDialog(cmd) {
+        var s = st();
+        if (!s) return;
+        /* openfile 的 <input type=file> 留在命令对象里（Alpine 模板外） */
+        if (cmd.kind === 'openfile' && !cmd.__fileInput) {
+            var fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            if (cmd.input && cmd.input.multi) fileInput.multiple = true;
+            var acc = cmd.input && cmd.input.filter ? filterToAccept(cmd.input.filter) : '';
+            if (acc) fileInput.accept = acc;
+            fileInput.style.display = 'none';
+            document.body.appendChild(fileInput);
+            fileInput.onchange = function () {
+                if (!fileInput.files || !fileInput.files.length) return;
+                var fd = new FormData();
+                for (var i = 0; i < fileInput.files.length; i++)
+                    fd.append('file' + i, fileInput.files[i]);
+                var xhr = new XMLHttpRequest();
+                xhr.open('POST', BASE + 'lw/api/dlgfile?sid=' + encodeURIComponent(S.sid) +
+                    '&id=' + cmd.id, true);
+                xhr.onload = function () {
+                    if (xhr.status === 200) {
+                        closeDialog(false);   /* 答案已由上传接口带回服务端 */
+                        if (cmd.__lwResend) refreshTree();
+                    } else {
+                        showMsg(lwT('上传失败'), lwT('服务端返回 HTTP ') + xhr.status);
+                    }
+                };
+                xhr.onerror = function () { showMsg(lwT('上传失败'), lwT('网络错误，文件没有传到服务端')); };
+                xhr.upload.onprogress = function (e) {
+                    if (e.lengthComputable) {
+                        s.dlgUpload = lwT('正在上传… ') + Math.round(e.loaded * 100 / e.total) + '%';
+                    }
+                };
+                setBusy(true);
+                xhr.send(fd);
+            };
+            cmd.__fileInput = fileInput;
+            cmd.pick = function () { fileInput.click(); };
+        }
+        s.dlgText = (cmd.input && cmd.input.value != null) ? String(cmd.input.value) : '';
+        s.dlgUpload = '';
+        cmd.dlgKind = cmd.kind || 'none';
+        cmd.caption = cmd.caption || DLG_TITLE[cmd.dlgKind] || '消息';
+        s.dialog = cmd;
+    }
+
+    function closeDialog(answered, r, text) {
+        var s = st();
+        if (!s || !s.dialog) return;
+        var cmd = s.dialog;
+        var fi = cmd.__fileInput;
+        s.dialog = null;
+        if (answered) {
+            dlgPost(cmd.id, r, text, function () {
+                if (cmd.__lwResend) refreshTree();
+            });
+        }
+        /* 点右上角关闭 == 按取消键 */
+        if (!answered && cmd.kind !== 'openfile') dlgPost(cmd.id, cmd.escape != null ? cmd.escape : 2, '');
+        if (!answered && cmd.kind === 'openfile') dlgPost(cmd.id, cmd.escape != null ? cmd.escape : 2, '');
+        if (fi && fi.parentNode) fi.parentNode.removeChild(fi);
+    }
+
+    window.$lwDlgAnswer = function (btn) {
+        var s = st();
+        if (!s || !s.dialog) return;
+        var cmd = s.dialog;
+        var text = (cmd.kind === 'input' || cmd.kind === 'savefile') ? String(s.dlgText || '') : '';
+        closeDialog(true, btn.id, text);
+    };
+    window.$lwDlgClose = function () { closeDialog(false); };
+
+    /* 服务端对话框拖动：overlay 是 Alpine x-if 按需创建/销毁的，绑不到
+       固定元素上 —— 事件委托到 document。首次拖动把 flex 居中的窗口
+       固化成 position:fixed 显式坐标，之后跟随鼠标，松开即停。 */
+    document.addEventListener('mousedown', function (e) {
+        var t = e.target;
+        if (!t || !t.closest) return;
+        var title = t.closest('.lw-dlg-title');
+        if (!title) return;
+        if (t.classList.contains('lw-dlg-x')) return;   /* × 只负责关闭 */
+        var win = title.closest('.lw-dlg-win');
+        if (!win) return;
+        var r = win.getBoundingClientRect();
+        var sx = e.clientX - r.left, sy = e.clientY - r.top;
+        win.style.position = 'fixed';
+        win.style.left = r.left + 'px';
+        win.style.top = r.top + 'px';
+        win.style.marginTop = '0';
+        function mv(ev2) {
+            var x = Math.max(0, Math.min(window.innerWidth - 80, ev2.clientX - sx));
+            var y = Math.max(0, Math.min(window.innerHeight - 40, ev2.clientY - sy));
+            win.style.left = x + 'px';
+            win.style.top = y + 'px';
+        }
+        function up() {
+            document.removeEventListener('mousemove', mv);
+            document.removeEventListener('mouseup', up);
+        }
+        document.addEventListener('mousemove', mv);
+        document.addEventListener('mouseup', up);
+        e.preventDefault();
+    });
+
+    window.$lwDlgKey = function (e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            var s = st();
+            if (!s || !s.dialog) return;
+            var btns = s.dialog.buttons || [];
+            var def = null;
+            for (var i = 0; i < btns.length; i++) if (btns[i]['default']) { def = btns[i]; break; }
+            if (!def && btns.length) def = btns[0];
+            if (def) window.$lwDlgAnswer(def);
+        }
+    };
+
+    /* 普通消息框（上传失败等浏览器端错误，非服务端模态） */
+    function showMsg(title, text) {
+        var s = st();
+        if (!s) { alert(text); return; }
+        s.dialog = { kind: 'error', caption: title || lwT('消息'), text: text,
+            buttons: [{ id: 1, text: lwT('确定'), 'default': true }], __local: true };
+    }
+
+    /* ---------------- 指令处理（长轮询 / WS 推送共用） ---------------- */
+
+    function handleCmd(cmd, tree, resend) {
+        if (!cmd) return;
+        if (cmd.type === 'modal' && cmd.form) {
+            buildForm(cmd.form);
+            if (tree) applyPayload(tree);
+        } else if (cmd.type === 'show') {
+            if (tree) applyPayload(tree);
+        } else if (cmd.type === 'closeform') {
+            if (S.forms[cmd.id]) closeFormWin(cmd.id);
+        } else if (cmd.type === 'js') {
+            /* TLWForm.RunJS：服务端推一段 JS 在浏览器执行（同 lw.js）。
+               代码来自服务端业务代码，与组件树同一信任层级；失败只记日志 */
+            try { (new Function(cmd.code))(); } catch (e) { log('runjs failed', e); }
+        } else if (cmd.type === 'dialog') {
+            /* 多页签共享会话时只让"引起它的那个页签"弹窗（同 lw.js） */
+            if (!resend) {
+                if (S.multiTab && cmd.to && cmd.to !== S.tab) return;
+                if (!cmd.to && S.multiTab && !S.primary) return;
+            } else {
+                cmd.__lwResend = true;
+            }
+            showServerDialog(cmd);
+        } else if (cmd.type === 'mask') {
+            var s = st();
+            if (s) { s.mask.show = cmd.show !== false; s.mask.text = cmd.text || ''; }
+        } else if (cmd.type === 'msg') {
+            showMsg('lazarusWeb', esc(cmd.text || ''));
+        } else if (cmd.type === 'toast') {
+            /* 轻提示：右上角弹几秒消失，不阻塞 */
+            var s2 = st();
+            if (!s2) return;
+            var tid = 't' + Math.random().toString(36).slice(2, 8);
+            s2.toasts.push({ id: tid, title: cmd.title ? esc(cmd.title) : '', text: esc(cmd.text || '') });
+            setTimeout(function () {
+                s2.toasts = s2.toasts.filter(function (t) { return t.id !== tid; });
+            }, 4000);
+        } else if (cmd.type === 'download') {
+            var a = document.createElement('a');
+            a.href = cmd.url;
+            if (cmd.name) a.download = cmd.name;
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(function () { try { document.body.removeChild(a); } catch (e) { } }, 100);
+        }
+    }
+
+    /* ---------------- 长轮询：接收模态窗体/服务端推送 ---------------- */
+
+    function startPoll() {
+        if (!S.sid) { defer(startPoll, 500); return; }
+        /* 长轮询是唯一的推送通道（WebSocket 只管事件请求/响应）。
+           带着 after 游标：服务端只回"序号比它新"的第一条。 */
+        api(BASE + 'lw/api/poll', null, function (resp, err) {
+            if (!err && resp) {
+                if (S.pollErr) { S.pollErr = 0; hideSplash(); }
+                if (resp.gone) {
+                    forgetSid();
+                    S.sid = null;
+                    S.after = -1;
+                    S.pollAlive = false;
+                    try { if (S.ws) S.ws.close(); } catch (e) { }
+                    S.ws = null;
+                    showSplash(lwT('会话已过期，正在重新连接…'));
+                    defer(boot, 800);
+                    return;
+                }
+                if (resp.cmd) handleCmd(resp.cmd, resp.tree);
+                if (typeof resp.seq === 'number' && resp.seq > S.after) S.after = resp.seq;
+            } else if (err) {
+                /* 服务端进程不在了（连接拒绝/超时）：连续失败就给出可见提示，
+                   别让页面冻在旧画面上让用户以为"控件没了"。服务端恢复后
+                   下一次轮询成功会自动清掉提示；会话没了走 resp.gone 重连。 */
+                S.pollErr = (S.pollErr || 0) + 1;
+                if (S.pollErr === 2) showSplash(lwT('与服务端失去连接，正在重试…'));
+            }
+            defer(startPoll, err ? 1500 : 30);
+        }, { params: { sid: S.sid, t: 20000, after: S.after }, timeout: 35000 });
+    }
+
+    /* ---------------- WebSocket（事件优先通道） ---------------- */
+
+    function wsConnect() {
+        if (!window.WebSocket || !S.sid) return;
+        if (S.wsConnecting) return;
+        S.wsConnecting = true;
+        try {
+            var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            var ws = new WebSocket(proto + '//' + location.host + BASE + 'lw/ws?sid=' + encodeURIComponent(S.sid));
+            ws.onopen = function () {
+                S.wsConnecting = false;
+                log('websocket connected');
+                S.ws = ws;
+            };
+            ws.onmessage = function (m) {
+                var d = null;
+                try { d = JSON.parse(m.data); } catch (e) { d = null; }
+                if (!d) return;
+                if (d.type) {
+                    if (d.ok === undefined || d.ok) handleCmd(d, d.tree);
+                    return;
+                }
+                var cb = S.wsCb;
+                S.wsCb = null;
+                setBusy(false);
+                if (cb) cb(d, null);
+            };
+            ws.onclose = function () {
+                S.wsConnecting = false;
+                if (S.ws === ws) {
+                    S.ws = null;
+                    var cb = S.wsCb;
+                    S.wsCb = null;
+                    if (cb) cb(null, 'ws closed');
+                }
+                if (S.sid && S.wsWanted) {
+                    if (!S.pollAlive) { S.pollAlive = true; startPoll(); }
+                    defer(function () { if (S.wsWanted && !S.ws && !S.wsConnecting) wsConnect(); }, 2000);
+                }
+            };
+            ws.onerror = function () { };
+        } catch (e) {
+            S.wsConnecting = false;
+            log('websocket unavailable', e);
+        }
+    }
+
+    /* ---------------- 启动（sid 存 sessionStorage：一个页签一个会话） --------
+
+       sid 的三次迁移，背后是三种语义：
+
+         · localStorage -> "永久"：关掉浏览器再打开会把上一轮**已认证**的
+           会话整个挂回来（一开网站直接进主页面）。不能要。
+         · 会话 cookie  -> "浏览器级"：关浏览器才掉，但**关页签不掉** ——
+           关掉标签页、再开一个，仍然直接进主页面。桌面用户的心智是
+           "关掉窗口 = 退出程序"，所以还不够。
+         · sessionStorage -> "页签级"（当前）：随页签生灭，
+           关标签页即退出登录；刷新还在同一页签里，所以刷新不掉登录；
+           同一浏览器的多个页签各自独立（要共享会话请用"记住我"）。
+
+       还有一个 sessionStorage 单靠自己解决不了的情况：浏览器"启动时恢复
+       上次打开的网页"会把 sessionStorage 一起还原（等于把 sid 一起还回来），
+       于是"关浏览器再打开"又变成直接进主页面。所以下面再加一枚 pagehide
+       墓碑（BYE_KEY），隔了几秒才回来的页签不认旧 sid —— 见 tabWasClosed。
+
+       名字里带端口没有必要了：sessionStorage 本来就按"源"隔离，8130/8111
+       天然互不干扰。要"记住登录"（跨页签/跨浏览器重启保持），在页面里设
+       localStorage['lw.persist'] = '1' 即可（此时 localStorage 里另存一份
+       sid，与 lw.js 同语义）。 */
+
+    var booting = false;
+    var SID_KEY = 'lw.sid';         /* sessionStorage 一份；"记住我"额外存 localStorage */
+    var PERSIST_KEY = 'lw.persist';
+
+    /* ---- "关过窗口"的墓碑 ----
+       sessionStorage 是页签级的，但它有个坑：浏览器"启动时恢复上次打开的
+       网页"会把 sessionStorage **连同 sid 一起还原**——关掉浏览器再打开，
+       上一轮的已认证会话又挂回来了，表现就是"跳过登录直接进主页面"。
+       光看"sessionStorage 里有 sid"分不出"同一个活着的页签"和"被还原的
+       旧页签"，所以在 pagehide（页面真的要走了）留一个时间戳：
+         · 刷新：pagehide 到下一次 load 只隔几十毫秒 -> 不算关过；
+         · 关页签/关浏览器（含之后被还原）：隔了 3 秒以上 -> 这份 sid 作废。
+       注意 browsers 后台标签页会节流定时器，所以这里不用"心跳"，只在
+       pagehide 这一个时刻打点。 */
+    var BYE_KEY = 'lw.bye';
+    var BYE_GRACE_MS = 3000;
+
+    /* 墓碑双写到 localStorage（按页签 ID 分开）：浏览器"恢复上次会话"
+       时 sessionStorage 可能被**在 pagehide 写入之前**就快照下来 —— 实测
+       （2026-11-17，dbaware 用户复现）这种时候墓碑丢了、旧 sid 又被挂回，
+       关浏览器再开还是跳过登录。localStorage 不随页签快照走，按 S.tab
+       分开存，多个页签互不干扰；"记住我"仍按 persisted() 单独放行。 */
+    function byeLsKey() { return BYE_KEY + ':' + (S.tab || 'x'); }
+
+    try {
+        window.addEventListener('pagehide', function (ev) {
+            if (ev && ev.persisted) return;      /* 进 bfcache：页面没死，别留墓碑 */
+            var t = String(Date.now());
+            try { sessionStorage.setItem(BYE_KEY, t); } catch (e) { }
+            try { localStorage.setItem(byeLsKey(), t); } catch (e) { }
+        });
+    } catch (e) { }
+
+    /* 上一次页面卸载距今是否已经很久（= 中间关过窗口）。顺手把墓碑吃掉，
+       免得它一直留着影响下一次判断 */
+    function tabWasClosed() {
+        var t = 0;
+        try {
+            t = parseInt(sessionStorage.getItem(BYE_KEY) || '0', 10) || 0;
+            sessionStorage.removeItem(BYE_KEY);
+        } catch (e) { }
+        /* localStorage 那份是双写的另一半：即使页签快照不带墓碑也能判出
+           "中间关过窗口"。取两份里较新的时刻，读完即删。 */
+        try {
+            var lt = parseInt(localStorage.getItem(byeLsKey()) || '0', 10) || 0;
+            if (lt > t) t = lt;
+            localStorage.removeItem(byeLsKey());
+        } catch (e) { }
+        if (!t) return false;
+        /* 用 performance.timeOrigin（本次导航开始的时刻）而不是 Date.now()：
+           差的只是"上次卸载 -> 这次导航开始"的空档，页面本身加载多久不算进来，
+           所以服务器慢、页面重也不至于把刷新误判成"关过窗口" */
+        var navStart = (window.performance && performance.timeOrigin)
+            ? performance.timeOrigin : Date.now();
+        return (navStart - t) > BYE_GRACE_MS;
+    }
+
+    function persisted() {
+        try { return localStorage.getItem(PERSIST_KEY) === '1'; } catch (e) { return false; }
+    }
+
+    /* 下线时随手清掉老版本遗留的会话 cookie：它会让"关页签即退出"失效 */
+    function dropLegacySidCookie() {
+        try {
+            var name = 'lw_sid_' + (location.port ||
+                (location.protocol === 'https:' ? '443' : '80'));
+            document.cookie = name + '=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax';
+        } catch (e) { }
+    }
+
+    function rememberSid(sid) {
+        if (!sid) return;
+        try { sessionStorage.setItem(SID_KEY, sid); } catch (e) { }
+        try { if (persisted()) localStorage.setItem(SID_KEY, sid); } catch (e) { }
+    }
+
+    function forgetSid() {
+        try { sessionStorage.removeItem(SID_KEY); } catch (e) { }
+        try { localStorage.removeItem(SID_KEY); } catch (e) { }
+    }
+
+    function savedSid() {
+        /* 墓碑先吃掉：无论这次用不用 sessionStorage 里的 sid，都不能留到下次 */
+        var closed = tabWasClosed();
+        if (/[?&]fresh=1/.test(location.search)) return '';   /* 显式要求新会话 */
+        try {
+            var sid = sessionStorage.getItem(SID_KEY);
+            if (sid && closed) {   /* 被浏览器还原的旧页签：这份 sid 不算数 */
+                sessionStorage.removeItem(SID_KEY);
+                sid = '';
+            }
+            if (sid) return sid;
+        } catch (e) { }
+        if (!persisted()) return '';
+        try { return localStorage.getItem(SID_KEY) || ''; } catch (e) { return ''; }
+    }
+
+    function newTabId() {
+        return 't' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    }
+
+    function startChannels() {
+        if (/[?&]nopoll=1/.test(location.search)) return;
+        if (!S.pollAlive) { S.pollAlive = true; startPoll(); }
+        S.wsWanted = true;
+        wsConnect();
+    }
+
+    function newSession(cfg) {
+        api(BASE + 'lw/api/session', { form: cfg.form || '' }, function (resp, err) {
+            booting = false;
+            if (err || !resp || !resp.ok) {
+                showSplash(lwT('无法创建会话：') + (err || (resp && resp.err) || lwT('未知错误')));
+                return;
+            }
+            S.sid = resp.sid;
+            S.primary = true;
+            S.multiTab = false;
+            S.after = (typeof resp.seq === 'number') ? resp.seq : -1;
+            rememberSid(resp.sid);
+            hideSplash();
+            applyPayload(resp);
+            startChannels();
+        });
+    }
+
+    function attachSession(sid, cfg) {
+        api(BASE + 'lw/api/attach', null, function (resp, err) {
+            booting = false;
+            if (err || !resp || !resp.ok) {
+                forgetSid();
+                newSession(cfg);
+                return;
+            }
+            if (resp.forms && resp.forms.length === 0) {
+                /* 会话还活着但窗体已全部关闭（点过"退出"后刷新本页）：
+                   这条会话已经结束，空载荷渲染出来就是一张白纸 ——
+                   清掉旧 sid，开新会话重新进入 */
+                forgetSid();
+                newSession(cfg);
+                return;
+            }
+            S.sid = resp.sid;
+            S.primary = false;
+            S.multiTab = true;
+            S.after = (typeof resp.seq === 'number') ? resp.seq : -1;
+            rememberSid(resp.sid);
+            hideSplash();
+            applyPayload(resp);
+            /* 挂起中的对话框：attach 响应带回重发（绕过页签归属过滤） */
+            if (resp.cmd) { try { handleCmd(resp.cmd, null, true); } catch (e) { log('resend cmd failed', e); } }
+            log('attached to session', resp.sid);
+            startChannels();
+        }, { params: { sid: sid }, timeout: 20000 });
+    }
+
+    function boot() {
+        if (booting) return;
+        booting = true;
+        var cfg = window.LW_CFG || {};
+        dropLegacySidCookie();
+        if (!S.tab) {
+            try { S.tab = sessionStorage.getItem('lw.tab') || ''; } catch (e) { }
+            if (!S.tab) S.tab = newTabId();
+            try { sessionStorage.setItem('lw.tab', S.tab); } catch (e) { }
+        }
+        var sid = savedSid();
+        if (sid) { attachSession(sid, cfg); return; }
+        newSession(cfg);
+    }
+
+    function start(cfg) {
+        window.LW_CFG = cfg || {};
+        /* 等 Alpine（defer 加载）就绪后再启动：store/响应式都要它 */
+        (function waitAlpine() {
+            if (window.Alpine && window.Alpine.store) {
+                initTooltip();
+                showSplash(lwT('正在创建服务端会话…'));
+                boot();
+            } else {
+                setTimeout(waitAlpine, 30);
+            }
+        })();
+    }
+
+    return {
+        start: start,
+        reload: function () { boot(); },
+        sid: function () { return S.sid; },
+        /* 主题：业务代码可以用 LW.theme.set('midnight') 之类直接切；
+           7 套固定配色见 THEME_FIXED，另加 'auto'（跟随系统） */
+        theme: {
+            set: function (p) { return themeApply(p, true); },
+            get: function () { return themePref; },   /* 偏好（含 auto） */
+            current: function () { return themeResolve(themePref); },  /* 实际生效 */
+            dark: function () { return themeIsDark(themeResolve(themePref)); },
+            modes: function () { return THEME_MODES.slice(); },
+            /* 有窗体时给标题栏按钮开关；无窗体时只影响之后创建的窗体 */
+            button: function (on) {
+                themeBtnHidden = !on;
+                themeBtns.forEach(function (b) { b.style.display = on ? '' : 'none'; });
+            }
+        },
+        /* 自适应布局：读取/硬覆盖当前模式（'desktop' | 'mobile'）。
+           set(null/其它值) 清除覆盖，回到按宽度断点自动判定 */
+        layout: {
+            get: function () { return layoutState; },
+            touch: lwIsTouch,
+            set: function (m) {
+                try {
+                    if (m === 'desktop' || m === 'mobile') {
+                        sessionStorage.setItem(TPL_KEY, m);
+                    } else {
+                        sessionStorage.removeItem(TPL_KEY);
+                    }
+                } catch (e) { }
+                lwScheduleLayout();
+            }
+        },
+        /* 诊断：补丁/全量各来了多少次，当前树版本 */
+        stats: function () {
+            return { patch: S.nPatch, full: S.nFull, tver: S.tver };
+        },
+        /* 强制与服务器对一次全量（GET /lw/api/tree，不改任何业务状态）。
+           用途：页面看起来"不刷新"时手动校准，也是补丁一致性的验收入口 */
+        resync: function () { S.tver = -1; refreshTree(); }
+    };
+})();
