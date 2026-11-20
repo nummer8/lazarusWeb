@@ -13,6 +13,21 @@
 var LW = (function () {
     'use strict';
 
+    /* ---------------- 多语言（PO/gettext 模式的浏览器端） ----------------
+       window.__LW_LANG 由服务端外壳注入：{code:'en', t:{'中文原文':'English'}}
+       字典键就是中文原文，所以调用处直接写 lwT('保存')；译文在
+       languages\en\lwclient.po 里维护，与 lw-alpine.js 共用同一份。 */
+    function lwT(s) {
+        var d = window.__LW_LANG;
+        if (!d || !d.t || d.code === 'zh') return s;
+        var v = d.t[s];
+        /* 拼接用的片段在 PO 里存的是去掉首尾空格的键（"共 " -> "共"），
+           所以精确匹配不到时再按 trim 后的文本查一次 */
+        if (v === undefined) v = d.t[String(s).replace(/^\s+|\s+$/g, '')];
+        return (v === undefined || v === null || v === '') ? s : v;
+    }
+    window.lwT = window.lwT || lwT;
+
     /* API 基路径：本页面所在目录。直接访问为 '/'；经 lwroute 代理时为
        /p/<插件名>/ —— 所有 /lw/... 调用都挂在它下面，代理剥前缀后
        原样到达本进程。假设页面 URL 以 '/' 结尾（lwhttp 对无尾斜杠的
@@ -226,11 +241,11 @@ var LW = (function () {
             var bar = document.createElement('div');
             bar.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;margin-top:10px;';
             var bFile = document.createElement('button');
-            bFile.type = 'button'; bFile.className = 'lw-btn'; bFile.textContent = '选择图片';
+            bFile.type = 'button'; bFile.className = 'lw-btn'; bFile.textContent = lwT('选择图片');
             var bCancel = document.createElement('button');
-            bCancel.type = 'button'; bCancel.className = 'lw-btn'; bCancel.textContent = '取消';
+            bCancel.type = 'button'; bCancel.className = 'lw-btn'; bCancel.textContent = lwT('取消');
             var bShot = document.createElement('button');
-            bShot.type = 'button'; bShot.className = 'lw-btn lw-cam'; bShot.textContent = '拍摄';
+            bShot.type = 'button'; bShot.className = 'lw-btn lw-cam'; bShot.textContent = lwT('拍摄');
             bar.appendChild(bFile); bar.appendChild(bCancel); bar.appendChild(bShot);
             box.appendChild(vid); box.appendChild(bar); wrap.appendChild(box);
             document.body.appendChild(wrap);
@@ -244,7 +259,7 @@ var LW = (function () {
             bFile.onclick = function () { stop(); pickFile(node, btn); };
             bShot.onclick = function () {
                 var w = vid.videoWidth, h = vid.videoHeight;
-                if (!w || !h) { Ext.Msg.alert('画面还没准备好', '摄像头刚打开，稍等一下再拍。'); return; }
+                if (!w || !h) { Ext.Msg.alert(lwT('画面还没准备好'), lwT('摄像头刚打开，稍等一下再拍。')); return; }
                 var scale = Math.min(1, 1600 / Math.max(w, h));
                 var cv = document.createElement('canvas');
                 cv.width = Math.round(w * scale);
@@ -261,11 +276,11 @@ var LW = (function () {
         }).catch(function (err) {
             node._camFail = true;
             var why = (err && err.name === 'NotFoundError')
-                ? '这台电脑上没有检测到摄像头'
+                ? lwT('这台电脑上没有检测到摄像头')
                 : (err && err.name === 'NotAllowedError')
-                    ? '浏览器拒绝了摄像头权限（可点地址栏左侧的摄像头图标重新允许）'
-                    : '当前页面不能调用摄像头（网页需为 HTTPS 或 localhost）';
-            Ext.Msg.alert('无法打开摄像头', why + '。已改为「选择图片文件」，再点一次拍照按钮即可。');
+                    ? lwT('浏览器拒绝了摄像头权限（可点地址栏左侧的摄像头图标重新允许）')
+                    : lwT('当前页面不能调用摄像头（网页需为 HTTPS 或 localhost）');
+            Ext.Msg.alert(lwT('无法打开摄像头'), why + lwT('。已改为「选择图片文件」，再点一次拍照按钮即可。'));
         });
     }
 
@@ -273,8 +288,8 @@ var LW = (function () {
         var fd = new FormData(), i;
         for (i = 0; i < files.length; i++) fd.append('f' + i, files[i], files[i].name);
 
-        var base = node.caption || (node.kind === 'camera' ? '拍照…' : '上传文件…');
-        var busyWord = (node.kind === 'camera') ? '保存中 ' : '上传中 ';
+        var base = node.caption || (node.kind === 'camera' ? lwT('拍照…') : lwT('上传文件…'));
+        var busyWord = (node.kind === 'camera') ? lwT('保存中 ') : lwT('上传中 ');
         var xhr = new XMLHttpRequest();
         xhr.open('POST', BASE + 'lw/api/upload?sid=' + encodeURIComponent(S.sid || '') +
             '&id=' + node.id, true);
@@ -296,12 +311,12 @@ var LW = (function () {
             if (d && d.ok) {
                 applyPayload(d);
             } else {
-                Ext.Msg.alert('上传失败', esc((d && d.err) || ('HTTP ' + xhr.status)));
+                Ext.Msg.alert(lwT('上传失败'), esc((d && d.err) || ('HTTP ' + xhr.status)));
             }
         };
         xhr.onerror = function () {
             finish();
-            Ext.Msg.alert('上传失败', '网络错误');
+            Ext.Msg.alert(lwT('上传失败'), lwT('网络错误'));
         };
         setBusy(true);
         xhr.send(fd);
@@ -638,7 +653,7 @@ var LW = (function () {
         if (typeof Ext.picker === 'undefined') { log('colorpicker unavailable'); return; }
         var cur = String(node.value || '#ffffff').replace('#', '');
         var win = Ext.create('Ext.window.Window', {
-            title: '选择颜色',
+            title: lwT('选择颜色'),
             width: 210, height: 216,
             layout: 'fit',
             modal: false,
@@ -879,7 +894,7 @@ var LW = (function () {
 
             case 'fileupload':
             case 'camera':
-                cfg.text = accText(node.caption || (node.kind === 'camera' ? '拍照…' : '上传文件…'), node.acc);
+                cfg.text = accText(node.caption || (node.kind === 'camera' ? lwT('拍照…') : lwT('上传文件…')), node.acc);
                 cfg.scale = 'small';
                 c = Ext.create('Ext.button.Button', cfg);
                 addTo(c, ct);
@@ -1530,14 +1545,14 @@ var LW = (function () {
         p.__lwChartSig = chartSig(node);
         if (typeof Ext.chart === 'undefined') {
             /* 当前 ext 目录里没有 charts 包（服务端按文件是否存在决定注入） */
-            p.update('<div class="lw-unknown">chart：当前 Ext 目录未提供 charts 包</div>');
+            p.update('<div class="lw-unknown">' + lwT('chart：当前 Ext 目录未提供 charts 包') + '</div>');
             return p;
         }
         try {
             p.add(node.charttype === 'pie' ? makePieChart(node) : makeCartesianChart(node));
         } catch (e) {
             log('chart build failed', e);
-            p.update('<div class="lw-unknown">chart 构建失败</div>');
+            p.update('<div class="lw-unknown">' + lwT('chart 构建失败') + '</div>');
         }
         return p;
     }
@@ -1552,9 +1567,9 @@ var LW = (function () {
         cancel: '↶', refresh: '↻'
     };
     var LW_NAV_TIP = {
-        first: '第一条', prior: '上一条', next: '下一条', last: '最后一条',
-        insert: '插入', delete: '删除', edit: '编辑', post: '保存',
-        cancel: '取消', refresh: '刷新'
+        first: lwT('第一条'), prior: lwT('上一条'), next: lwT('下一条'), last: lwT('最后一条'),
+        insert: lwT('插入'), delete: lwT('删除'), edit: lwT('编辑'), post: lwT('保存'),
+        cancel: lwT('取消'), refresh: lwT('刷新')
     };
 
     function buildDBNav(node, cfg) {
@@ -1583,12 +1598,12 @@ var LW = (function () {
     function pagerText(n) {
         var total = (n.total != null ? n.total : (n.count || 0));
         if ((n.pages || 0) > 1)
-            return '第 ' + (n.page || 1) + ' / ' + n.pages + ' 页 · 共 ' + total + ' 条';
-        return '共 ' + total + ' 条';
+            return lwT('第 ') + (n.page || 1) + ' / ' + n.pages + lwT(' 页 · 共 ') + total + lwT(' 条');
+        return lwT('共 ') + total + lwT(' 条');
     }
 
     function summaryText(sm) {
-        var names = { sum: '合计', avg: '平均', count: '计数' };
+        var names = { sum: lwT('合计'), avg: lwT('平均'), count: lwT('计数') };
         return (names[sm.type] || '') + ' ' + (sm.field || '') + ' = ' +
             (sm.value == null ? '' : sm.value);
     }
@@ -1619,10 +1634,10 @@ var LW = (function () {
         if (node.showfilter) {
             cfg.tbar = {
                 border: false,
-                items: ['过滤:', {
+                items: [lwT('过滤:'), {
                     xtype: 'textfield',
                     flex: 1,
-                    emptyText: '输入关键字后回车…',
+                    emptyText: lwT('输入关键字后回车…'),
                     value: node.filtertext || '',
                     listeners: {
                         specialkey: function (f, e) {
@@ -1650,11 +1665,11 @@ var LW = (function () {
                     fire(cur, 'OnPageChange', { val: String(p) });
                 }
                 bar.push(
-                    { text: '⏮', scale: 'small', tooltip: '首页', handler: function () { pageTo(1); } },
-                    { text: '◀', scale: 'small', tooltip: '上一页', handler: function () { pageTo((liveNode().page || 1) - 1); } },
+                    { text: '⏮', scale: 'small', tooltip: lwT('首页'), handler: function () { pageTo(1); } },
+                    { text: '◀', scale: 'small', tooltip: lwT('上一页'), handler: function () { pageTo((liveNode().page || 1) - 1); } },
                     { xtype: 'tbtext', itemId: 'lwpg', text: pagerText(node) },
-                    { text: '▶', scale: 'small', tooltip: '下一页', handler: function () { pageTo((liveNode().page || 1) + 1); } },
-                    { text: '⏭', scale: 'small', tooltip: '末页', handler: function () { pageTo(liveNode().pages || 1); } }
+                    { text: '▶', scale: 'small', tooltip: lwT('下一页'), handler: function () { pageTo((liveNode().page || 1) + 1); } },
+                    { text: '⏭', scale: 'small', tooltip: lwT('末页'), handler: function () { pageTo(liveNode().pages || 1); } }
                 );
             }
             if (node.summary) {
@@ -1883,7 +1898,7 @@ var LW = (function () {
                           style: 'width:100%;height:100%;border:0;' }
             })];
         } else {
-            cfg.html = '<div class="lw-unknown">PDF：尚未指定文件</div>';
+            cfg.html = '<div class="lw-unknown">' + lwT('PDF：尚未指定文件') + '</div>';
         }
         var p = Ext.create('Ext.panel.Panel', cfg);
         p.__lwUrlSig = node.url || '';
@@ -2246,19 +2261,21 @@ var LW = (function () {
             });
         }
 
-        /* 先 show 再立刻隐藏（同一同步块内，浏览器不会绘制中间态）：
-           模板（平面模式）异步 fetch 后才套用，若直接显示浮窗再改成整页，
-           用户会看到标题栏窗体闪一下再消失（空窗体最明显）。用 hidden
-           会让 body 量不到尺寸，故用 setVisible(false) 保留布局，等探测
-           完再 setVisible(true)。 */
+        /* 先 show 再立刻用 CSS visibility 隐藏（同一同步块内浏览器不会绘制
+           中间态）：模板（平面模式）异步 fetch 后才套用，若直接显示浮窗再
+           改成整页，用户会看到标题栏窗体闪一下再消失（空窗体最明显）。
+           注意必须用 visibility 而不是 win.setVisible(false)/hidden ——
+           Ext 7 默认 hideMode='display'，display:none 会让 win.body 量不到
+           尺寸，紧跟其后的高度补偿 dh 会把窗口高度翻倍、syncChildren 在
+           0 尺寸 body 上布局。visibility 不改变布局，下面的测量照常。 */
         win.show();
-        win.setVisible(false);
+        win.el.setStyle('visibility', 'hidden');
         var fname = f.name || String(f.id);
         lwProbeTpl(fname, function (mode, tpl) {
             if (!S.forms[f.id] || win.destroyed) return;   /* 等待期间已关 */
             if (mode === 'flat') lwMakeFlat(win, tpl);
             else if (tpl) lwAddBackdrop(win, tpl);
-            win.setVisible(true);
+            win.el.setStyle('visibility', '');
         });
         /* Ext 的 height 含标题栏，LCL 的 ClientHeight 不含；
            把差值补回去，让窗口 body 的坐标空间与 LCL 客户区一致 */
@@ -2607,7 +2624,7 @@ var LW = (function () {
                             }
                         } else {
                             cmp.removeAll();
-                            cmp.update('<div class="lw-unknown">PDF：尚未指定文件</div>');
+                            cmp.update('<div class="lw-unknown">' + lwT('PDF：尚未指定文件') + '</div>');
                         }
                     } catch (e) { }
                 }
@@ -2871,8 +2888,8 @@ var LW = (function () {
             var end = document.createElement('div');
             end.id = 'lw-end';
             end.innerHTML =
-                '<div class="lw-end-box"><div class="lw-end-t">会话已结束</div>' +
-                '<div class="lw-end-s">窗体已全部关闭。服务端仍在运行时，刷新本页可重新进入。</div></div>';
+                '<div class="lw-end-box"><div class="lw-end-t">' + lwT('会话已结束') + '</div>' +
+                '<div class="lw-end-s">' + lwT('窗体已全部关闭。服务端仍在运行时，刷新本页可重新进入。') + '</div></div>';
             document.body.appendChild(end);
         }
         hideSplash();
@@ -2892,8 +2909,8 @@ var LW = (function () {
        这里负责把描述渲染成模态窗口，用户一操作就把结果 POST 回去。 */
 
     var DLG_TITLE = {
-        info: '提示', warning: '警告', error: '错误', question: '确认',
-        none: '消息', input: '输入', openfile: '打开文件', savefile: '保存文件'
+        info: lwT('提示'), warning: lwT('警告'), error: lwT('错误'), question: lwT('确认'),
+        none: lwT('消息'), input: lwT('输入'), openfile: lwT('打开文件'), savefile: lwT('保存文件')
     };
 
     var DLG_ICON = {
@@ -2972,7 +2989,7 @@ var LW = (function () {
         } else if (kind === 'savefile') {
             field = {
                 xtype: 'textfield',
-                fieldLabel: '文件名',
+                fieldLabel: lwT('文件名'),
                 labelWidth: 60,
                 value: inp && inp.value ? inp.value : 'untitled.txt',
                 selectOnFocus: true,
@@ -2999,7 +3016,7 @@ var LW = (function () {
                 xtype: 'component',
                 border: false,
                 cls: 'lw-dlg-file',
-                html: '<span class="lw-dlg-file-tip">尚未选择文件</span>'
+                html: '<span class="lw-dlg-file-tip">' + lwT('尚未选择文件') + '</span>'
             };
             bodyItems.push(pickLabel);
 
@@ -3016,18 +3033,18 @@ var LW = (function () {
                         answerSilently();
                     } else {
                         answered = false;
-                        Ext.Msg.alert('上传失败', '服务端返回 HTTP ' + xhr.status);
+                        Ext.Msg.alert(lwT('上传失败'), lwT('服务端返回 HTTP ') + xhr.status);
                     }
                 };
                 xhr.onerror = function () {
                     answered = false;
-                    Ext.Msg.alert('上传失败', '网络错误，文件没有传到服务端');
+                    Ext.Msg.alert(lwT('上传失败'), lwT('网络错误，文件没有传到服务端'));
                 };
                 xhr.upload.onprogress = function (e) {
                     if (e.lengthComputable && pickLabel) {
                         var p = Math.round(e.loaded * 100 / e.total);
                         try {
-                            pickLabel.update('<span class="lw-dlg-file-tip">正在上传… ' + p + '%</span>');
+                            pickLabel.update('<span class="lw-dlg-file-tip">' + lwT('正在上传… ') + p + '%</span>');
                         } catch (err) { }
                     }
                 };
@@ -3046,7 +3063,7 @@ var LW = (function () {
             if (kind === 'openfile') {
                 /* 选文件：第一个按钮换成"浏览…"，点了才打开文件选择框 */
                 btnCfg.push({
-                    text: b['default'] ? accText(b.text || '选择文件…') : accText(b.text),
+                    text: b['default'] ? accText(b.text || lwT('选择文件…')) : accText(b.text),
                     cls: b['default'] ? 'lw-dlg-default' : '',
                     handler: function () {
                         if (b['default']) fileInput.click();
@@ -3066,7 +3083,7 @@ var LW = (function () {
 
         var icon = DLG_ICON[kind];
         var cfg = {
-            title: esc(cmd.caption || DLG_TITLE[kind] || '消息'),
+            title: esc(cmd.caption || DLG_TITLE[kind] || lwT('消息')),
             width: 430,
             modal: true,
             closable: true,
@@ -3190,7 +3207,7 @@ var LW = (function () {
                     S.pollAlive = false;
                     try { if (S.ws) S.ws.close(); } catch (e) { }
                     S.ws = null;
-                    showSplash('会话已过期，正在重新连接…');
+                    showSplash(lwT('会话已过期，正在重新连接…'));
                     Ext.defer(boot, 800);
                     return;
                 }
@@ -3371,7 +3388,7 @@ var LW = (function () {
         api(BASE + 'lw/api/session', { form: cfg.form || '' }, function (resp, err) {
             booting = false;
             if (err || !resp || !resp.ok) {
-                showSplash('无法创建会话：' + (err || (resp && resp.err) || '未知错误'));
+                showSplash(lwT('无法创建会话：') + (err || (resp && resp.err) || lwT('未知错误')));
                 return;
             }
             S.sid = resp.sid;
@@ -3437,7 +3454,7 @@ var LW = (function () {
             window.LW_CFG = cfg || {};
             Ext.onReady(function () {
                 initHintTips();
-                showSplash('正在创建服务端会话…');
+                showSplash(lwT('正在创建服务端会话…'));
                 boot();
             });
         },

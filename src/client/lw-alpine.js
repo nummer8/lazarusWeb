@@ -16,6 +16,23 @@
 var LW = (function () {
     'use strict';
 
+    /* ---------------- 多语言（PO/gettext 模式的浏览器端） ----------------
+       window.__LW_LANG 由服务端外壳注入：
+         {code:'en', t:{ '中文原文':'English', ... }}
+       字典的键就是中文原文，所以代码里直接写 lwT('保存') —— 翻译在 po 文件
+       （languages\en\lwclient.po）里改，前端代码不用跟着动。
+       没有字典（例如直接打开 html 文件调试）时原样返回中文，不会空白。 */
+    function lwT(s) {
+        var d = window.__LW_LANG;
+        if (!d || !d.t || d.code === 'zh') return s;
+        var v = d.t[s];
+        /* 拼接用的片段在 PO 里存的是去掉首尾空格的键（"共 " -> "共"），
+           所以精确匹配不到时再按 trim 后的文本查一次 */
+        if (v === undefined) v = d.t[String(s).replace(/^\s+|\s+$/g, '')];
+        return (v === undefined || v === null || v === '') ? s : v;
+    }
+    window.lwT = window.lwT || lwT;
+
     /* API 基路径：本页面所在目录。直接访问为 '/'；经 lwroute 代理时为
        /p/<插件名>/ —— 所有 /lw/... 调用都挂在它下面，代理剥前缀后
        原样到达本进程。假设页面 URL 以 '/' 结尾（lwhttp 对无尾斜杠的
@@ -57,14 +74,14 @@ var LW = (function () {
     }
     function themeLabel(p) {
         switch (p) {
-            case 'light': return '亮色';
-            case 'dark': return '深色';
-            case 'paper': return '米黄纸张';
-            case 'mint': return '护眼绿';
-            case 'midnight': return '深蓝夜色';
-            case 'forest': return '墨绿夜色';
-            case 'contrast': return '高对比';
-            default: return '跟随系统';
+            case 'light': return lwT('亮色');
+            case 'dark': return lwT('深色');
+            case 'paper': return lwT('米黄纸张');
+            case 'mint': return lwT('护眼绿');
+            case 'midnight': return lwT('深蓝夜色');
+            case 'forest': return lwT('墨绿夜色');
+            case 'contrast': return lwT('高对比');
+            default: return lwT('跟随系统');
         }
     }
     /* 图标用手绘 SVG：Unicode 的 ☀/☾ 在不同机器上字重、大小差很多，
@@ -119,7 +136,7 @@ var LW = (function () {
 
     function themeBtnSync(b) {
         b.innerHTML = themeIcon(themePref);
-        b.title = '配色：' + themeLabel(themePref) + '（点击切换）';
+        b.title = lwT('配色：') + themeLabel(themePref) + lwT('（点击切换）');
         b.classList.toggle('lw-on', themePref !== 'auto');
     }
     function themeApply(p, save) {
@@ -377,7 +394,7 @@ var LW = (function () {
     document.addEventListener('alpine:init', function () {
         Alpine.store('lw', {
             busy: 0,
-            splash: '正在创建服务端会话…',
+            splash: lwT('正在创建服务端会话…'),
             mask: { show: false, text: '' },
             dialog: null,   /* 服务端对话框指令（见 showServerDialog） */
             dlgText: '',    /* input/savefile 对话框的输入内容 */
@@ -515,12 +532,12 @@ var LW = (function () {
         }).catch(function (err) {
             node._camFail = true;
             var why = (err && err.name === 'NotFoundError')
-                ? '这台电脑上没有检测到摄像头'
+                ? lwT('这台电脑上没有检测到摄像头')
                 : (err && err.name === 'NotAllowedError')
-                    ? '浏览器拒绝了摄像头权限（可点地址栏左侧的摄像头图标重新允许）'
-                    : '当前页面不能调用摄像头（网页需为 HTTPS 或 localhost）';
-            showMsg('无法打开摄像头',
-                esc(why) + '<br>已改为「选择图片文件」，再点一次拍照按钮即可。');
+                    ? lwT('浏览器拒绝了摄像头权限（可点地址栏左侧的摄像头图标重新允许）')
+                    : lwT('当前页面不能调用摄像头（网页需为 HTTPS 或 localhost）');
+            showMsg(lwT('无法打开摄像头'),
+                esc(why) + '<br>' + lwT('已改为「选择图片文件」，再点一次拍照按钮即可。'));
         });
     }
 
@@ -542,11 +559,11 @@ var LW = (function () {
         var bar = document.createElement('div');
         bar.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;margin-top:10px;';
         var bFile = document.createElement('button');
-        bFile.type = 'button'; bFile.className = 'lw-btn'; bFile.textContent = '选择图片';
+        bFile.type = 'button'; bFile.className = 'lw-btn'; bFile.textContent = lwT('选择图片');
         var bCancel = document.createElement('button');
-        bCancel.type = 'button'; bCancel.className = 'lw-btn'; bCancel.textContent = '取消';
+        bCancel.type = 'button'; bCancel.className = 'lw-btn'; bCancel.textContent = lwT('取消');
         var bShot = document.createElement('button');
-        bShot.type = 'button'; bShot.className = 'lw-btn lw-cam'; bShot.textContent = '拍摄';
+        bShot.type = 'button'; bShot.className = 'lw-btn lw-cam'; bShot.textContent = lwT('拍摄');
         bar.appendChild(bFile); bar.appendChild(bCancel); bar.appendChild(bShot);
         box.appendChild(vid); box.appendChild(bar); wrap.appendChild(box);
         document.body.appendChild(wrap);
@@ -561,7 +578,7 @@ var LW = (function () {
         bFile.onclick = function () { stop(); pickFile(node); };
         bShot.onclick = function () {
             var w = vid.videoWidth, h = vid.videoHeight;
-            if (!w || !h) { showMsg('画面还没准备好', '摄像头刚打开，稍等一下再拍。'); return; }
+            if (!w || !h) { showMsg(lwT('画面还没准备好'), lwT('摄像头刚打开，稍等一下再拍。')); return; }
             var scale = Math.min(1, 1600 / Math.max(w, h));  /* 长边压到 1600 以内 */
             var cv = document.createElement('canvas');
             cv.width = Math.round(w * scale);
@@ -603,8 +620,8 @@ var LW = (function () {
     function uploadFiles(node, files, done) {        var fd = new FormData();
         for (var i = 0; i < files.length; i++) fd.append('f' + i, files[i], files[i].name);
         var isCam = (node.kind === 'camera');
-        var base = node.caption || (isCam ? '拍照…' : '上传文件…');
-        var busyWord = isCam ? '保存中 ' : '上传中 ';
+        var base = node.caption || (isCam ? lwT('拍照…') : lwT('上传文件…'));
+        var busyWord = isCam ? lwT('保存中 ') : lwT('上传中 ');
         var xhr = new XMLHttpRequest();
         xhr.open('POST', BASE + 'lw/api/upload?sid=' + encodeURIComponent(S.sid || '') +
             '&id=' + node.id, true);
@@ -621,9 +638,9 @@ var LW = (function () {
             try { d = JSON.parse(xhr.responseText); } catch (e) { }
             finish();
             if (d && d.ok) applyPayload(d);
-            else showMsg('上传失败', esc((d && d.err) || ('HTTP ' + xhr.status)));
+            else showMsg(lwT('上传失败'), esc((d && d.err) || ('HTTP ' + xhr.status)));
         };
-        xhr.onerror = function () { finish(); showMsg('上传失败', '网络错误'); };
+        xhr.onerror = function () { finish(); showMsg(lwT('上传失败'), lwT('网络错误')); };
         setBusy(true);
         xhr.send(fd);
     }
@@ -1511,9 +1528,9 @@ var LW = (function () {
                    （第 1 枚=加、第 2 枚=减）；另支持滚轮步进。 */
                 return '<span class="lw-ud" @wheel.prevent="$lwUd(\'' + id + '\', $event.deltaY < 0 ? 1 : -1)">' +
                     '<button type="button" class="lw-ud-btn lw-ud-up" :disabled="' + r + '.dis" ' +
-                    'aria-label="增加" @click="$lwUd(\'' + id + '\',1)"><i class="lw-ud-a"></i></button>' +
+                    'aria-label="' + lwT('增加') + '" @click="$lwUd(\'' + id + '\',1)"><i class="lw-ud-a"></i></button>' +
                     '<button type="button" class="lw-ud-btn lw-ud-dn" :disabled="' + r + '.dis" ' +
-                    'aria-label="减少" @click="$lwUd(\'' + id + '\',-1)"><i class="lw-ud-a"></i></button>' +
+                    'aria-label="' + lwT('减少') + '" @click="$lwUd(\'' + id + '\',-1)"><i class="lw-ud-a"></i></button>' +
                     '</span>';
 
             case 'grid':
@@ -1573,7 +1590,7 @@ var LW = (function () {
             case 'dbgrid': {
                 var dgid = id;
                 var filterBar = node.showfilter
-                    ? '<div class="lw-grid-filter"><span>过滤:</span><input type="text" class="lw-input" placeholder="输入关键字后回车…" ' + dis +
+                    ? '<div class="lw-grid-filter"><span>' + lwT('过滤:') + '</span><input type="text" class="lw-input" placeholder="' + lwT('输入关键字后回车…') + '" ' + dis +
                       ' x-model="' + r + '.ftext" @keydown.enter.prevent="' + evAttr(dgid, 'OnFilter', '{val:' + r + '.ftext}') + '"/></div>'
                     : '';
                 var pagerBar = ((node.pages || 0) > 1 || node.summary)
@@ -1600,7 +1617,7 @@ var LW = (function () {
 
             case 'dbnav': {
                 var GLYPH = { first: '|◀', prior: '◀', next: '▶', last: '▶|', insert: '＋', 'delete': '✖', edit: '✎', post: '✓', cancel: '↶', refresh: '↻' };
-                var TIP = { first: '第一条', prior: '上一条', next: '下一条', last: '最后一条', insert: '插入', 'delete': '删除', edit: '编辑', post: '保存', cancel: '取消', refresh: '刷新' };
+                var TIP = { first: lwT('第一条'), prior: lwT('上一条'), next: lwT('下一条'), last: lwT('最后一条'), insert: lwT('插入'), 'delete': lwT('删除'), edit: lwT('编辑'), post: lwT('保存'), cancel: lwT('取消'), refresh: lwT('刷新') };
                 var nav = '';
                 (node.buttons || []).forEach(function (b) {
                     nav += '<button type="button" class="lw-btn lw-nav"' + (b.en === false ? ' disabled' : '') +
@@ -1617,8 +1634,8 @@ var LW = (function () {
                    服务端见到 r 就重新生成答案（见 lwhttp.ApiCaptcha）。
                    属性绑定必须留在 r.src 上：服务端 Refresh 会把版本号 v 改掉，
                    补丁重设 src 才会真正重拉一次图。 */
-                return '<img class="lw-captcha" :src="' + r + '.src" alt="验证码"' +
-                    ' title="看不清？点击换一张" draggable="false"' +
+                return '<img class="lw-captcha" :src="' + r + '.src" alt="' + lwT('验证码') + '"' +
+                    ' title="' + lwT('看不清？点击换一张') + '" draggable="false"' +
                     ' @click="$lwCaptchaTap($el)"' +
                     ' @dragstart.prevent/>';
 
@@ -2358,7 +2375,7 @@ var LW = (function () {
         var b = document.createElement('span');
         b.className = 'lw-theme-fab';
         b.__fabKey = key;
-        b.title = '主题（可拖动）';
+        b.title = lwT('主题（可拖动）');
         b.addEventListener('click', function (e) {
             e.stopPropagation();
             if (b.__fabMoved) { b.__fabMoved = false; return; }
@@ -2896,7 +2913,7 @@ var LW = (function () {
         if (node.url) {
             host.innerHTML = '<iframe src="' + esc(node.url) + '" frameborder="0" style="width:100%;height:100%;border:0"></iframe>';
         } else {
-            host.innerHTML = '<div class="lw-unknown">PDF：尚未指定文件</div>';
+            host.innerHTML = '<div class="lw-unknown">' + lwT('PDF：尚未指定文件') + '</div>';
         }
     }
 
@@ -2904,11 +2921,11 @@ var LW = (function () {
     function pagerTextOf(n) {
         var total = (n.total != null ? n.total : (n.count || 0));
         if ((n.pages || 0) > 1)
-            return '第 ' + (n.page || 1) + ' / ' + n.pages + ' 页 · 共 ' + total + ' 条';
-        return '共 ' + total + ' 条';
+            return lwT('第 ') + (n.page || 1) + ' / ' + n.pages + lwT(' 页 · 共 ') + total + lwT(' 条');
+        return lwT('共 ') + total + lwT(' 条');
     }
     function summaryTextOf(sm) {
-        var names = { sum: '合计', avg: '平均', count: '计数' };
+        var names = { sum: lwT('合计'), avg: lwT('平均'), count: lwT('计数') };
         return (names[sm.type] || '') + ' ' + (sm.field || '') + ' = ' + (sm.value == null ? '' : sm.value);
     }
     /* 这张网格里是否正有一个单元格处于就地编辑状态（编辑器是 td 里的
@@ -3153,9 +3170,68 @@ var LW = (function () {
         if (S.forms[id]) delete S.forms[id];
     }
 
+    /* TSplitter 拖动（坑 186）：LCL 语义是分隔条按 Align 吸附一侧，拖动改变
+       同侧邻居尺寸。这里 pointerdown/move/up 只做本地即时反馈——拖动中把分隔条
+       DOM 临时挪到指针位置（邻居暂不动），松手时把新位置回传服务端；服务端调
+       LCL 原生 SetSplitterPosition 按 Align 重排邻居，下一轮补丁带回所有控件
+       的新坐标，applyRect/runLayout 一次落地。不在每次 move 都 fire（在途事件
+       只允许一个），本地拖动不会丢。触摸用 pointer 事件天然兼容，setPointerCapture
+       保证指针移出分隔条仍能收到 move/up。 */
+    function bindSplitterDrag(id, node, w) {
+        var n = S.ND[id] || node;
+        /* 竖向分隔条（col-resize）水平拖，改 Left；横向（row-resize）垂直拖，改 Top。
+           优先按 Align 判定，未设 Align 时按设计期宽高比推断（细长竖条=水平拖）。 */
+        var al = n.align;
+        var horiz = (al === 'left' || al === 'right') ||
+                    ((!al || al === 'none') && ((n.w || 0) <= (n.h || 0)));
+        var dragging = false, moved = false;
+        var sx = 0, sy = 0, start = 0, cur = 0, pid = null;
+        w.style.touchAction = 'none';
+        /* 光标按方向：竖向分隔条左右拖 col-resize，横向上下拖 row-resize。
+           .lw-splitter 默认 col-resize，这里只覆盖横向，避免动全局样式。 */
+        if (!horiz) w.style.cursor = 'row-resize';
+        /* 拖动反馈加在分隔条内部元素上（wrapper 本身要保留 absolute 定位） */
+        var bar = w.querySelector('.lw-splitter') || w;
+        w.addEventListener('pointerdown', function (e) {
+            if (e.button !== undefined && e.button !== 0) return;
+            var live = S.ND[id];
+            if (!live) return;
+            sx = e.clientX; sy = e.clientY;
+            start = cur = horiz ? (live.x || 0) : (live.y || 0);
+            dragging = true; moved = false; pid = e.pointerId;
+            if (bar.classList) bar.classList.add('lw-splitter-dragging');
+            if (w.setPointerCapture) { try { w.setPointerCapture(e.pointerId); } catch (er) { } }
+            e.preventDefault();
+        });
+        w.addEventListener('pointermove', function (e) {
+            if (!dragging || (pid !== null && e.pointerId !== pid)) return;
+            var d = horiz ? (e.clientX - sx) : (e.clientY - sy);
+            if (!moved && Math.abs(d) < 4) return;  /* 阈值：区分点击与拖动 */
+            moved = true;
+            cur = start + d;
+            if (horiz) w.style.left = cur + 'px';
+            else w.style.top = cur + 'px';
+            e.preventDefault();
+        });
+        function finish(e) {
+            if (!dragging) return;
+            if (pid !== null && e && e.pointerId !== undefined && e.pointerId !== pid) return;
+            dragging = false; pid = null;
+            if (bar.classList) bar.classList.remove('lw-splitter-dragging');
+            if (!moved) return;
+            /* 回传相对位移 sd（像素）：浏览器 clientX 原点与 LCL 控件坐标系不同，
+               不能传绝对位置。服务端以 GetSplitterPosition+sd 作目标调
+               SetSplitterPosition，按 Align 重排邻居并回包校正。 */
+            fire(id, 'OnSplitterMove', { sd: Math.round(cur - start) });
+        }
+        w.addEventListener('pointerup', finish);
+        w.addEventListener('pointercancel', finish);
+    }
+
     function bindNodeEvents(id, node, w) {
         var ev = node.ev || [];
         function has(n) { return ev.indexOf(n) >= 0; }
+        if (node.kind === 'splitter') bindSplitterDrag(id, node, w);
         if (node.popup && node.popup.length) {
             w.addEventListener('contextmenu', function (e) {
                 e.preventDefault();
@@ -3304,8 +3380,8 @@ var LW = (function () {
                ▢（U+25A2）在很多字体里会落成"缺字方块"，看起来像坏掉的
                边框，完全没有"放大"的含义；自绘的方形描边（还原时是双框
                叠角）在 14px 下轮廓稳定，配 hover 底色就是标准窗口按钮。 */
-            '<span class="lw-win-max" title="最大化">' + winIcon('max') + '</span>' +
-            (f.modal ? '<span class="lw-win-x" title="关闭">' + winIcon('close') + '</span>' : '');
+            '<span class="lw-win-max" title="' + lwT('最大化') + '">' + winIcon('max') + '</span>' +
+            (f.modal ? '<span class="lw-win-x" title="' + lwT('关闭') + '">' + winIcon('close') + '</span>' : '');
         win.appendChild(title);
         /* 配色切换按钮：只放在非模态窗口（模态对话框标题栏已经够挤，
            而且它往往只显示几秒，不给它加控件） */
@@ -3397,7 +3473,7 @@ var LW = (function () {
             /* 图标与提示同步：最大化后换成"双框叠角"的还原图标，
                否则用户只看到一个方框，分不清当前是放大还是缩回 */
             maxBtn.innerHTML = winIcon(win.__lwMax ? 'restore' : 'max');
-            maxBtn.title = win.__lwMax ? '还原' : '最大化';
+            maxBtn.title = win.__lwMax ? lwT('还原') : lwT('最大化');
         });
 
         /* 标题栏拖动 */
@@ -3966,6 +4042,33 @@ var LW = (function () {
             if (at >= 0) info.p.children[at] = merged;   /* 保持树里指向新对象 */
         }
         patchNode(merged);
+        /* 几何补丁落地（坑 188）：--patch=1 时服务端只回变化的几何属性，
+           但 patchNode 不写 DOM 坐标、也不重排 align 兄弟 —— 这正是
+           TSplitter 拖动后「分隔条动了、邻居 Panel 不变」的根因：全量路径
+           的 syncChildren 末尾会 runLayout，增量路径此前没有。这里把几何
+           变化补到 DOM 并按 align 重排父容器，让两条路径行为一致。 */
+        if (props && (('x' in props) || ('y' in props) || ('w' in props) ||
+                      ('h' in props) || ('align' in props))) {
+            applyGeomPatch(formId, merged, info);
+        }
+    }
+
+    /* 把几何属性的变化落到 DOM（增量补丁专用，见坑 188）。runLayout 只按
+       align 拉伸有 align 的兄弟、跳过 none/无 align 的控件，所以分两类：
+       none 控件自己写服务端绝对坐标，其余交给父容器 runLayout 重排。 */
+    function applyGeomPatch(formId, n, info) {
+        var el = S.E[n.id];
+        if (el && (!n.align || n.align === 'none')) {
+            el.style.left = (n.x || 0) + 'px';
+            el.style.top = (n.y || 0) + 'px';
+            el.style.width = (n.w || 0) + 'px';
+            el.style.height = (n.h || 0) + 'px';
+        }
+        var p = info && info.p;
+        if (!p) return;
+        var ct = ctOfNode(p, formId);
+        var list = p.children || [];
+        if (ct && ct.body && list.length) runLayout(ct, list);
     }
 
     function applyStructOp(formId, fm, op, idx) {
@@ -4088,8 +4191,8 @@ var LW = (function () {
             var end = document.createElement('div');
             end.id = 'lw-end';
             end.innerHTML =
-                '<div class="lw-end-box"><div class="lw-end-t">会话已结束</div>' +
-                '<div class="lw-end-s">窗体已全部关闭。服务端仍在运行时，刷新本页可重新进入。</div></div>';
+                '<div class="lw-end-box"><div class="lw-end-t">' + lwT('会话已结束') + '</div>' +
+                '<div class="lw-end-s">' + lwT('窗体已全部关闭。服务端仍在运行时，刷新本页可重新进入。') + '</div></div>';
             document.body.appendChild(end);
         }
         hideSplash();
@@ -4109,9 +4212,10 @@ var LW = (function () {
        这里把描述渲染成模态窗口（Alpine store 驱动），用户一操作
        就把结果 POST 回去。 */
 
+    /* 对话框类型的中文标题；PO 里给出各语言的译法 */
     var DLG_TITLE = {
-        info: '提示', warning: '警告', error: '错误', question: '确认',
-        none: '消息', input: '输入', openfile: '打开文件', savefile: '保存文件'
+        info: lwT('提示'), warning: lwT('警告'), error: lwT('错误'), question: lwT('确认'),
+        none: lwT('消息'), input: lwT('输入'), openfile: lwT('打开文件'), savefile: lwT('保存文件')
     };
 
     function dlgPost(id, r, text, cb) {
@@ -4144,13 +4248,13 @@ var LW = (function () {
                         closeDialog(false);   /* 答案已由上传接口带回服务端 */
                         if (cmd.__lwResend) refreshTree();
                     } else {
-                        showMsg('上传失败', '服务端返回 HTTP ' + xhr.status);
+                        showMsg(lwT('上传失败'), lwT('服务端返回 HTTP ') + xhr.status);
                     }
                 };
-                xhr.onerror = function () { showMsg('上传失败', '网络错误，文件没有传到服务端'); };
+                xhr.onerror = function () { showMsg(lwT('上传失败'), lwT('网络错误，文件没有传到服务端')); };
                 xhr.upload.onprogress = function (e) {
                     if (e.lengthComputable) {
-                        s.dlgUpload = '正在上传… ' + Math.round(e.loaded * 100 / e.total) + '%';
+                        s.dlgUpload = lwT('正在上传… ') + Math.round(e.loaded * 100 / e.total) + '%';
                     }
                 };
                 setBusy(true);
@@ -4241,8 +4345,8 @@ var LW = (function () {
     function showMsg(title, text) {
         var s = st();
         if (!s) { alert(text); return; }
-        s.dialog = { kind: 'error', caption: title || '消息', text: text,
-            buttons: [{ id: 1, text: '确定', 'default': true }], __local: true };
+        s.dialog = { kind: 'error', caption: title || lwT('消息'), text: text,
+            buttons: [{ id: 1, text: lwT('确定'), 'default': true }], __local: true };
     }
 
     /* ---------------- 指令处理（长轮询 / WS 推送共用） ---------------- */
@@ -4310,7 +4414,7 @@ var LW = (function () {
                     S.pollAlive = false;
                     try { if (S.ws) S.ws.close(); } catch (e) { }
                     S.ws = null;
-                    showSplash('会话已过期，正在重新连接…');
+                    showSplash(lwT('会话已过期，正在重新连接…'));
                     defer(boot, 800);
                     return;
                 }
@@ -4321,7 +4425,7 @@ var LW = (function () {
                    别让页面冻在旧画面上让用户以为"控件没了"。服务端恢复后
                    下一次轮询成功会自动清掉提示；会话没了走 resp.gone 重连。 */
                 S.pollErr = (S.pollErr || 0) + 1;
-                if (S.pollErr === 2) showSplash('与服务端失去连接，正在重试…');
+                if (S.pollErr === 2) showSplash(lwT('与服务端失去连接，正在重试…'));
             }
             defer(startPoll, err ? 1500 : 30);
         }, { params: { sid: S.sid, t: 20000, after: S.after }, timeout: 35000 });
@@ -4509,7 +4613,7 @@ var LW = (function () {
         api(BASE + 'lw/api/session', { form: cfg.form || '' }, function (resp, err) {
             booting = false;
             if (err || !resp || !resp.ok) {
-                showSplash('无法创建会话：' + (err || (resp && resp.err) || '未知错误'));
+                showSplash(lwT('无法创建会话：') + (err || (resp && resp.err) || lwT('未知错误')));
                 return;
             }
             S.sid = resp.sid;
@@ -4574,7 +4678,7 @@ var LW = (function () {
         (function waitAlpine() {
             if (window.Alpine && window.Alpine.store) {
                 initTooltip();
-                showSplash('正在创建服务端会话…');
+                showSplash(lwT('正在创建服务端会话…'));
                 boot();
             } else {
                 setTimeout(waitAlpine, 30);
