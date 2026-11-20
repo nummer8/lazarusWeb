@@ -1690,14 +1690,30 @@ var LW = (function () {
                       '">' + pCap + '<div class="lw-kids"></div></div>';
                 }
 
-            case 'groupbox':
-                /* TGroupBox：AutoScroll=false 时 LCL 只裁剪不滚动。
-                   恒 overflow:auto 会因映射误差（标题条高度近似）伪造出
-                   比控件矮一大截的滚动条（AutoScroll 关着却出现滚动条） */
-                return '<div class="lw-group lw-group-abs' + (node.border !== 'none' ? ' lw-boxed' : '') + '">' +
-                    '<div class="lw-group-title" x-html="$lwCap(' + r + '.cap, ' + r + '.acc)"></div>' +
+            case 'groupbox': {
+                /* TGroupBox：框线不在控件顶边。LCL 的客户区是"框线以内 + 标题带"
+                   （win32 下 Top=TMHeight+3、Left=2、Right=-2、Bottom=-2），
+                   所以框线落在标题带中线上、标题文字压在框线上、框线在文字处
+                   断开；子控件从客户区原点摆起，比控件左上角低一整个标题带。
+                   AutoScroll 关着时只裁剪不滚动（恒 overflow:auto 会因映射误差
+                   伪造出 LCL 里并不存在的滚动条）。
+                   内缩量由服务端算好下发（cl/ct/cr/cb，见 lwwriter.MakeBase），
+                   这里转成 CSS 变量。用 <fieldset><legend> 而不是自己拼 div：
+                   浏览器本来就会把 legend 的中线压在边框上、并让边框在文字处
+                   断开 —— 正是 BS_GROUPBOX 的画法，省掉"拿底色盖住框线"的补丁。 */
+                var gcl = node.cl == null ? 1 : node.cl;
+                var gct = node.ct == null ? 20 : node.ct;
+                var gcr = node.cr == null ? 1 : node.cr;
+                var gcb = node.cb == null ? 2 : node.cb;
+                return '<div class="lw-group lw-group-abs' + (node.border !== 'none' ? ' lw-boxed' : '') + '"' +
+                    ' style="--lw-gb-left:' + gcl + 'px;--lw-gb-right:' + gcr + 'px;' +
+                    '--lw-gb-top:' + gct + 'px;--lw-gb-bot:' + gcb + 'px">' +
+                    '<fieldset class="lw-gb-frame">' +
+                    '<legend class="lw-group-title" x-html="$lwCap(' + r + '.cap, ' + r + '.acc)"></legend>' +
+                    '</fieldset>' +
                     '<div class="lw-body lw-group-body" style="overflow:' + (node.autoscroll ? 'auto' : 'hidden') +
                     '"><div class="lw-kids"></div></div></div>';
+            }
 
             case 'tabs':
                 return '<div class="lw-tabs"><div class="lw-tabbar" id="lw-tabbar-' + id + '"></div>' +

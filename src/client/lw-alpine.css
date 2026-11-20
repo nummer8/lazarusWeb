@@ -1056,17 +1056,69 @@ html[data-lw-layout="mobile"] .lw-theme-fab {
     flex-direction: column;
     gap: 4px;
 }
-.lw-group-abs .lw-group-body { position: relative; }
-/* abs 版（TGroupBox）子控件是 LCL 客户区坐标，1:1 映射：去掉流式版的 padding，
-   否则整体右移 10px/下移 4px，内容底边超出容器 -> 伪造纵向滚动条（LCL 里没有） */
-.lw-group-abs .lw-group-body { padding: 0; }
-/* LCL 的 TGroupBox 客户区原点在边框内侧几像素，标题文字悬浮在客户区顶部。
-   若标题占流式高度（~20px），子控件整体下移、底部内容被裁（编辑框底边 120 > body 106）。
-   改为绝对定位叠加：子区从边框内侧铺满，坐标与 LCL 一致，标题画在上面 */
-.lw-group-abs { position: relative; }
-.lw-group-abs .lw-group-title { position: absolute; top: 2px; left: 10px; z-index: 2; }
-.lw-group-abs .lw-group-body { position: absolute; inset: 0; }
-.lw-group-abs .lw-kids { position: absolute; }
+/* ---- TGroupBox（abs 版）----
+   LCL 的 GroupBox 客户区是"框线以内 + 标题带"：win32 的
+   GetLCLClientBoundsOffset 给 Top = TMHeight+3、Left = 2、Right = -2、
+   Bottom = -2（lcl/interfaces/win32/win32proc.pp:719）。也就是说——
+     · 框线不在控件顶边，而在标题带的中线上；
+     · 标题文字压在框线上，框线在文字处断开（BS_GROUPBOX 的画法）；
+     · 子控件坐标从客户区原点算起，比控件左上角低一整个标题带。
+   内缩量由服务端按 ClientWidth/ClientHeight 算好放在 cl/ct/cr/cb 里，
+   模板转成 --lw-gb-* 变量。框线用 <fieldset><legend> 画：浏览器天生就会
+   把 legend 的中线压在边框上、让边框在文字处断开，不用"拿底色盖住框线"。 */
+.lw-group.lw-group-abs { position: relative; border: 0; background: transparent; }
+/* 框线用 fieldset 画。Chrome 把 fieldset 的上边框画在 <legend> 的中线上
+   （不是 border-box 顶边），所以这里让 legend 高度正好等于整个标题带
+   --lw-gb-top，fieldset 顶边贴 0：框线自然落在 ct/2，标题文字的中线
+   也正好压在框线上，且浏览器会把框线在文字处断开 —— 与 BS_GROUPBOX 一致。
+   背景一律透明：LCL 的 GroupBox 默认 Color=clBtnFace，客户区由子控件
+   （这里是 alClient 的 Memo）自己填色，框内不该再刷一层白。 */
+.lw-group-abs .lw-gb-frame {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    margin: 0;
+    padding: 0;
+    min-width: 0;
+    border: 1px solid var(--lw-border);
+    border-radius: 4px;
+    background: transparent;
+    pointer-events: none;   /* 框线只负责画，点击穿透到子控件 */
+}
+/* 标题：位置由 legend 自己定（浏览器负责压线），这里只管高度与左右留白。
+   高度 = 标题带高度是"压线"的关键（见上）。左留白照 LCL/Windows 的惯例：
+   文字距左边框约 7px（含 1px 边框）。 */
+.lw-group-abs .lw-group-title {
+    height: var(--lw-gb-top, 20px);
+    line-height: var(--lw-gb-top, 20px);
+    padding: 0 3px;
+    margin-left: 4px;
+    font-weight: bold;
+    color: var(--lw-fg2b);
+    font-size: 12px;
+}
+.lw-group-abs .lw-group-title:empty { padding: 0; margin-left: 0; }
+/* BorderStyle=bsNone 的 GroupBox：标题照旧在顶部，但不画框线 */
+.lw-group-abs:not(.lw-boxed) .lw-gb-frame { border-color: transparent; }
+
+/* 客户区：子控件坐标就是 LCL 的客户区坐标，按内缩量直接摆。
+   必须显式 width/height:auto —— .lw-body 的 100%x100% 会把 left/right
+   的约束顶掉（绝对定位里 width 与 left+right 同时给定则 right 失效）。 */
+.lw-group-abs .lw-group-body {
+    position: absolute;
+    left: var(--lw-gb-left, 1px);
+    right: var(--lw-gb-right, 1px);
+    top: var(--lw-gb-top, 20px);
+    bottom: var(--lw-gb-bot, 2px);
+    width: auto;
+    height: auto;
+    padding: 0;
+    display: block;
+    box-sizing: border-box;
+}
+.lw-group-abs .lw-kids { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
 
 /* TPanel/TScrollBox 的 Caption（非缺省值时由模板渲染）：
    绝对居中、不挡鼠标（面板还要接收点击），面板透明时它就是唯一可见内容 */
@@ -1609,6 +1661,12 @@ html[data-lw-layout="mobile"] .lw-ud-dn::after { content: '\2212'; } /* − */
     border-right: 1px solid var(--lw-bevel-hi);
     cursor: col-resize;
     box-sizing: border-box;
+    touch-action: none;                 /* 触摸拖动分隔条时不滚页（坑 186） */
+}
+/* 拖动中：高亮分隔条提示当前正调整边界；横向分隔条由 JS 内联设 row-resize */
+.lw-splitter.lw-splitter-dragging {
+    background: var(--lw-accent, #4a90d9);
+    opacity: .75;
 }
 .lw-unknown {
     display: inline-block;
