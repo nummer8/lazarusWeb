@@ -401,6 +401,7 @@ var
   o: TJSONObject;
   force: Boolean;
   fm: TCustomForm;
+  dx, dy: Integer;
 begin
   o := TJSONObject.Create;
   o.Add('id', NodeId(C));
@@ -411,6 +412,30 @@ begin
   o.Add('y', C.Top);
   o.Add('w', C.Width);
   o.Add('h', C.Height);
+  { TGroupBox 的客户区不是"控件左上角那一块"：LCL 把它定义成框线以内
+    （lcl/interfaces/win32/win32proc.pp 的 GetLCLClientBoundsOffset：
+    Top = TMHeight+3、Left = 2、Right = -2、Bottom = -2）。于是——
+      · 框线不在控件顶边，而在标题带的中线上（Windows 的 BS_GROUPBOX 就这么画）；
+      · 标题文字压在框线上，框线在文字处断开；
+      · 子控件坐标从客户区原点算起，比控件左上角低 TMHeight+3。
+    浏览器端没有字体度量可用，这组内缩只能服务端算好下发：
+    ClientWidth/ClientHeight 就是 LCL 算出来的客户区（LFM 里也带着），相减即得。
+    标题带下沿固定占 2px 边框（win32 的 Bottom = -2），其余全归顶部。
+    客户区没算出来（0 或荒唐值，运行期临时建的 GroupBox 可能这样）时
+    回落到 win32 常量 2/22。 }
+  if C is TGroupBox then
+  begin
+    dx := C.Width - TGroupBox(C).ClientWidth;
+    dy := C.Height - TGroupBox(C).ClientHeight;
+    if (dx < 0) or (dx > 16) then dx := 2;
+    { 12 是下限：真实的 GroupBox 标题带 = TMHeight+5，最小也有 17；
+       比这更小说明 ClientHeight 没算出来（运行期临时建的控件），按常量走 }
+    if (dy < 12) or (dy > 64) then dy := 22;
+    o.Add('cl', dx div 2);
+    o.Add('ct', dy - 2);
+    o.Add('cr', dx - dx div 2);
+    o.Add('cb', 2);
+  end;
   { AutoSize 标签的宽高要按窗体自己的 PPI 比例折算（坑 155）。
     LCL 加载 LFM 的 PPI 缩放对 AutoSize=True 的 TLabel 不生效
     （ShouldAutoAdjustLayout 返回 False，与状态栏高度同类，见
