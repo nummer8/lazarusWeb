@@ -22,7 +22,11 @@ uses
   Classes, SysUtils, TypInfo, Forms, Controls, StdCtrls, ComCtrls, Grids,
   ExtCtrls, MaskEdit, Spin, Buttons, Graphics, DB, DBCtrls, DBGrids,
   InterfaceBase, fpjson, lwbase, lwsession, lwdbnav, lwdbgrid, lwlogin,
-  CheckLst, ValEdit, EditBtn, lwui;
+  CheckLst, ValEdit, EditBtn, lwui
+  {$IFDEF LW_VIRTUALTREEVIEW}
+  , lwvirtualtree, laz.virtualtrees
+  {$ENDIF}
+  ;
 
 { 处理一次事件，返回新的完整组件树；AErr 非空表示出错 }
 function LWHandleEvent(S: TLWSession; AReq: TJSONObject; out AErr: string): TJSONObject;
@@ -555,6 +559,12 @@ begin
         TTreeView(C).Selected := TTreeView(C).Items[row];
       end;
     end;
+    { VirtualTreeView：val 是序列化时下发的节点路径（"0.1.2"），
+      虚拟节点不能按扁平序号取，必须沿父子关系逐级定位 }
+    {$IFDEF LW_VIRTUALTREEVIEW}
+    if C is TBaseVirtualTree then
+      LWVirtualTreeSelectByPath(TBaseVirtualTree(C), JGetStr(AReq, 'val'));
+    {$ENDIF}
     Exit;
   end;
   row := JGetInt(AReq, 'row', -1);

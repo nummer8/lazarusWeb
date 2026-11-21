@@ -32,7 +32,11 @@ uses
   Classes, SysUtils, Variants, Graphics, Controls, Forms, StdCtrls, ExtCtrls, ComCtrls,
   Grids, Menus, Buttons, MaskEdit, Spin, CheckLst, ValEdit, TypInfo, LCLProc, fpjson,
   EditBtn, GroupedEdit, DB, DBCtrls, DBGrids, lwbase, lwform, lwfileupload, lwdbnav, lwweb,
-  lwchart, lwdbgrid, lwui, lwrlog, lwsidemenu, lwcaptcha, lwcamera, lwlang;
+  lwchart, lwdbgrid, lwui, lwrlog, lwsidemenu, lwcaptcha, lwcamera, lwlang
+  {$IFDEF LW_VIRTUALTREEVIEW}
+  , lwvirtualtree, laz.virtualtrees
+  {$ENDIF}
+  ;
 
 type
   TLWWriter = class
@@ -245,6 +249,9 @@ begin
   else if C is TStringGrid then Result := 'grid'
   else if C is TDrawGrid then Result := 'drawgrid'
   else if C is TTreeView then Result := 'tree'
+  {$IFDEF LW_VIRTUALTREEVIEW}
+  else if C is TBaseVirtualTree then Result := 'tree'
+  {$ENDIF}
   else if C is TListView then Result := 'listview'
   else if C is TToolBar then Result := 'toolbar'
   else if C is TToolButton then Result := 'toolbutton'
@@ -1701,7 +1708,19 @@ begin
   else if AKind = 'drawgrid' then
     WriteDrawGrid(TDrawGrid(C), O)
   else if AKind = 'tree' then
-    WriteTree(TTreeView(C), O)
+  begin
+    if C is TTreeView then
+      WriteTree(TTreeView(C), O)
+    {$IFDEF LW_VIRTUALTREEVIEW}
+    else if C is TBaseVirtualTree then
+    begin
+      O.Add('nodes', LWVirtualTreeNodesJson(TBaseVirtualTree(C)));
+      { 前端据此把节点路径 id 回传，服务端按路径找回虚拟节点 }
+      O.Add('vtree', True);
+      O.Add('vcols', LWVirtualTreeColumnsJson(TBaseVirtualTree(C)));
+    end;
+    {$ENDIF}
+  end
   else if AKind = 'listview' then
     WriteListView(TListView(C), O)
   else if AKind = 'bitbtn' then
