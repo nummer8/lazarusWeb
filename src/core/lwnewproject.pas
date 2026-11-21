@@ -93,6 +93,13 @@ function LWServiceMapperSource(const O: TLWNewProject): string;
 function LWServiceIniSource(const O: TLWNewProject): string;
 { mapper 的服务名：<工程名>Service（保证多服务共存时不撞名） }
 function LWServiceName(const O: TLWNewProject): string;
+{ 把 mapper 源码里的 DD.Name / DD.DisplayName 改成最终工程名对应的值。
+  IDE 向导在虚拟工程阶段只能用占位名 LWApp1，真正的项目名要等用户在
+  "保存项目"对话框里才定；写盘前调用本函数改 CodeBuffer，落盘即是最终值。
+  ANewProjectName 为空或与当前值相同时返回 False，调用方一个字节都不用动。
+  只匹配 DD.Name := / DD.DisplayName := 两行，其它内容原样保留。 }
+function LWRetargetMapperNames(const ASource, ANewProjectName: string;
+  out ANewSource: string): Boolean;
 
 { .lpi 里体现 widgetset 档位的那几段 XML —— 两个档位的差别只在这里判断
   一次，`LWProjectInfo`（写字面意义上的 .lpi）和 IDE 侧的补丁（IDE 自己写完
@@ -379,6 +386,48 @@ end;
 function LWServiceName(const O: TLWNewProject): string;
 begin
   Result := O.Name + 'Service';
+end;
+
+function LWRetargetMapperNames(const ASource, ANewProjectName: string;
+  out ANewSource: string): Boolean;
+var
+  Lines: TStringList;
+  NewSvc, NewDisp, Line, Trimmed: string;
+  i, LeadingPos: Integer;
+begin
+  Result := False;
+  ANewSource := ASource;
+  if ANewProjectName = '' then Exit;
+  NewSvc := ANewProjectName + 'Service';
+  NewDisp := 'lazarusWeb · ' + ANewProjectName + ' Service';
+
+  Lines := TStringList.Create;
+  try
+    Lines.Text := ASource;
+    for i := 0 to Lines.Count - 1 do
+    begin
+      Line := Lines[i];
+      Trimmed := Trim(Line);
+      if (Pos('DD.Name :=', Trimmed) <> 1) and
+         (Pos('DD.DisplayName :=', Trimmed) <> 1) then Continue;
+      LeadingPos := Pos(Trimmed, Line);   { 保留原来的缩进 }
+      if LeadingPos <= 0 then Continue;
+      if Pos('DD.DisplayName :=', Trimmed) = 1 then
+        Line := Copy(Line, 1, LeadingPos - 1) + 'DD.DisplayName := ' +
+          QuotedStr(NewDisp) + ';'
+      else
+        Line := Copy(Line, 1, LeadingPos - 1) + 'DD.Name := ' +
+          QuotedStr(NewSvc) + ';';
+      if Line <> Lines[i] then
+      begin
+        Lines[i] := Line;
+        Result := True;
+      end;
+    end;
+    if Result then ANewSource := Lines.Text;
+  finally
+    Lines.Free;
+  end;
 end;
 
 { 把服务模板里的占位符换成工程相关的值。模板正文统一用字面量拼接，
