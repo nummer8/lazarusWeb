@@ -4,10 +4,24 @@
     <Name Value="lwdesign"/>
     <Type Value="DesignTime"/>
     <Author Value="lazarusWeb"/>
+    <CompilerOptions>
+      <Version Value="11"/>
+      <SearchPaths>
+        <UnitOutputDirectory Value="../../lib/$(TargetCPU)-$(TargetOS)-$(LCLWidgetType)"/>
+      </SearchPaths>
+      <Linking>
+        <Debugging>
+          <GenerateDebugInfo Value="False"/>
+        </Debugging>
+      </Linking>
+      <Other>
+        <CustomOptions Value=""/>
+      </Other>
+    </CompilerOptions>
+    <Description Value="[构建] 必须以目标 IDE 的 widgetset（本机 win32）编译：lazbuild design/lwdesign.lpk，不要加 --ws=nogui。本包依赖 lwcore + lwserver + lwvst；lwvst 是 GUI 专属的 VirtualTreeView 支持包（lclextensions_package / laz.virtualtreeview_package 只有 include/&lt;widgetset>，没有 nogui 版本）。无头/Linux 部署链路只走 lwcore + lwserver，不引用 lwvst，因此仍可用 --ws=nogui 编译。lazarusWeb 设计期：一个新建工程向导（lazarusWeb，File/新建/项目）、Tools 菜单「生成 lazarusWeb 窗体模板」（当前单元 LFM，选窗口/平面模式）、New Form 模板（TLWForm/TLWLoginForm 由向导生成，不进组件面板）、组件面板（TLWDBGrid/TLWChart/TLWGauge/TLWColorPicker/TLWHTMLFrame/TLWPDFFrame/TLWDBNavigator/TLWFileUpload/TLWCamera/TLWSideMenu/TLWReport/TLWDBTreeView/TLWDBVirtualTreeView）"/>
     <License Value="LGPL"/>
-    <Description Value="lazarusWeb 设计期：两个新建工程向导、New Form 模板（TLWForm/TLWLoginForm 由向导生成，不进组件面板）、组件面板（TLWDBGrid/TLWChart/TLWGauge/TLWColorPicker/TLWHTMLFrame/TLWPDFFrame/TLWDBNavigator/TLWFileUpload/TLWCamera/TLWSideMenu/TLWReport）"/>
-    <Version Major="1" Minor="0"/>
-    <Files Count="15">
+    <Version Major="1"/>
+    <Files Count="17">
       <Item1>
         <Filename Value="lwdsgnregister.pas"/>
         <HasRegisterProc Value="True"/>
@@ -70,9 +84,17 @@
         <Filename Value="icons/TLWCamera.png"/>
         <Type Value="Binary"/>
       </Item15>
+      <Item16>
+        <Filename Value="icons/TLWDBTreeView.png"/>
+        <Type Value="Binary"/>
+      </Item16>
+      <Item17>
+        <Filename Value="icons/TLWDBVirtualTreeView.png"/>
+        <Type Value="Binary"/>
+      </Item17>
     </Files>
     <CompatibilityMode Value="True"/>
-    <RequiredPkgs Count="4">
+    <RequiredPkgs Count="5">
       <Item1>
         <PackageName Value="LCL"/>
       </Item1>
@@ -85,6 +107,9 @@
       <Item4>
         <PackageName Value="lwserver"/>
       </Item4>
+      <Item5>
+        <PackageName Value="lwvst"/>
+      </Item5>
     </RequiredPkgs>
     <UsageOptions>
       <UnitPath Value="$(PkgOutDir)"/>
@@ -92,16 +117,5 @@
     <PublishOptions>
       <Version Value="2"/>
     </PublishOptions>
-    <CompilerOptions>
-      <Version Value="11"/>
-      <SearchPaths>
-        <UnitOutputDirectory Value="../lib/$(TargetCPU)-$(TargetOS)-$(LCLWidgetType)"/>
-      </SearchPaths>
-      <Linking>
-        <Debugging>
-          <GenerateDebugInfo Value="False"/>
-        </Debugging>
-      </Linking>
-    </CompilerOptions>
   </Package>
 </CONFIG>

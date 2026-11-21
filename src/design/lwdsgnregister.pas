@@ -37,9 +37,12 @@
 
     3. 组件面板 -> "lazarusWeb" 页
        TLWFileUpload / TLWDBGrid / TLWDBNavigator / TLWChart / TLWGauge /
-       TLWColorPicker / TLWHTMLFrame / TLWPDFFrame / TLWSideMenu
+       TLWColorPicker / TLWHTMLFrame / TLWPDFFrame / TLWCaptcha / TLWCamera /
+       TLWDBTreeView / TLWDBVirtualTreeView / TLWSideMenu
        （左侧折叠菜单，非可视，拖到窗体上后双击即开 IDE 原生菜单编辑器，
        与 TMainMenu 完全一致）。
+       两个树控件是数据感知的：DataSource / KeyField / ParentField /
+       TextField，VirtualTreeView 版另有 TextFields 支持多列。
 
        面板上只放"能往窗体上拖的控件"。TLWForm / TLWLoginForm 是窗体基类，
        不进面板 —— 它们由向导生成（新建工程 / 新建文件），没有任何拖放语义。
@@ -73,10 +76,14 @@ uses
   LResources, ProjectIntf, LazIDEIntf, FormEditingIntf, IDEIntf, CompOptsIntf,
   LazFileUtils, PackageIntf, ExtCtrls,
   lwbase, lwform, lwfileupload, lwcamera, lwnewproject, lwlogin, lwcaptcha,
-  { 下面这些来自 lwserver 包：注册进 IDE 后，带自定义控件的窗体才能
-    在设计器里打开（不然读 lfm 报 "unknown class TLWDBGrid"），
-    同时也进组件面板，Object Inspector 能直接编辑它们的新属性 }
-  lwdbgrid, lwdbnav, lwchart, lwui, lwweb, lwreport, lwsidemenu;
+  { 下面这些来自 lwserver / lwcore / lwvst 包：注册进 IDE 后，带自定义控件的
+    窗体才能在设计器里打开（不然读 lfm 报 "unknown class TLWDBGrid"），
+    同时也进组件面板，Object Inspector 能直接编辑它们的新属性。
+    lwdbtree / lwdbvst 是数据感知树控件：前者只依赖 LCL（lwcore，nogui 也能用），
+    后者在 lwvst 包（GUI 专属，VirtualTreeView + 真 GDI）里，由该包以
+    -dLW_VIRTUALTREEVIEW 编译，这里直接用它的 ppu，本包不再需要该宏。 }
+  lwdbgrid, lwdbnav, lwchart, lwui, lwweb, lwreport, lwsidemenu,
+  lwdbtree, lwdbvst;
 
 const
   sLWProjectName = 'lazarusWeb Application';
@@ -1548,6 +1555,13 @@ begin
     TLWDBGrid, TLWDBNavigator,
     TLWChart, TLWGauge, TLWColorPicker,
     TLWHTMLFrame, TLWPDFFrame,
+    { 数据感知树：拖到窗体上，在对象观察器里设 DataSource / KeyField /
+      ParentField / TextField，数据集增删改后节点自动重建。
+      TLWDBTreeView 是普通 TreeView，序列化成 kind='tree'；
+      TLWDBVirtualTreeView 是 VirtualTreeView，节点按需生成，
+      可设 TextFields 显示多列（如 'name;id;note'）。 }
+    TLWDBTreeView,
+    TLWDBVirtualTreeView,
     { 左侧折叠菜单。它是 TMenu 的后裔（非可视组件）：
       - 拖到窗体上落在非可视组件栏，选中后可在对象观察器里改
         SideWidth / ItemHeight / HeaderCaption / FirstGroupOpen；
@@ -1569,9 +1583,12 @@ initialization
     TLWForm / TLWLoginForm 已不在面板上，图标也一并去掉了。
     改图标后用 lazres 重新生成：
       cd icons && python gen_icons.py
-      ../ 下执行：lazres lwdesign_icons.lrs TLWFileUpload.png TLWDBGrid.png
-        TLWDBNavigator.png TLWChart.png TLWGauge.png TLWColorPicker.png
-        TLWHTMLFrame.png TLWPDFFrame.png TLWSideMenu.png }
+      ../ 下执行：lazres lwdesign_icons.lrs icons/TLWFileUpload.png
+        icons/TLWDBGrid.png icons/TLWDBNavigator.png icons/TLWChart.png
+        icons/TLWGauge.png icons/TLWColorPicker.png icons/TLWHTMLFrame.png
+        icons/TLWPDFFrame.png icons/TLWSideMenu.png icons/TLWCaptcha.png
+        icons/TLWCamera.png icons/TLWDBTreeView.png
+        icons/TLWDBVirtualTreeView.png }
   {$I lwdesign_icons.lrs}
 
 end.
