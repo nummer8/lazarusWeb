@@ -12,12 +12,12 @@
       <UseAppBundle Value="False"/>
     </General>
     <MacroValues Count="1">
-      <Macro1 Name="LCLWidgetType" Value="nogui"/>
+      <Macro1 Name="LCLWidgetType" Value="win32"/>
     </MacroValues>
     <BuildModes>
       <Item Name="Default" Default="True"/>
       <SharedMatrixOptions Count="1">
-        <Item1 ID="231190374502" Modes="Default" Type="IDEMacro" MacroName="LCLWidgetType" Value="nogui"/>
+        <Item1 ID="231190374502" Modes="Default" Type="IDEMacro" MacroName="LCLWidgetType" Value="win32"/>
       </SharedMatrixOptions>
     </BuildModes>
     <PublishOptions>
@@ -30,14 +30,13 @@
       <Item>
         <PackageName Value="LCL"/>
       </Item>
+      <Item>
+        <PackageName Value="lwvst"/>
+      </Item>
     </RequiredPackages>
     <Units>
       <Unit>
         <Filename Value="treedemo.lpr"/>
-        <IsPartOfProject Value="True"/>
-      </Unit>
-      <Unit>
-        <Filename Value="uDBTree.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>
       <Unit>
@@ -55,9 +54,9 @@
       <Filename Value="treedemo"/>
     </Target>
     <SearchPaths>
-      <IncludeFiles Value="$(ProjOutDir);../../../111/lazarus/components/virtualtreeview;../../../111/lazarus/components/virtualtreeview/include/intf/win32;../../../111/lazarus/components/lclextensions/include/win32"/>
-      <OtherUnitFiles Value="../../src/core;../../../111/lazarus/components/virtualtreeview;../../../111/lazarus/components/virtualtreeview/units/win32;../../../111/lazarus/components/lclextensions;../../../111/lazarus/lcl/units/x86_64-win64/win32"/>
-      <UnitOutputDirectory Value="lib/$(TargetCPU)-$(TargetOS)"/>
+      <IncludeFiles Value="$(ProjOutDir)"/>
+      <OtherUnitFiles Value="../../src/core"/>
+      <UnitOutputDirectory Value="lib/$(TargetCPU)-$(TargetOS)-$(LCLWidgetType)"/>
     </SearchPaths>
     <Linking>
       <Debugging>
@@ -65,6 +64,11 @@
         <UseLineInfoUnit Value="False"/>
         <StripSymbols Value="True"/>
       </Debugging>
+      <Options>
+        <Win32>
+          <GraphicApplication Value="True"/>
+        </Win32>
+      </Options>
     </Linking>
     <Other>
       <CustomOptions Value="-Sm -dLW_VIRTUALTREEVIEW"/>

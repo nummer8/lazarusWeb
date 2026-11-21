@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CONFIG>
+  <ProjectSession>
+    <PathDelim Value="\"/>
+    <Version Value="12"/>
+    <BuildModes Active="Default"/>
+    <Units>
+      <Unit>
+        <Filename Value="treedemo.lpr"/>
+        <IsPartOfProject Value="True"/>
+        <EditorIndex Value="3"/>
+        <CursorPos Y="24"/>
+        <UsageCount Value="20"/>
+        <Loaded Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="uTreeMain.pas"/>
+        <IsPartOfProject Value="True"/>
+        <ComponentName Value="TreeDemoForm"/>
+        <HasResources Value="True"/>
+        <ResourceBaseClass Value="Form"/>
+        <IsVisibleTab Value="True"/>
+        <EditorIndex Value="1"/>
+        <TopLine Value="134"/>
+        <CursorPos Y="200"/>
+        <UsageCount Value="20"/>
+        <Loaded Value="True"/>
+        <LoadedDesigner Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="..\..\src\core\lwdbtree.pas"/>
+        <TopLine Value="22"/>
+        <UsageCount Value="20"/>
+        <Loaded Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="C:\111\lazarus\components\lclextensions\delphicompat.pas"/>
+        <UnitName Value="DelphiCompat"/>
+        <EditorIndex Value="6"/>
+        <TopLine Value="125"/>
+        <CursorPos X="2" Y="140"/>
+        <UsageCount Value="10"/>
+        <Loaded Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="C:\111\lazarus\ide\lazarus.pp"/>
+        <UnitName Value="Lazarus"/>
+        <EditorIndex Value="-1"/>
+        <UsageCount Value="10"/>
+      </Unit>
+      <Unit>
+        <Filename Value="C:\111\lazarus\components\lclextensions\include\win32\uses.inc"/>
+        <EditorIndex Value="-1"/>
+        <UsageCount Value="10"/>
+      </Unit>
+      <Unit>
+        <Filename Value="..\..\src\core\lwdbvst.pas"/>
+        <EditorIndex Value="4"/>
+        <TopLine Value="130"/>
+        <CursorPos Y="145"/>
+        <UsageCount Value="10"/>
+        <Loaded Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="C:\111\fpcsrc\rtl\objpas\classes\streams.inc"/>
+        <EditorIndex Value="5"/>
+        <TopLine Value="616"/>
+        <CursorPos Y="631"/>
+        <UsageCount Value="10"/>
+        <Loaded Value="True"/>
+      </Unit>
+      <Unit>
+        <Filename Value="..\..\src\core\lwvirtualtree.pas"/>
+        <EditorIndex Value="2"/>
+        <TopLine Value="8"/>
+        <CursorPos X="30" Y="23"/>
+        <UsageCount Value="10"/>
+        <Loaded Value="True"/>
+      </Unit>
+    </Units>
+    <JumpHistory HistoryIndex="11">
+      <Position>
+        <Filename Value="uTreeMain.pas"/>
+      </Position>
+      <Position>
+        <Filename Value="treedemo.lpr"/>
+        <Caret Line="15"/>
+      </Position>
+      <Position>
+        <Filename Value="..\..\src\core\lwdbvst.pas"/>
+        <Caret Line="145" TopLine="130"/>
+      </Position>
+      <Position>
+        <Filename Value="C:\111\fpcsrc\rtl\objpas\classes\streams.inc"/>
+        <Caret Line="631" TopLine="616"/>
+      </Position>
+      <Position>
+        <Filename Value="uTreeMain.pas"/>
+      </Position>
+      <Position>
+        <Filename Value="uTreeMain.pas"/>
+        <Caret Line="52" Column="31" TopLine="49"/>
+      </Position>
+      <Position>
+        <Filename Value="uTreeMain.pas"/>
+        <Caret Line="111" Column="5" TopLine="96"/>
+      </Position>
+      <Position>
+        <Filename Value="uTreeMain.pas"/>
+        <Caret Line="112" Column="10" TopLine="97"/>
+      </Position>
+      <Position>
+        <Filename Value="uTreeMain.pas"/>
+        <Caret Line="113" Column="11" TopLine="97"/>
+      </Position>
+      <Position>
+        <Filename Value="uTreeMain.pas"/>
+        <Caret Line="162" TopLine="138"/>
+      </Position>
+      <Position>
+        <Filename Value="uTreeMain.pas"/>
+        <Caret Line="200" TopLine="135"/>
+      </Position>
+      <Position>
+        <Filename Value="..\..\src\core\lwvirtualtree.pas"/>
+        <Caret Line="23" Column="30" TopLine="8"/>
+      </Position>
+    </JumpHistory>
+    <RunParams>
+      <FormatVersion Value="2"/>
+      <Modes ActiveMode=""/>
+    </RunParams>
+  </ProjectSession>
+</CONFIG>

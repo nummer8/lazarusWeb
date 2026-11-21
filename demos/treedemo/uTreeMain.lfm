@@ -1,152 +1,291 @@
 object TreeDemoForm: TTreeDemoForm
   Left = 200
+  Height = 960
   Top = 100
-  Width = 980
-  Height = 640
-  Caption = 'lazarusWeb · TreeView / VirtualTreeView（数据感知）'
-  ClientHeight = 610
-  ClientWidth = 972
+  Width = 1470
+  Caption = 'lazarusWeb · TreeView / VirtualTreeView（数据感知 + 增删改）'
+  ClientHeight = 960
+  ClientWidth = 1470
   Color = clBtnFace
-  Font.Charset = GB2312_CHARSET
+  DesignTimePPI = 144
+  Font.CharSet = GB2312_CHARSET
   Font.Color = clWindowText
-  Font.Height = -13
+  Font.Height = -20
   Font.Name = 'Microsoft YaHei'
-  Font.Style = []
+  LCLVersion = '4.8.0.0'
   OnCreate = FormCreate
   object pcMain: TPageControl
     Left = 0
+    Height = 960
     Top = 0
-    Width = 980
-    Height = 640
+    Width = 1470
     ActivePage = tsTree
     TabIndex = 0
     TabOrder = 0
     object tsTree: TTabSheet
       Caption = 'TreeView（tv_nodes）'
-      ClientHeight = 610
-      ClientWidth = 972
+      ClientHeight = 920
+      ClientWidth = 1462
       object lblTreeTip: TLabel
-        Left = 8
-        Top = 8
-        Width = 700
-        Height = 18
+        Left = 12
+        Height = 27
+        Top = 12
+        Width = 140
         Caption = '（数据加载中）'
       end
-      object btnTreeReload: TButton
-        Left = 660
-        Top = 32
-        Width = 80
-        Height = 28
-        Caption = '重载'
-        OnClick = btnTreeReloadClick
-      end
       object btnTreeAdd: TButton
-        Left = 750
-        Top = 32
-        Width = 80
-        Height = 28
-        Caption = '新增'
+        Left = 900
+        Height = 42
+        Top = 48
+        Width = 150
+        Caption = '新增子节点'
+        TabOrder = 1
         OnClick = btnTreeAddClick
       end
       object btnTreeDelete: TButton
-        Left = 840
-        Top = 32
-        Width = 100
-        Height = 28
+        Left = 1059
+        Height = 42
+        Top = 48
+        Width = 135
         Caption = '删除选中'
+        TabOrder = 2
         OnClick = btnTreeDeleteClick
       end
+      object btnTreeReload: TButton
+        Left = 1203
+        Height = 42
+        Top = 48
+        Width = 105
+        Caption = '重载'
+        TabOrder = 3
+        OnClick = btnTreeReloadClick
+      end
+      object lblTvCur: TLabel
+        Left = 12
+        Height = 30
+        Top = 111
+        Width = 870
+        AutoSize = False
+        Caption = '当前行：（未选中）'
+      end
+      object btnTreeRename: TButton
+        Left = 900
+        Height = 42
+        Top = 102
+        Width = 150
+        Caption = '改名…'
+        TabOrder = 4
+        OnClick = btnTreeRenameClick
+      end
+      object btnTreeNote: TButton
+        Left = 1059
+        Height = 42
+        Top = 102
+        Width = 135
+        Caption = '改备注…'
+        TabOrder = 5
+        OnClick = btnTreeNoteClick
+      end
       object tvDb: TLWDBTreeView
-        Left = 8
-        Top = 70
-        Width = 460
-        Height = 520
-        Indent = 22
+        Left = 12
+        Height = 720
+        Top = 165
+        Width = 690
+        Indent = 33
         TabOrder = 0
         OnClick = tvDbClick
+        KeyField = 'id'
+        ParentField = 'parent_id'
+        TextField = 'name'
       end
       object mmoTv: TLabel
-        Left = 480
-        Top = 70
-        Width = 480
-        Height = 520
+        Left = 720
+        Height = 720
+        Top = 165
+        Width = 720
         AutoSize = False
-        Caption = 'tv_nodes：点节点查看记录；新增/删除后树会自动刷新。'
+        Caption = 'tv_nodes：点节点查看记录；新增/改名/改备注/删除后树会自动刷新。'
         WordWrap = True
       end
     end
     object tsVirtual: TTabSheet
       Caption = 'VirtualTreeView（vst_nodes）'
-      ClientHeight = 610
-      ClientWidth = 972
+      ClientHeight = 920
+      ClientWidth = 1462
       object lblVstTip: TLabel
-        Left = 8
-        Top = 8
-        Width = 700
-        Height = 18
+        Left = 12
+        Height = 27
+        Top = 12
+        Width = 140
         Caption = '（数据加载中）'
       end
-      object btnVstReload: TButton
-        Left = 660
-        Top = 32
-        Width = 80
-        Height = 28
-        Caption = '重载'
-        OnClick = btnVstReloadClick
-      end
       object btnVstAdd: TButton
-        Left = 750
-        Top = 32
-        Width = 80
-        Height = 28
-        Caption = '新增'
+        Left = 900
+        Height = 42
+        Top = 48
+        Width = 150
+        Caption = '新增子节点'
+        TabOrder = 0
         OnClick = btnVstAddClick
       end
       object btnVstDelete: TButton
-        Left = 840
-        Top = 32
-        Width = 100
-        Height = 28
+        Left = 1059
+        Height = 42
+        Top = 48
+        Width = 135
         Caption = '删除选中'
+        TabOrder = 1
         OnClick = btnVstDeleteClick
       end
-      object mmoVst: TLabel
-        Left = 480
-        Top = 70
-        Width = 480
-        Height = 520
+      object btnVstReload: TButton
+        Left = 1203
+        Height = 42
+        Top = 48
+        Width = 105
+        Caption = '重载'
+        TabOrder = 2
+        OnClick = btnVstReloadClick
+      end
+      object lblVstCur: TLabel
+        Left = 12
+        Height = 30
+        Top = 111
+        Width = 870
         AutoSize = False
-        Caption = 'vst_nodes：点节点查看记录；新增/删除后树会自动刷新。'
+        Caption = '当前行：（未选中）'
+      end
+      object btnVstRename: TButton
+        Left = 900
+        Height = 42
+        Top = 102
+        Width = 150
+        Caption = '改名…'
+        TabOrder = 3
+        OnClick = btnVstRenameClick
+      end
+      object btnVstNote: TButton
+        Left = 1059
+        Height = 42
+        Top = 102
+        Width = 135
+        Caption = '改备注…'
+        TabOrder = 4
+        OnClick = btnVstNoteClick
+      end
+      object mmoVst: TLabel
+        Left = 720
+        Height = 720
+        Top = 165
+        Width = 720
+        AutoSize = False
+        Caption = 'vst_nodes：点节点查看记录；新增/改名/改备注/删除后树会自动刷新。'
         WordWrap = True
+      end
+      object FVst: TLWDBVirtualTreeView
+        Left = 8
+        Height = 720
+        Top = 165
+        Width = 704
+        DefaultText = 'Node'
+        Header.AutoSizeIndex = 0
+        Header.Columns = <>
+        Header.MainColumn = -1
+        NodeDataSize = 4
+        TabOrder = 5
+        KeyField = 'id'
+        ParentField = 'parent_id'
+        TextField = 'name'
+        AutoExpand = False
       end
     end
     object tsVstMulti: TTabSheet
       Caption = 'VirtualTreeView（多列）'
-      ClientHeight = 610
-      ClientWidth = 972
+      ClientHeight = 920
+      ClientWidth = 1462
       object lblVstMultiTip: TLabel
-        Left = 8
-        Top = 8
-        Width = 760
-        Height = 18
-        Caption = 'TLWDBVirtualTreeView ← vst_nodes（名称 / ID / 备注）'
+        Left = 12
+        Height = 27
+        Top = 12
+        Width = 807
+        Caption = 'TLWDBVirtualTreeView ← vst_nodes（名称 / ID / 备注）：选中一行后可改、可增、可删'
+      end
+      object btnVstMultiAdd: TButton
+        Left = 900
+        Height = 42
+        Top = 48
+        Width = 150
+        Caption = '新增子节点'
+        TabOrder = 0
+        OnClick = btnVstMultiAddClick
+      end
+      object btnVstMultiDelete: TButton
+        Left = 1059
+        Height = 42
+        Top = 48
+        Width = 135
+        Caption = '删除选中'
+        TabOrder = 1
+        OnClick = btnVstMultiDeleteClick
       end
       object btnVstMultiReload: TButton
-        Left = 880
-        Top = 32
-        Width = 80
-        Height = 28
+        Left = 1203
+        Height = 42
+        Top = 48
+        Width = 105
         Caption = '重载'
+        TabOrder = 2
         OnClick = btnVstMultiReloadClick
       end
-      object lblVstMultiDetail: TLabel
-        Left = 8
-        Top = 480
-        Width = 940
-        Height = 110
+      object lblMultiCur: TLabel
+        Left = 12
+        Height = 30
+        Top = 111
+        Width = 870
         AutoSize = False
-        Caption = '多列视图：名称 / ID / 备注，点节点查看该行完整信息。'
+        Caption = '当前行：（未选中）'
+      end
+      object btnMultiRename: TButton
+        Left = 900
+        Height = 42
+        Top = 102
+        Width = 150
+        Caption = '改名…'
+        TabOrder = 3
+        OnClick = btnMultiRenameClick
+      end
+      object btnMultiNote: TButton
+        Left = 1059
+        Height = 42
+        Top = 102
+        Width = 135
+        Caption = '改备注…'
+        TabOrder = 4
+        OnClick = btnMultiNoteClick
+      end
+      object lblVstMultiDetail: TLabel
+        Left = 12
+        Height = 210
+        Top = 675
+        Width = 1410
+        AutoSize = False
+        Caption = '多列视图：名称 / ID / 备注，选中一行即可修改、在其下新增或删除。'
         WordWrap = True
+      end
+      object FVstMulti: TLWDBVirtualTreeView
+        Left = 12
+        Height = 510
+        Top = 152
+        Width = 1182
+        DefaultText = 'Node'
+        Header.AutoSizeIndex = 0
+        Header.Columns = <>
+        Header.MainColumn = -1
+        NodeDataSize = 4
+        TabOrder = 5
+        KeyField = 'id'
+        ParentField = 'parent_id'
+        TextField = 'name'
+        AutoExpand = False
       end
     end
   end
