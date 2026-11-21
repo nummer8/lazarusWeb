@@ -282,8 +282,8 @@ CSS 三件套是否存在回落 crisp → classic → neptune，都不再写死�
 | `lwwebsocket.pas` | `/lw/ws` 升级（RFC6455）：**只传事件请求/响应**；推送一律由长轮询游标下发（`OnPushCommand` WS 直推保留但默认不启用） |
 | `lwhyper.pas` | 专用负载均衡器（对标 uniGUI Hyper Server）：单进程拉起 N 个 worker（同 exe 多开）、崩溃自动重启、HTTP 反向代理 + sid 会话粘性、WebSocket TCP 级透传、healthz 巡检；`tools/lwhyper.exe` 是入口，自身端点 `/lw/healthz`（汇总）与 `/lw/hyper/status`（worker 明细） |
 | `lwpanel.pas` + `lwrlog.pas` | GUI 服务端面板（对标 uniGUI 独立服务器窗口）与统一日志（见下） |
-| `lwconfig.pas` | 服务端配置文件（INI）：`Port` / `Theme` / `ExtDir` 三项，命令行优先级最高（见 3.2.1） |
-| `lwnewproject.pas` + `src/design/lwdesign.lpk` | IDE 向导（New Project 两个模板：默认 widgetset 与 nogui，差别只在 .lpi 的 `LCLWidgetType`）/ New Form / 组件面板，与 `tools/lwnew.exe` 命令行共用同一模板；lwdesign 把全部自定义控件注册进 IDE，带它们的窗体才能在设计器里打开；另在 Tools 菜单注册「生成 lazarusWeb 窗体模板」（`lwdsgntplcore` 解析 .lfm + `lwdsgntplgen` 写盘；选窗口/平面模式，只生成带模式标记的 `<窗体名>.html`，见 2.14 与坑 154） |
+| `lwconfig.pas` | INI 解析底座：键名归一化（大小写/`-`/`_`/空格）、忽略分节、UTF-8 BOM、`--config=`。单元自身取 `Port` / `Theme` / `ExtDir` 三项；`log` / `language` / `patch` / `ssl*` / `client` / `plugin.*` 由 `lwapp.pas` 的 `ApplyConfigFile` 读同一个 INI（见 3.2.1）。命令行永远优先 |
+| `lwnewproject.pas` + `src/design/lwdesign.lpk` | IDE 向导（New Project 一个 `lazarusWeb` 模板，选中后三框：**应用模式** 普通/服务(daemon) 决定是否生成 `uDaemon.pas`+`uMapper.pas`+`lazarusWeb.ini` 与 `.lpr` 的 `DaemonApp` 分支，**工程类型** GUI/nogui 决定 .lpi 的 `LCLWidgetType`，**工程模板** 常规/插件 决定 .lpr 是否 `uses lwmodules` + `RegisterAllModules`）/ New Form / 组件面板，与 `tools/lwnew.exe` 命令行（`--service` / `--plugin`）共用同一模板；lwdesign 把全部自定义控件注册进 IDE，带它们的窗体才能在设计器里打开；另在 Tools 菜单注册「生成 lazarusWeb 窗体模板」（`lwdsgntplcore` 解析 .lfm + `lwdsgntplgen` 写盘；选窗口/平面模式，生成带模式标记的桌面 `<窗体名>.html` 与移动 `<窗体名>.m.html`，见 2.14 与坑 154）。这是两个独立入口：New Project 向导建工程，Tools 菜单生成窗体模板，别混为一谈 |
 | `lwconvert.exe` | **LCL → Web 转换器**：`.pas` 基类与 uses 改写、`.lpr` 启动代码改写、`.lpi` 重新生成为 nogui 工程，附支持度报告 |
 
 ### 2.12 GUI 服务端面板（lwpanel + lwrlog，对标 uniGUI 独立服务器）
@@ -345,8 +345,8 @@ fphttpserver（每请求一线程）
   Top/Left 视觉排序），生成桌面 `<窗体名>.html` 与移动 `<窗体名>.m.html`
   两份到 `<工程目录>\tpl\`（桌面两模式共用同一个 `.html`）：
   文件头写 `lw-tpl-mode` 标记与控件设计期坐标
-  清单，正文是 `<style>` + 空 `<div>` 装饰层，不写占位符、不改控件
-  定位。改包源码后需在 IDE 里 Compile/Install lwdesign 并重启；
+  清单，正文是 `<style>` + 空 `<div>` 装饰层，不写占位符、不改控件定位。
+  改包源码后需在 IDE 里 Compile/Install lwdesign 并重启；
 - **无模板回退 = 设计期所见即所得**：桌面绝对定位原样（历来行为）；
   移动端窗体保持设计尺寸（字号原大）、固定贴左、禁拖动，超出视口由
   `#lw-root` 滚动（`html[data-lw-pan]`）；不做整体等比缩放（390 屏
@@ -434,6 +434,22 @@ TMainForm = class(TLWForm)   // 原来是 class(TForm)
 也可以用 IDE 向导（装 `src/design/lwdesign.lpk`，先跑 `tools\install_design.bat`）
 或命令行 `tools\lwnew.exe --name=DemoApp --dir=C:\work\DemoApp --units=C:\lazarusWeb\src\core`。
 
+### 3.3.1 同一个 exe 变成 Windows 服务
+
+在向导第一框选「服务(daemon)模式」（或加 `--service`），模板会多给一层宿主：
+
+| 文件 | 作用 |
+|---|---|
+| `uDaemon.pas` | `TDaemon` 子类 + worker 线程；`DoStart` 起线程调 `RunService`，`DoStop` 调 `StopService` 再 `WaitFor` |
+| `uMapper.pas` | `TDaemonMapper` 子类，`StartType=stAuto`；**代码构造 `DaemonDefs`，无 `.lfm`**。服务名：`lwnew --name=X` 生成 `XService`，IDE 向导固定 `LWApp1Service`（详见 `SERVICE_NAMING.md`） |
+| `lazarusWeb.ini` | 固定名的配置（`port=` / `log=` / `client=`），与工程名解耦 |
+
+`.lpr` 变成按参数分流：不带参数照旧走 `TLWApp.Run`（GUI 档仍显示面板），
+`--install/--uninstall/--run` 交给 FPC 的 DaemonApp。
+框架层只加了两个入口 —— `TLWApp.RunService`（置 `GServiceMode`，致命错误改抛
+`ELWServiceAbort` 而不 `Halt`）与 `TLWApp.StopService`（唤醒阻塞的 accept），
+`Run` 主体一字未改，现有 demo 行为不变。完整用法见 `WINDOWS_SERVICE.md`。
+
 ### 3.4 常用能力速查
 
 | 需求 | 做法 |
@@ -493,7 +509,7 @@ TMainForm = class(TLWForm)   // 原来是 class(TForm)
 ### 3.7 已知限制
 
 - 模态超时 180 秒；同一会话同时只允许一个对话框；
-- `TOpenDialog` 不能浏览服务端磁盘（只能上传）；`TSplitter` 不支持拖动；
+- `TOpenDialog` 不能浏览服务端磁盘（只能上传）；`TSplitter` 支持拖动（回传位移→服务端 `SetSplitterPosition` 按 Align 重排邻居，坑 186）；
   `TUpDown/TProgressBar/TTrackBar` 浏览器端回写 `Position`；未适配控件浏览器端灰框占位；
 - 高 DPI 按虚拟显示器 96 DPI 处理，125%/150% 设计的 lfm 自动缩回 96；
 - 端口被强杀后可能残留孤儿 socket（`LISTENING PID 0`），换端口最省事；

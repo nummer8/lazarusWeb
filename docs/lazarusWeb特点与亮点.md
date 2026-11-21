@@ -61,9 +61,11 @@ lazbuild -B --ws=nogui MyApp.lpi
   启动代码、重新生成 `.lpi`（nogui 目标）、输出逐控件的支持度报告；
   端到端回归 `tests/t_convert.py`；
 - 新工程有 IDE 向导：装上设计期包 `lwdesign` 后，**File → New → Project**
-  多出 `lazarusWeb Application`（GUI 调试档）和 `... (nogui)`（部署档）
-  两个模板，落盘时机与 Lazarus 自带模板一致（先虚拟工程，Ctrl+S 才写盘），
-  落盘即带 `build.bat/build.sh/favicon.ico` 与 `lw/` 前端资源；
+  多出 `lazarusWeb` 一个模板，选中后连弹三框：① 应用模式（普通 / 服务(daemon)，
+  服务模式额外生成 `uDaemon.pas`/`uMapper.pas`/`lazarusWeb.ini`，
+  同一个 exe 可注册成 Windows 服务）；② 工程类型（GUI 调试档 / nogui 部署档）；
+  ③ 工程模板（常规 / 插件）。落盘时机与 Lazarus 自带模板一致（先虚拟工程，
+  Ctrl+S 才写盘），落盘即带 `build.bat/build.sh/favicon.ico` 与 `lw/` 前端资源；
 - 顺手也给：**New Form**（`TLWForm`）、组件面板 `lazarusWeb` 页、
   Tools 菜单的"按 .lfm 一键生成桌面+移动模板骨架"。
 
@@ -204,8 +206,8 @@ LCL 控件放上去，服务端都是真的在跑它**。
 | 控件支持度 | `CONTROL_MATRIX.md` 由 `tools/lwaudit` **自动生成**：66 个可视控件**真的创建 + 挂窗体 + 序列化一次**，快照 49 ok（74.2%）；其后又把 6 个高频 placeholder 补成 ok（清单见 README 路线图） |
 | DB 控件 | `DB_AWARE_MATRIX.md` 由 `tools/lwdbcheck` 生成：12 个 data-aware 控件挂真 SQLite 数据集，逐项验绑定/显示/同步/改值/序列化/前端分支（明细 9 完全 + 3 只读；文件顶部那行汇总还是 `TDBNavigator` 修复前的旧数） |
 | 自动化测试 | `tests/` 87 个 Python 脚本（含夹具/工具），其中 **23 个 HTTP 级回归**（controls/db/dialog/files/login/multitab/ws/hyper_ws/patch_e2e…，数百项断言）+ **55 个 CDP 真浏览器探针**（连无头 Edge，查首屏/截图/控制台错误） |
-| 文档 | `README` + `docs/*.md` 共 **约 1.3 万行**；`NOTES.md` 是 **176 个坑**的追加式实录（旧结论被推翻处带删除线和指向） |
-| 示例 | 17 个 demo / 21 个 `.lpi`：hello、grid、multi、db、dbaware、files、dialogs、login、gallery（12 页 60+ 控件）、mobile_demo… |
+| 文档 | `README` + `docs/*.md` 共 **约 1.3 万行**；`NOTES.md` 是追加式实录（编号至坑 194，实记 153 条，有跳号；旧结论被推翻处带删除线和指向） |
+| 示例 | 20 个 demo：hello、grid、multi、db、dbaware、files、dialogs、login、gallery（13 页 60+ 控件，含报表页）、mobile_demo… |
 | 授权 | 本项目 MIT；Alpine.js（MIT）随包内置并附许可声明；**Ext JS 不随附**（授权合规由使用方自负，README 写得很直白） |
 
 > 一段值得单独提的话：`NOTES.md` 里记的不是"我做了什么"，而是"哪里错了、
@@ -289,8 +291,8 @@ DOM 既不被搬进占位符也不重建，事件绑定、Alpine 状态、增量
 | 模态超时 | 180 秒 | 常量 `LW_MODAL_TIMEOUT_MS` |
 | 配色 | 7 套 + 跟随系统 | Alpine 层 |
 | 测试脚本 | 87 个（其中 23 HTTP 级 + 55 CDP 浏览器探针） | 截至 2026-11-18 |
-| 文档 | 约 1.3 万行；176 个坑 | 截至 2026-11-18 |
-| 示例 | 17 个 demo / 21 个 `.lpi` | 截至 2026-11-18 |
+| 文档 | 约 1.3 万行；`NOTES.md` 编号至坑 194（实记 153 条） | 复核 2026-11-20 |
+| 示例 | 20 个 demo（含 mobile_demo） | 复核 2026-11-20 |
 
 ---
 
@@ -327,7 +329,7 @@ DOM 既不被搬进占位符也不重建，事件绑定、Alpine 状态、增量
   画板、游戏、实时协同编辑这类不合适；
 - **会话在进程内存里**。进程挂掉，该 worker 上的会话一起丢（外置 Redis 未做），
   靠 lwhyper 粘性 + `410` 自动重建兜底；
-- **未做的能力**：RTL/多语言、`TSplitter` 拖动；移动端没有独立控件族。
+- **未做的能力**：RTL/多语言；移动端没有独立控件族。（`TSplitter` 已支持拖动，坑 186）
   `TPopupMenu` 右键上下文菜单、仪表盘 gauge、颜色选择器、
   `TProgressBar`/`TTrackBar` 回写均已支持（见 2.4 / 2.6）；
 - **nogui 的文本度量是估算**。极端依赖 `AutoSize` 精排的界面要复核，
@@ -347,14 +349,14 @@ DOM 既不被搬进占位符也不重建，事件绑定、Alpine 状态、增量
 :: 1) 编译全部 demo（--ws=nogui）
 build.bat
 
-:: 2) 全功能画廊：12 页 60+ 控件，标准控件/网格/图表/上传/对话框/DB 分页都在
+:: 2) 全功能画廊：13 页 60+ 控件，标准控件/网格（保存/调用 + 未保存关闭提醒）/图表/上传/对话框/DB 分页/报表都在
 demos\gallery\gallery_nogui-x86_64-win64.exe --port=8090
 
 :: 3) DB 感知全家桶 + 报表中心（87 个对象一页摆开）
 demos\dbaware\dbaware.exe --port=8110
 
 :: 4) 手机：用手机浏览器打开横幅里 LAN: 那一行给的地址（记得带端口）
-demos\mobile_demo\mobile_demo.exe --port=8091
+demos\mobile_demo\mobile_demo.exe --port=8106
 
 :: 5) 集群与热更新
 tools\lwhyper.exe --port=8080 --workers=2 --exe=demos\dbaware\dbaware.exe
@@ -380,7 +382,7 @@ python tests\run_with_server.py demos\dialogs\dlgdemo.exe tests\t_dialog.py
 | 性能与容量 | `BENCH.md`（实测）→ `SCALE.md`（优化路线） |
 | 负载均衡与热更新 | `WHYPER.md` → `LOADBALANCE.md` |
 | 移动端原理与实测 | `MOBILE.md` |
-| 踩过的坑（176 个） | `NOTES.md` |
+| 踩过的坑（编号至 194，实记 153 条） | `NOTES.md` |
 | 排障方法论 | `DEBUGGING.md` |
 | 部署（HTTPS/反代/systemd） | `deploy/README.md` |
 | 按场景找文档 | `INDEX.md` |

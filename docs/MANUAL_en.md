@@ -103,7 +103,7 @@ tools\lwconvert.exe <project directory> --convert <output directory>
 tools\lwconvert_gui.exe                :: GUI version: select directory → analyze/convert → view report
 ```
 
-What it rewrites: `.pas` base classes and uses clauses, `.lpr` startup code, `.lpi` regenerated as a nogui project, plus a control-support report. There is also a wizard in the IDE: the design-time package `lwdesign` (two templates in New Project + New Form + component palette).
+What it rewrites: `.pas` base classes and uses clauses, `.lpr` startup code, `.lpi` regenerated as a nogui project, plus a control-support report. There is also a wizard in the IDE: the design-time package `lwdesign` (one template in New Project — it asks three questions: application mode / project type / project template — plus New Form and the component palette).
 
 ### Create a New Project with the IDE Wizard (From Scratch)
 
@@ -123,27 +123,36 @@ The three packages have a dependency chain, and the **order cannot be reversed**
    for the first two click only **Compile**; for the third click **Compile → Use → Install**, choose "Yes" in the dialog asking whether to rebuild the IDE, and after the rebuild finishes **restart Lazarus**.
 2. Note: do not Compile `lwserver.lpk` in the IDE (the nogui units are not on the IDE search path, giving `Can't find unit noguiint`; see pitfall 15 in `NOTES.md`); leave that to the command-line `lazbuild`. For the `Descriptor.Name empty` dialog when installing the design-time package, see pitfall 16.
 
-Only after installation will a template named **lazarusWeb** appear under **File → New → Project** (selecting it pops up the two dialogs below). If it is not installed (or an old version is installed), you will not see it in the New dialog. The Tools menu item "**Generate lazarusWeb Form Template (Current Unit LFM)**" also comes from the `lwdesign` package — this is a **different feature** (generating an HTML template from the current form's .lfm, see 16.0) and has nothing to do with the New Project wizard. After changing a package's source you must recompile → Install → restart the IDE, otherwise the menu still runs the old logic.
+Only after installation will a template named **lazarusWeb** appear under **File → New → Project** (selecting it pops up the three dialogs below). If it is not installed (or an old version is installed), you will not see it in the New dialog. The Tools menu item "**Generate lazarusWeb Form Template (Current Unit LFM)**" also comes from the `lwdesign` package — this is a **different feature** (generating an HTML template from the current form's .lfm, see 16.0) and has nothing to do with the New Project wizard. After changing a package's source you must recompile → Install → restart the IDE, otherwise the menu still runs the old logic.
 
-**1. Select the template — two selection dialogs pop up in sequence**
+**1. Select the template — three selection dialogs pop up in sequence**
 
-After selecting **lazarusWeb**, two dialogs appear one after the other (cancelling either one exits without touching the current project):
+After selecting **lazarusWeb**, three dialogs appear one after the other (cancelling any of them exits without touching the current project):
 
-The first dialog, the project type tier:
+The first dialog (1/3), the application mode:
+
+| Option | Project generated |
+|---|---|
+| **Normal application mode** | An ordinary lazarusWeb program, accessed from a browser (the historical behaviour, unchanged) |
+| **Service (daemon) mode** | Additionally generates the `uDaemon.pas` / `uMapper.pas` / `lazarusWeb.ini` host layer, and the `.lpr` gets a `DaemonApp` branch: **the same exe can run in the foreground and also be registered as a Windows service with `--install`** (see `WINDOWS_SERVICE.md`) |
+
+The second dialog (2/3), the project type tier:
 
 | Option | Tier | Program produced |
 |---|---|---|
 | **lazarusWeb project** | `$APPTYPE GUI`, default widgetset | Runs directly with F9 in the IDE, with **no** black console window (for debugging) |
 | **lazarusWeb project(nogui)** | `$APPTYPE CONSOLE` + `LCLWidgetType=nogui` | Pure console service, with only a **black terminal** (for deployment) |
 
-The second dialog, the project template:
+The third dialog (3/3), the project template:
 
 | Option | `.lpr` generated |
 |---|---|
 | **Normal mode** | Normal project: `uses lwapp, umain`, `TLWApp.Register(TMainForm)` |
 | **Plugin mode** | Plugin project: `uses` additionally includes `lwmodules` and calls `RegisterAllModules`; also generates an empty `lwmodules.pas` skeleton (the main form is kept as usual; for module registration see `tools/lwplugins.py`) |
 
-After both dialogs are answered, **nothing is written to disk**: the project is "virtual" at this moment, with the source of `.lpr` / `umain.pas` / `.lfm` (and `lwmodules.pas` in plugin mode) all in memory, and the title bar reads `LWApp1 (*lpi)`. This is completely consistent with the flow of Lazarus's own templates.
+After all three dialogs are answered, **nothing is written to disk**: the project is "virtual" at this moment, with the source of `.lpr` / `umain.pas` / `.lfm` (plus `lwmodules.pas` in plugin mode, and `uDaemon.pas` / `uMapper.pas` / `lazarusWeb.ini` in service mode) all in memory, and the title bar reads `LWApp1 (*lpi)`. This is completely consistent with the flow of Lazarus's own templates.
+
+> In service mode those three extra files are **already complete and correct before anything is written to disk** — they do not depend on a save hook patching them afterwards. `uMapper.pas` builds its `DaemonDefs` in code and therefore needs **no `.lfm` resource** (see pitfall 195 in `NOTES.md`).
 
 **2. Ctrl+S is what writes to disk**
 
@@ -158,6 +167,15 @@ What pops up is Lazarus's standard "Save Project" dialog:
 <directory>\LWApp1.lpr  LWApp1.lpi  umain.pas  umain.lfm
        build.bat   build.sh    favicon.ico
        lw\        ← Front-end resources (lw.js/lw.css/alpine.min.js…)
+```
+
+Service (daemon) mode writes three more files (also in the same Ctrl+S save; the wizard
+opens a tab for each of them so you can tweak the service name / port right away):
+
+```
+       uDaemon.pas    ← daemon class + worker thread (RunService / Halt on non-SCM stop)
+       uMapper.pas    ← TDaemonMapper descendant; service name is always LWApp1Service (the wizard generates with a placeholder name), stAuto; only CLI `lwnew --name=MyApp` produces MyAppService — see SERVICE_NAMING.md
+       lazarusWeb.ini ← port= / log= / client= (fixed name, found automatically at runtime)
 ```
 
 `build.bat` / `build.sh`, the `.lpi` macros of the nogui tier, `favicon.ico`, and the front-end resources in `lw\` cannot be produced by the IDE's project model; the wizard fills them in **about 1 second after saving** (at runtime static resources are looked up as `exe\lw\<file>`, so they are copied to `lw\` under the project directory).
@@ -205,7 +223,7 @@ Drag `TLWCamera` (a specialized descendant of `TLWFileUpload`) from the componen
 ```pascal
 procedure TMainForm.camPhotoCapture(Sender: TObject; const AFileName: string);
 begin
-  // AFileName is the full path on the server (uploads\<session>\<control>\xxx.jpg),
+  // AFileName is the full path on the server (%TEMP%\lw_uploads\<session>\<control>\xxx.jpg),
   // just process it with TFileStream / store it in the database later; the preview is not done on the server
 end;
 ```

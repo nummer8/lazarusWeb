@@ -126,7 +126,8 @@ tools\lwconvert_gui.exe                :: GUI 版：选目录→分析/转换→
 
 改写内容：`.pas` 基类与 uses、`.lpr` 启动代码、`.lpi` 重新生成为 nogui
 工程，附控件支持度报告。IDE 里也有向导：设计期包 `lwdesign`（New Project
-两个模板 + New Form + 组件面板）。
+一个模板，选中后弹三框：应用模式 / 工程类型 / 工程模板；另有 New Form +
+组件面板）。
 
 ### 用 IDE 向导新建工程（从头建一个）
 
@@ -151,21 +152,46 @@ Install `lwdesign` 时报 `Can't find unit lwcore / lwserver`。
    报 `Can't find unit noguiint`，见 `NOTES.md` 坑 15）；交给命令行
    `lazbuild` 即可。设计期包安装弹 `Descriptor.Name empty` 见坑 16。
 
-装好后 **文件 → 新建 → 项目** 里才会出现两个模板。没装（或装的是旧版）
-时新建对话框里根本看不到它们，或者看到的是旧行为。Tools 菜单里的
-「生成 lazarusWeb 窗体模板」同样来自 `lwdesign` 包；改过包源码后必须重新
-Compile → Install → 重启 IDE，否则菜单仍执行旧逻辑。
+装好后 **文件 → 新建 → 项目** 里才会出现一个模板 **lazarusWeb**（选中后弹
+下面的三框）。没装（或装的是旧版）时新建对话框里看不到它；Tools 菜单里的
+「**生成 lazarusWeb 窗体模板（当前单元 LFM）**」同样来自 `lwdesign` 包——
+这是**另一个功能**（按当前窗体 .lfm 生成 HTML 模板，见 16.0），与新建工程
+向导无关。改过包源码后必须重新 Compile → Install → 重启 IDE，否则菜单仍
+执行旧逻辑。
 
-**1. 选模板**
+**1. 选模板 —— 连弹三个选择框**
 
-| 模板 | 档位 | 编出来的程序 |
+选中 **lazarusWeb** 后依次弹三个框（任一框点取消即退出，不动当前工程）：
+
+第一框（1/3），应用模式：
+
+| 选项 | 生成的工程 |
+|---|---|
+| **普通应用模式** | 普通 lazarusWeb 程序，浏览器访问服务（历史行为，一字不变） |
+| **服务(daemon)模式** | 额外生成 `uDaemon.pas` / `uMapper.pas` / `lazarusWeb.ini` 宿主层，`.lpr` 带 `DaemonApp` 分流：**同一个 exe 既能前台运行，也能 `--install` 注册成 Windows 服务**（详见 `WINDOWS_SERVICE.md`） |
+
+第二框（2/3），工程类型档位：
+
+| 选项 | 档位 | 编出来的程序 |
 |---|---|---|
-| **lazarusWeb Application** | `$APPTYPE GUI`，默认 widgetset | IDE 里 F9 直接跑，**无**黑窗口、**无**服务端面板窗口（调试用） |
-| **lazarusWeb Application (nogui)** | `$APPTYPE CONSOLE` + `LCLWidgetType=nogui` | 纯控制台服务，只有**黑终端**，没有面板窗口（部署用） |
+| **lazarusWeb project** | `$APPTYPE GUI`，默认 widgetset | IDE 里 F9 直接跑，**无**黑窗口（调试用） |
+| **lazarusWeb project(nogui)** | `$APPTYPE CONSOLE` + `LCLWidgetType=nogui` | 纯控制台服务，只有**黑终端**（部署用） |
 
-选完模板**不弹任何对话框、也不写盘**：工程此刻是"虚拟"的，`.lpr` /
-`umain.pas` / `.lfm` 的源码全在内存里，标题栏是 `LWApp1 (*lpi)`。这与
-Lazarus 自带模板的流程完全一致。
+第三框（3/3），工程模板：
+
+| 选项 | 生成的 `.lpr` |
+|---|---|
+| **常规模式** | 常规工程：`uses lwapp, umain`，`TLWApp.Register(TMainForm)` |
+| **插件模式** | 插件工程：`uses` 额外加 `lwmodules`，并调用 `RegisterAllModules`；另生成空的 `lwmodules.pas` 骨架（主窗体照常保留，模块注册见 `tools/lwplugins.py`） |
+
+三个框都选完**不写盘**：工程此刻是"虚拟"的，`.lpr` / `umain.pas` / `.lfm`
+（插件模式还有 `lwmodules.pas`，服务模式还有 `uDaemon.pas` / `uMapper.pas` /
+`lazarusWeb.ini`）的源码全在内存里，标题栏是 `LWApp1 (*lpi)`。
+这与 Lazarus 自带模板的流程完全一致。
+
+> 服务模式的三个附加文件在**落盘之前内容就已完整正确**，不靠保存钩子事后
+> 补写；其中 `uMapper.pas` 用代码构造 `DaemonDefs`，**不需要 `.lfm` 资源**
+> （见 `NOTES.md` 坑 195）。
 
 **2. Ctrl+S 才落盘**
 
@@ -184,6 +210,15 @@ Lazarus 自带模板的流程完全一致。
 <目录>\LWApp1.lpr  LWApp1.lpi  umain.pas  umain.lfm
        build.bat   build.sh    favicon.ico
        lw\        ← 前端资源（lw.js/lw.css/alpine.min.js…）
+```
+
+服务(daemon)模式再多三个文件（同样在 Ctrl+S 时一次落盘，新建时 IDE 会给它们
+各开一个标签页，可以当场改服务名/端口）：
+
+```
+       uDaemon.pas   ← 守护类 + worker 线程（RunService / 非 SCM 停止 Halt）
+       uMapper.pas   ← TDaemonMapper 子类，服务名固定 LWApp1Service（向导用占位名生成）、stAuto 自启；命令行 lwnew --name=MyApp 才生成 MyAppService，详见 SERVICE_NAMING.md
+       lazarusWeb.ini ← port= / log= / client=（固定名，运行期自动找）
 ```
 
 `build.bat` / `build.sh`、nogui 档的 `.lpi` 宏、`favicon.ico`、以及 `lw\` 里的
@@ -259,7 +294,7 @@ Alpine 渲染层（默认）内置移动端自适应，判定在浏览器端完�
 ```pascal
 procedure TMainForm.camPhotoCapture(Sender: TObject; const AFileName: string);
 begin
-  // AFileName 是服务端上的完整路径（uploads\<会话>\<控件名>\xxx.jpg），
+  // AFileName 是服务端上的完整路径（%TEMP%\lw_uploads\<会话>\<控件名>\xxx.jpg），
   // 直接 TFileStream / 后续入库处理即可；预览不在服务端做
 end;
 ```
@@ -591,7 +626,7 @@ Ext JS 渲染层为**可选**（默认不部署）：需要时把 `ext-x.x.x\` �
 
 - 模态超时 180 秒；同一会话同时只能有一个对话框；
 - `TOpenDialog` 不能浏览服务端磁盘（只能上传文件）；
-- `TSplitter` 不可拖动；`Anchors` 不做前端吸附计算；
+- `TSplitter` 可拖动调整位置（坑 186）；`Anchors` 不做前端吸附计算；
 - 高 DPI 按 96 处理（125%/150% 设计的 lfm 自动缩回）；
 - PDF 直出暂以浏览器"另存为 PDF"代替；会话外置 Redis 未实现；
 - 未适配控件浏览器端灰框占位（服务端照常活着），不影响其他控件；
