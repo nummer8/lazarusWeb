@@ -9,7 +9,7 @@ interface
 
 uses
   lwbase, lwform, lwfileupload, lwdownload, lwnewproject, lwdlg, lwcaptcha, 
-  lwcamera, LazarusPackageIntf;
+  lwcamera, lwlang, lwdbtree, LazarusPackageIntf;
 
 implementation
 

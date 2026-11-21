@@ -4,9 +4,21 @@
     <Name Value="lwserver"/>
     <Type Value="RunAndDesignTime"/>
     <Author Value="lazarusWeb"/>
+    <CompilerOptions>
+      <Version Value="11"/>
+      <SearchPaths>
+        <OtherUnitFiles Value="core"/>
+        <UnitOutputDirectory Value="../lib/$(TargetCPU)-$(TargetOS)-$(LCLWidgetType)"/>
+      </SearchPaths>
+      <Linking>
+        <Debugging>
+          <GenerateDebugInfo Value="False"/>
+        </Debugging>
+      </Linking>
+    </CompilerOptions>
+    <Description Value="lazarusWeb 服务端：序列化 / 会话 / HTTP / 上传（nogui 下自动装 widgetset 补丁；其它 widgetset 下补丁为空实现）。本包不依赖 VirtualTreeView，任意 widgetset 均可编译，包括 --ws=nogui；VST 序列化桥接（lwvirtualtree + lwwriter/lwdispatch 的 LW_VIRTUALTREEVIEW 分支）默认关闭，需要时在引用本包源码的工程里自行定义该宏并提供 VST 单元路径"/>
     <License Value="LGPL"/>
-    <Description Value="lazarusWeb 服务端：序列化 / 会话 / HTTP / 上传（nogui 下自动装 widgetset 补丁；其它 widgetset 下补丁为空实现，包本身任意 widgetset 都能编译）"/>
-    <Version Major="1" Minor="0"/>
+    <Version Major="1"/>
     <Files Count="24">
       <Item1>
         <Filename Value="core/lwapp.pas"/>
@@ -36,7 +48,6 @@
         <Filename Value="core/lwupload.pas"/>
         <UnitName Value="lwupload"/>
       </Item7>
-
       <Item8>
         <Filename Value="core/lwajax.pas"/>
         <UnitName Value="lwajax"/>
@@ -124,17 +135,5 @@
     <PublishOptions>
       <Version Value="2"/>
     </PublishOptions>
-    <CompilerOptions>
-      <Version Value="11"/>
-      <SearchPaths>
-        <OtherUnitFiles Value="core"/>
-        <UnitOutputDirectory Value="../lib/$(TargetCPU)-$(TargetOS)-$(LCLWidgetType)"/>
-      </SearchPaths>
-      <Linking>
-        <Debugging>
-          <GenerateDebugInfo Value="False"/>
-        </Debugging>
-      </Linking>
-    </CompilerOptions>
   </Package>
 </CONFIG>

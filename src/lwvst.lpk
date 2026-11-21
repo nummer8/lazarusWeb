@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CONFIG>
+  <Package Version="5">
+    <Name Value="lwvst"/>
+    <Type Value="RunAndDesignTime"/>
+    <Author Value="lazarusWeb"/>
+    <License Value="LGPL"/>
+    <Description Value="[构建] GUI 专属可选包：TLWDBVirtualTreeView（依赖 VirtualTreeView，必须真 GDI）。只能在目标 IDE 的 widgetset（本机 win32）下编译，不要加 --ws=nogui —— lclextensions_package / laz.virtualtreeview_package 只有 include/&lt;widgetset>、include/intf/&lt;widgetset>，没有 nogui 版本。无头/Linux 部署不引用本包，直接用 lwcore 里的 TLWDBTreeView。"/>
+    <Version Major="1" Minor="0"/>
+    <Files Count="1">
+      <Item1>
+        <Filename Value="core/lwdbvst.pas"/>
+        <UnitName Value="lwdbvst"/>
+      </Item1>
+    </Files>
+    <CompatibilityMode Value="True"/>
+    <RequiredPkgs Count="4">
+      <Item1>
+        <PackageName Value="LCL"/>
+      </Item1>
+      <Item2>
+        <PackageName Value="lwcore"/>
+      </Item2>
+      <Item3>
+        <PackageName Value="lclextensions_package"/>
+      </Item3>
+      <Item4>
+        <PackageName Value="laz.virtualtreeview_package"/>
+      </Item4>
+    </RequiredPkgs>
+    <UsageOptions>
+      <UnitPath Value="$(PkgOutDir)"/>
+    </UsageOptions>
+    <PublishOptions>
+      <Version Value="2"/>
+    </PublishOptions>
+    <CompilerOptions>
+      <Version Value="11"/>
+      <SearchPaths>
+        <OtherUnitFiles Value="core"/>
+        <UnitOutputDirectory Value="../lib/$(TargetCPU)-$(TargetOS)-$(LCLWidgetType)"/>
+      </SearchPaths>
+      <Other>
+        <CustomOptions Value="-dLW_VIRTUALTREEVIEW"/>
+      </Other>
+      <Linking>
+        <Debugging>
+          <GenerateDebugInfo Value="False"/>
+        </Debugging>
+      </Linking>
+    </CompilerOptions>
+  </Package>
+</CONFIG>
