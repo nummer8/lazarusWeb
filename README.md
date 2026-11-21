@@ -17,34 +17,50 @@
 ## 控件安装（Lazarus IDE 设计期包）
 
 要在 IDE 设计器里打开带 lazarusWeb 控件的窗体、用「新建工程向导」和
-「生成 lazarusWeb 窗体模板」Tools 菜单，必须先按**固定顺序**处理三个包。
-顺序不能颠倒：`lwserver` 依赖 `lwcore`，`lwdesign`（设计期包）又依赖
-前两者，跳步会在 Install 时报 `Can't find unit lwcore / lwserver`。
+「生成 lazarusWeb 窗体模板」Tools 菜单，必须先按**固定顺序**处理四个包。
+顺序不能颠倒：`lwserver` / `lwvst` 都依赖 `lwcore`，`lwdesign`（设计期包）
+又依赖前三者，跳步会在 Install 时报 `Can't find unit lwcore / lwserver / lwvst`。
 
 | 顺序 | 包 | 类型 | 依赖 | 在 IDE 里做什么 |
 |---|---|---|---|---|
 | 1 | `src\lwcore.lpk` | RunAndDesignTime | LCL / FCL / fcl-image | **只编译**（Compile），不 Install |
 | 2 | `src\lwserver.lpk` | RunAndDesignTime | LCL / FCL / **lwcore** | **只编译**（Compile），不 Install |
-| 3 | `src\design\lwdesign.lpk` | DesignTime | LCL / IDEIntf / **lwcore** / **lwserver** | **Compile → Install**（会重建 `lazarus.exe`，然后重启 IDE） |
+| 3 | `src\lwvst.lpk` | RunAndDesignTime | LCL / **lwcore** / lclextensions_package / laz.virtualtreeview_package | **只编译**（Compile），不 Install |
+| 4 | `src\design\lwdesign.lpk` | DesignTime | LCL / IDEIntf / **lwcore** / **lwserver** / **lwvst** | **Compile → Install**（会重建 `lazarus.exe`，然后重启 IDE） |
+
+三层依赖的用意——**两条构建链互不污染**：
+
+- 无头链：`lwcore` + `lwserver`。两者都不引用 VirtualTreeView，`--ws=nogui`
+  可以编译，用于 Linux/无 X 的部署目标。
+- GUI 链：`lwvst`（`TLWDBVirtualTreeView`，需要真 GDI）+ `lwdesign`。
+  这两个包**只能用目标 IDE 的 widgetset（本机 win32）编译**，不要加
+  `--ws=nogui`：`lclextensions_package` / `laz.virtualtreeview_package` 只有
+  `include/<widgetset>`、`include/intf/<widgetset>`，没有 nogui 版本，会报
+  `Cannot open include file "uses.inc"`。
+- 需要多列/虚拟节点树的无头工程请改用 `lwcore` 里的 `TLWDBTreeView`
+  （示例见 `demos\treedemo_nogui`，nogui 构建下已验证可跑）。
 
 具体步骤：
 
-1. 命令行先注册三个包（让 IDE 认识它们，否则新建工程报「找不到包」）：
+1. 命令行先注册四个包（让 IDE 认识它们，否则新建工程报「找不到包」）：
 
    ```
    tools\install_design.bat
    ```
    等价手工命令（把 `C:/111/lazarus` 换成你的 Lazarus 目录）：
    ```
-   lazbuild --add-package-link=src\lwcore.lpk
-   lazbuild --add-package-link=src\lwserver.lpk
-   lazbuild --add-package-link=src\design\lwdesign.lpk
+   lazbuild --add-package-link src\lwcore.lpk
+   lazbuild --add-package-link src\lwserver.lpk
+   lazbuild --add-package-link src\lwvst.lpk
+   lazbuild --add-package-link src\design\lwdesign.lpk
    ```
-   注意 `--add-package-link` 只是「登记/最近打开」，**不等于安装**；
-   `--add-package` 参数形式在本机 Lazarus 上会报 `does not allow an argument`，属正常现象。
+   注意 `--add-package-link` 后面是**一个空格 + 路径**，写成
+   `--add-package-link=...` 会被当前 lazbuild 拒绝（`does not allow an
+   argument`）且什么也没登记。
+   `--add-package-link` 只是「登记/最近打开」，**不等于安装**。
 
 2. 打开 Lazarus，按上表顺序逐包 `Package → Open Package File → <包>.lpk`，
-   前两个点 **Compile**（只编译出 ppu，不 Install）；第三个 `lwdesign.lpk`
+   前三个点 **Compile**（只编译出 ppu，不 Install）；第四个 `lwdesign.lpk`
    点 **Compile → Use → Install**，弹窗问是否重建 IDE 时选「是」，等重建完
    **重启 Lazarus**。
 
