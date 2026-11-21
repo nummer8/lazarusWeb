@@ -150,7 +150,8 @@ Open `http://127.0.0.1:8090/` in the browser. Command-line options:
 --port=8090           Listen port
 --root=C:\LazarusWeb  Project root directory (contains src/client; ext-<version> only needed for optional Ext layer); defaults to current directory
 --form=Name           Default form name
---client=alpine       Browser rendering layer: alpine (default, built-in) | ext (optional, requires ext directory); auto-detect when unspecified (if both exist, alpine is preferred)
+--client=ext          Browser rendering layer: ext | alpine; auto-detect when unspecified (if both exist, alpine is preferred)
+                      Built-in default is ext; deployments with Alpine resources switch to alpine automatically; explicit setting wins
 --ext=7.0.0           Default Ext version (URL can also use ?ext=<version> to switch temporarily)
 --extdir=directory    ext-js directory (equivalent to config item ExtDir)
 --theme=crisp         Default theme (Ext rendering layer: classic/crisp/gray/material/neptune/graphite;
@@ -172,7 +173,7 @@ Open `http://127.0.0.1:8090/` in the browser. Command-line options:
 --help                Help
 ```
 
-The parameter table matches the `--help` output of `src/core/lwapp.pas`; source code is authoritative.
+The parameter table is aligned with the `--help` output of `src/core/lwapp.pas`; details (such as `--client` auto-detection) follow the source code.
 
 ### Configuration file (INI)
 
@@ -340,7 +341,7 @@ After installing `src/design/lwdesign.lpk`, three things appear in Lazarus:
 
 | Location | Contents |
 |---|---|
-| File → New → Project | **lazarusWeb Application** (default widgetset, `$APPTYPE GUI`, press F9 directly in IDE, no black window) and **lazarusWeb Application (nogui)** (`LCLWidgetType=nogui` console service, deployment profile) two templates. Disk write timing is the same as Lazarus built-in templates: after choosing a template, no dialog is shown and nothing is written (the project is "virtual"); pressing Save (Ctrl+S) shows the "Save Project" dialog, and the directory defaults to the IDE option "project build test directory". This step generates `.lpr/.lpi/umain.pas/.lfm/build.bat/build.sh/favicon.ico`, and copies the framework's `src/client` into the project directory's `lw/` (runtime finds static resources by `exe/lw/<file>`; site icon `favicon.ico` goes in project root, and the server searches `<root>` → `<exe directory>` in order). The nogui profile's `.lpi` macro is patched **after the save transaction truly ends** (`.lpi` and all units are written, stable for two consecutive rounds before acting; never pop dialogs or reload project during saving, see NOTES Pitfall 172), so it is completed **about 1 second after saving**, then a message "nogui profile: effective after reloading project" pops up — click "Yes" to reopen the project, and F9 gives a windowless console service |
+| File → New → Project | one **lazarusWeb** template with three successive dialogs: (1/3) application mode (normal / **service (daemon)**; service mode additionally generates `uDaemon.pas`/`uMapper.pas`/`lazarusWeb.ini` — see `docs/SERVICE_NAMING_en.md`), (2/3) project tier (`lazarusWeb project` GUI debug build / `lazarusWeb project(nogui)` deployment build), (3/3) template (normal / plugin). Disk write timing matches Lazarus built-in templates: after the three dialogs nothing is written (the project is "virtual"); pressing Save (Ctrl+S) shows the "Save Project" dialog, and the directory defaults to the IDE option "project build test directory". This step generates `.lpr/.lpi/umain.pas/.lfm/build.bat/build.sh/favicon.ico`, and copies the framework's `src/client` into the project directory's `lw/` (runtime finds static resources by `exe/lw/<file>`; site icon `favicon.ico` goes in project root, and the server searches `<root>` → `<exe directory>` in order). The nogui profile's `.lpi` macro is patched **after the save transaction truly ends** (`.lpi` and all units are written, stable for two consecutive rounds before acting; never pop dialogs or reload project during saving, see NOTES Pitfall 172), so it is completed **about 1 second after saving**, then a message "nogui profile: effective after reloading project" pops up — click "Yes" to reopen the project, and F9 gives a windowless console service |
 | File → New → File | **lazarusWeb Form** — a `TLWForm` form unit, directly into the designer |
 | Component palette | **lazarusWeb** page: `TLWFileUpload` / `TLWCamera`, etc. |
 
@@ -418,7 +419,7 @@ Drag `TLWCamera` (a dedicated descendant of `TLWFileUpload`) onto the form:
 ```pascal
 procedure TMainForm.camPhotoCapture(Sender: TObject; const AFileName: string);
 begin
-  // The photo has been saved on the server (uploads\<session>\camPhoto\xxx.jpg)
+  // The photo has been saved on the server (%TEMP%\lw_uploads\<session>\camPhoto\xxx.jpg)
 end;
 ```
 

@@ -151,7 +151,8 @@ start-gui.bat           :: 双击启动 GUI 版（dbaware_gui.exe，见下节）
 --port=8090           监听端口
 --root=C:\LazarusWeb  项目根目录（含 src/client；ext-<版本> 仅在可选 Ext 层需要）；缺省取当前目录
 --form=Name           默认窗体名
---client=alpine       浏览器渲染层：alpine（默认，内置）| ext（可选，需 ext 目录）；不指定时自动探测（都在则优先 alpine）
+--client=ext          浏览器渲染层：ext | alpine；不指定时自动探测（都在优先 alpine）
+                      内置默认是 ext；部署带 alpine 资源时会自动切到 alpine，显式指定优先
 --ext=7.0.0           默认 Ext 版本（URL 也可 ?ext=<版本> 临时切换）
 --extdir=目录         ext-js 目录（配置项 ExtDir 的等价物）
 --theme=crisp         默认主题（Ext 渲染层：classic/crisp/gray/material/neptune/graphite；
@@ -173,7 +174,7 @@ start-gui.bat           :: 双击启动 GUI 版（dbaware_gui.exe，见下节）
 --help                帮助
 ```
 
-参数表与源码 `src/core/lwapp.pas` 的 `--help` 输出一致，以源码为准。
+参数表按源码 `src/core/lwapp.pas` 的 `--help` 输出对齐；细节（如 `--client` 的自动探测）以源码为准。
 
 ### 配置文件（INI）
 
@@ -343,7 +344,7 @@ tools/build.sh hyper_gui          # GUI 工具用宿主 widgetset 编
 
 | 位置 | 内容 |
 |---|---|
-| File → New → Project | **lazarusWeb Application**（默认 widgetset，`$APPTYPE GUI`，IDE 里 F9 直接跑，无黑窗口）与 **lazarusWeb Application (nogui)**（`LCLWidgetType=nogui` 控制台服务，部署档）两个模板。落盘时机与 Lazarus 自带模板一致：选完模板不弹对话框、不写盘（工程是"虚拟"的），按保存（Ctrl+S）时才弹"保存项目"对话框，目录默认取 IDE 选项里的"项目构建测试的目录"，这一步生成 `.lpr/.lpi/umain.pas/.lfm/build.bat/build.sh/favicon.ico`，并把框架的 `src/client` 拷到工程目录下的 `lw/`（运行期按 `exe/lw/<文件>` 找静态资源；站点图标 `favicon.ico` 则放工程根目录，服务端按 `<root>` → `<exe 目录>` 顺序找）。nogui 档的 `.lpi` 宏在**保存事务真正结束之后**才补写（`.lpi` 与所有单元都落盘、连续两轮稳定才动手；保存过程中绝不弹框、不重载工程，见 NOTES 坑 172），所以**保存后约 1 秒**才补齐，补完弹一句「nogui 档：重新加载工程后生效」——点"是"重开工程，F9 就是无窗口控制台服务 |
+| File → New → Project | **lazarusWeb** 一个模板，选中后连弹三框：① 应用模式（普通 / **服务(daemon)**，服务模式额外生成 `uDaemon.pas`/`uMapper.pas`/`lazarusWeb.ini`，详见 `docs/SERVICE_NAMING.md`）；② 工程类型（`lazarusWeb project` GUI 调试档 / `lazarusWeb project(nogui)` 部署档）；③ 工程模板（常规 / 插件）。落盘时机与 Lazarus 自带模板一致：选完三框不写盘（工程是"虚拟"的），按保存（Ctrl+S）时才弹"保存项目"对话框，目录默认取 IDE 选项里的"项目构建测试的目录"，这一步生成 `.lpr/.lpi/umain.pas/.lfm/build.bat/build.sh/favicon.ico`，并把框架的 `src/client` 拷到工程目录下的 `lw/`（运行期按 `exe/lw/<文件>` 找静态资源；站点图标 `favicon.ico` 则放工程根目录，服务端按 `<root>` → `<exe 目录>` 顺序找）。nogui 档的 `.lpi` 宏在**保存事务真正结束之后**才补写（`.lpi` 与所有单元都落盘、连续两轮稳定才动手；保存过程中绝不弹框、不重载工程，见 NOTES 坑 172），所以**保存后约 1 秒**才补齐，补完弹一句「nogui 档：重新加载工程后生效」——点"是"重开工程，F9 就是无窗口控制台服务 |
 | File → New → File | **lazarusWeb Form** —— 一个 `TLWForm` 窗体单元，直接进设计器 |
 | 组件面板 | **lazarusWeb** 页：`TLWFileUpload` / `TLWCamera` 等 |
 
@@ -420,7 +421,7 @@ end;
 ```pascal
 procedure TMainForm.camPhotoCapture(Sender: TObject; const AFileName: string);
 begin
-  // 照片已在服务端落盘（uploads\<会话>\camPhoto\xxx.jpg）
+  // 照片已在服务端落盘（%TEMP%\lw_uploads\<会话>\camPhoto\xxx.jpg）
 end;
 ```
 
