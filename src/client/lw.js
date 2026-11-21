@@ -1865,13 +1865,17 @@ var LW = (function () {
     }
 
     function buildTree(node, cfg) {
-        function conv(list) {
+        function conv(list, counter) {
             return (list || []).map(function (n) {
+                var me = counter.n++;
                 return {
+                    /* 服务端给了 id（VirtualTreeView 路径）就用它；
+                       TTreeView 没有 id，用深度优先序号兼容旧协议 */
+                    id: (n.id != null ? String(n.id) : String(me)),
                     text: esc(n.text),
                     expanded: !!n.expanded,
                     leaf: !(n.children && n.children.length),
-                    children: conv(n.children)
+                    children: conv(n.children, counter)
                 };
             });
         }
@@ -1880,7 +1884,7 @@ var LW = (function () {
            服务端下发 border，缺省按有边框处理 */
         cfg.border = (node.border !== 'none');
         cfg.store = Ext.create('Ext.data.TreeStore', {
-            root: { expanded: true, children: conv(node.nodes) }
+            root: { expanded: true, children: conv(node.nodes, { n: 0 }) }
         });
         cfg.columns = [{ xtype: 'treecolumn', text: '', dataIndex: 'text', flex: 1 }];
         return Ext.create('Ext.tree.Panel', cfg);
@@ -2779,7 +2783,9 @@ var LW = (function () {
         var isField = FIELD_KINDS.indexOf(node.kind) >= 0;
 
         if (has('OnClick')) {
-            if (node.kind === 'button' || node.kind === 'bitbtn' || node.kind === 'speedbutton' || node.kind === 'toolbutton') {
+            if (node.kind === 'tree') {
+                /* 树的点击在下面用 itemclick 单独绑：要回传节点 id */
+            } else if (node.kind === 'button' || node.kind === 'bitbtn' || node.kind === 'speedbutton' || node.kind === 'toolbutton') {
                 cmp.on('click', function () { fire(node, 'OnClick'); });
             } else if (node.kind === 'fileupload' || node.kind === 'camera') {
                 /* 上传/相机按钮的点击已经绑成"选文件/拍照"，不再额外回传
@@ -2813,6 +2819,15 @@ var LW = (function () {
 
         if (node.kind === 'listbox' && has('OnSelect')) {
             cmp.on('select', function (grid, rec) { fire(node, 'OnSelect', { val: String(rec.get('text')) }); });
+        }
+
+        /* TTreeView / VirtualTreeView 的 OnClick：itemclick 回传节点 id，
+           服务端 LWApplyGridPos 按 id（或 TTreeView 的序号）选中节点 */
+        if (node.kind === 'tree' && has('OnClick')) {
+            cmp.on('itemclick', function (dv, rec) {
+                var id = rec && rec.get ? rec.get('id') : null;
+                fire(node, 'OnClick', { val: id != null ? String(id) : '' });
+            });
         }
 
         /* TListBox 的 OnClick：网格没有通用 click 事件，挂 itemclick

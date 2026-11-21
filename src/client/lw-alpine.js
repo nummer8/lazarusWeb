@@ -2085,11 +2085,16 @@ var LW = (function () {
 
     /* ---------------- 树（递归结构用命令式 DOM 生成） ---------------- */
 
-    function treeConv(list, out, counter) {
-        (list || []).forEach(function (n) {
+    /* prefix/expMap：stablePath 用于记住浏览器本地的展开/收起状态。
+       n.id 是 VirtualTreeView 的服务端路径；TTreeView 没有 id，
+       按父子层级生成 "0.1.2" 这样的路径 —— 与可见性无关，折角后仍稳定。 */
+    function treeConv(list, out, counter, prefix, expMap) {
+        (list || []).forEach(function (n, idx) {
             var me = counter.n++;
-            out.push({ i: me, text: n.text, expanded: !!n.expanded, sel: !!n.selected,
-                kids: treeConv(n.children, [], counter) });
+            var path = n.id != null ? String(n.id) : (prefix ? prefix + '.' + idx : String(idx));
+            var expanded = expMap && (path in expMap) ? expMap[path] : !!n.expanded;
+            out.push({ i: me, id: n.id, path: path, text: n.text, cols: n.cols || [], expanded: expanded,
+                sel: !!n.selected, kids: treeConv(n.children, [], counter, path, expMap) });
         });
         return out;
     }
@@ -2099,18 +2104,42 @@ var LW = (function () {
         var host = document.getElementById('lw-tree-' + id);
         if (!n || !host) return;
         var flat = [];
-        treeConv(n.nodes, flat, { n: 0 });
+        if (!host.__lwExp) host.__lwExp = {};
+        treeConv(n.nodes, flat, { n: 0 }, '', host.__lwExp);
+        var vcols = n.vcols || [];
+        var multi = vcols.length > 1;
         var html = '';
+        if (multi) {
+            html += '<div class="lw-tree-head">';
+            html += '<span class="lw-tree-indent" style="width:16px"></span>';
+            vcols.forEach(function (h, i) {
+                html += '<span class="lw-tree-cell' + (i === 0 ? ' lw-tree-cell-main' : '') + '">' + esc(h || '') + '</span>';
+            });
+            html += '</div>';
+        }
         (function walk(nodes, depth) {
             nodes.forEach(function (nd) {
                 /* 服务端 selected（LCL Selected）也要渲染成高亮：
                    点击回发后服务端选中态变化 -> 树 JSON 指纹变化 -> 重渲染，
                    若不渲染 selected，刚点的选中就被这次重渲染抹掉（坑 94） */
-                html += '<div class="lw-tree-node' + (nd.sel ? ' lw-sel' : '') + '" style="padding-left:' + (depth * 16) + 'px" data-tid="' + nd.i + '">' +
-                    (nd.kids.length
-                        ? '<span class="lw-tree-tw' + (nd.expanded ? ' lw-open' : '') + '"></span>'
-                        : '<span class="lw-tree-tw lw-leaf"></span>') +
-                    '<span class="lw-tree-text">' + esc(nd.text) + '</span></div>';
+                var cls = 'lw-tree-node' + (nd.sel ? ' lw-sel' : '') + (multi ? ' lw-tree-row' : '');
+                html += '<div class="' + cls + '"' +
+                    (multi ? '' : ' style="padding-left:' + (depth * 16) + 'px"') +
+                    ' data-tid="' + nd.i + '">';
+                if (multi)
+                    html += '<span class="lw-tree-indent" style="width:' + (depth * 16) + 'px"></span>';
+                html += (nd.kids.length
+                    ? '<span class="lw-tree-tw' + (nd.expanded ? ' lw-open' : '') + '"></span>'
+                    : '<span class="lw-tree-tw lw-leaf"></span>');
+                if (multi) {
+                    html += '<span class="lw-tree-cell lw-tree-cell-main">' + esc(nd.text) + '</span>';
+                    for (var ci = 1; ci < vcols.length; ci++) {
+                        html += '<span class="lw-tree-cell">' + esc(nd.cols[ci] != null ? nd.cols[ci] : '') + '</span>';
+                    }
+                } else {
+                    html += '<span class="lw-tree-text">' + esc(nd.text) + '</span>';
+                }
+                html += '</div>';
                 if (nd.expanded) walk(nd.kids, depth + 1);
             });
         })(flat, 0);
@@ -2121,13 +2150,17 @@ var LW = (function () {
             el.addEventListener('click', function (e) {
                 var nd = host.__lwFlat.filter(function (x) { return x.i === tid; })[0];
                 if (nd && nd.kids.length && e.target.classList.contains('lw-tree-tw')) {
-                    nd.expanded = !nd.expanded;
+                    /* 必须写回 host 上的本地状态表：renderTree 每次都从服务端
+                       S.ND 重建 flat，直接改 nd.expanded 会被下一次重绘冲掉 */
+                    host.__lwExp[nd.path] = !nd.expanded;
                     renderTree(id);
                     return;
                 }
                 host.querySelectorAll('.lw-tree-node.lw-sel').forEach(function (x) { x.classList.remove('lw-sel'); });
                 el.classList.add('lw-sel');
-                if ($lwHas(id, 'OnClick')) fire(id, 'OnClick', { val: String(tid) });
+                /* VirtualTreeView 的节点带路径 id（如 "0.1.2"），回传 id；
+                   TTreeView 没 id，沿用扁平序号（服务端按 Items 下标选中） */
+                if ($lwHas(id, 'OnClick')) fire(id, 'OnClick', { val: (nd.id != null ? String(nd.id) : String(tid)) });
             });
         });
     }

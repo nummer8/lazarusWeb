@@ -1713,6 +1713,14 @@ html[data-lw-layout="mobile"] .lw-ud-dn::after { content: '\2212'; } /* − */
 .lw-tree-tw.lw-open::before { transform: rotate(45deg); top: 1px; }
 .lw-tree-text { padding: 0 4px; }
 .lw-tree-node.lw-sel .lw-tree-text { background: var(--lw-sel); }
+/* 多列 VirtualTreeView：列头与节点共用 flex 布局，缩进只作用于第一列 */
+.lw-tree-head { display: flex; align-items: center; white-space: nowrap; font-weight: 600; border-bottom: 1px solid var(--lw-border); padding-bottom: 2px; }
+.lw-tree-indent { display: inline-block; flex: none; }
+.lw-tree-row .lw-tree-cell { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; padding: 0 4px; }
+.lw-tree-row .lw-tree-cell-main { flex: 2; }
+.lw-tree-head .lw-tree-cell { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; padding: 0 4px; }
+.lw-tree-head .lw-tree-cell-main { flex: 2; }
+.lw-tree-node.lw-sel .lw-tree-cell { background: var(--lw-sel); }
 
 /* ---------- tooltip ---------- */
 .lw-tip {
