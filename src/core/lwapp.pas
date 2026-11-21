@@ -882,11 +882,14 @@ begin
       GStopRequested := False;
       GServer.Stop;
     end;
-    { 横幅必须打在 Start 之前：Start 进入 accept 循环后不再返回 }
-    GServer.PrintBanner;
-    { --log= 开文件日志：服务化部署留证据；GUI 面板只显示到窗口里 }
+    { --log= 开文件日志：服务化部署留证据；GUI 面板只显示到窗口里。
+      必须在 PrintBanner 之前打开 —— 否则启动横幅只进了控制台/面板，
+      日志文件从第一条请求日志才开始，排查"起不来"时恰好缺了最关键的
+      那几行（监听地址、配置文件、Form 名）。 }
     if GCfg.LogFile <> '' then
       LWOpenLogFile(GCfg.LogFile);
+    { 横幅必须打在 Start 之前：Start 进入 accept 循环后不再返回 }
+    GServer.PrintBanner;
     { TLWServer.Start 一进 accept 循环就永不返回，所以 Start 与
       "服务运行期间做什么" 都交给 LWRunPanel：
       - nogui 构建 / --nogui：同线程跑 accept（历史行为，Ctrl+C 退出）；

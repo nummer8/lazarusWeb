@@ -685,6 +685,22 @@ type
 procedure LWInstallProxyWidgetSet;
 function LWIsMainThread: Boolean; inline;
 
+{ 让工作线程也走真实 widgetset（默认关闭）。
+
+  代理的默认行为是"主线程 = 真实 widgetset，工作线程 = 无头实现"，
+  这是为了线程安全：GTK/Qt/win32 的 widgetset 不是线程安全的，而会话
+  窗体都在 HTTP 工作线程里创建。
+
+  但有些 GUI 控件（典型：VirtualTreeView）离开真实 GDI/Canvas 就没法构造
+  —— 它构造时要位图转 RawImage，选中/滚动时要窗口度量，无头实现下会抛
+  FPImageException 或 EDivByZero。这类 demo 只有让工作线程也用真实
+  widgetset 才能跑。
+
+  调用方自担线程安全风险：只在"单用户本地 demo / 自用工具"这种并发很低
+  的场景打开。必须在创建任何窗体之前调用（一般是 TLWApp.Run 之前）。 }
+procedure LWProxyUseRealWidgetSet(AValue: Boolean = True);
+function LWProxyRealWidgetSet: Boolean;
+
 implementation
 
 type
@@ -695,6 +711,8 @@ type
 
 var
   GInstalled: Boolean = False;
+  { 见 interface 里 LWProxyUseRealWidgetSet 的说明：默认 False }
+  GRealAlways: Boolean = False;
   GScreenW: Integer = 1920;
   GScreenH: Integer = 1080;
   GFontHeightPx: Integer = 13;
@@ -717,7 +735,18 @@ var
 
 function LWIsMainThread: Boolean;
 begin
-  Result := GetCurrentThreadId = MainThreadID;
+  { GRealAlways 打开时，工作线程也当作"主线程"处理，从而走真实 widgetset }
+  Result := GRealAlways or (GetCurrentThreadId = MainThreadID);
+end;
+
+procedure LWProxyUseRealWidgetSet(AValue: Boolean);
+begin
+  GRealAlways := AValue;
+end;
+
+function LWProxyRealWidgetSet: Boolean;
+begin
+  Result := GRealAlways;
 end;
 
 { ---------------- TLWVirtualWS：无头实现（照搬 nogui 部署档行为） ---------------- }
