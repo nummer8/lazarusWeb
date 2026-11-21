@@ -79,7 +79,7 @@ uses
   lwdbgrid, lwdbnav, lwchart, lwui, lwweb, lwreport, lwsidemenu;
 
 const
-  sLWProjectName = 'lazarusWeb';
+  sLWProjectName = 'lazarusWeb Application';
   sLWProjectDesc = '用真实 LCL 控件生成 Web 服务程序（Ext JS 前端）。' + LineEnding +
     '选中后依次选应用模式（普通 / 服务(daemon)）、工程类型（GUI / nogui）与' + LineEnding +
     '工程模板（常规 / 插件）。';
