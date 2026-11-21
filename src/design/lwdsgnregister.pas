@@ -300,6 +300,14 @@ type
     procedure QueueEnsure;
     { 定时器到点：先判定保存是否结束，稳定两轮才调 EnsureExtras }
     procedure EnsureOnTimer({%H-}Sender: TObject);
+    { 写盘之前（sefsBeforeWrite）把服务工程的 mapper 里的 DD.Name /
+      DD.DisplayName 改成最终工程名 —— 向导在虚拟工程阶段只能用占位名
+      LWApp1，用户在"保存项目"对话框里另取的名字此刻才定下来。
+      直接改 CodeBuffer（aFile.SetSourceText）：落盘的是最终值，编辑器页
+      也同步，仍然是"落盘之前就正确"，不依赖保存后补写。
+      只动本套向导生成的服务 mapper，找不到那两行就一个字节不碰。 }
+    function RetargetServiceName(aFile: TLazProjectFile;
+      const TargetFilename: string): TModalResult;
   public
     function FileSaved(Sender: TObject; aFile: TLazProjectFile;
       SaveStep: TSaveEditorFileStep; TargetFilename: string): TModalResult;
@@ -1414,11 +1422,50 @@ begin
   end;
 end;
 
+function TLWProjectFinalizer.RetargetServiceName(aFile: TLazProjectFile;
+  const TargetFilename: string): TModalResult;
+var
+  P: TLazProject;
+  NewName, OldText, NewText: string;
+begin
+  Result := mrOk;
+  if (aFile = nil) or not aFile.IsPartOfProject then Exit;
+  P := LazarusIDE.ActiveProject;
+  if (P = nil) or P.IsVirtual or (P.ProjectInfoFile = '') then Exit;
+  if not LWIsServiceProject(P) then Exit;
+
+  OldText := aFile.GetSourceText;
+  { 只认向导生成的服务 mapper：文件名固定 uMapper.pas（IDE 保存时写成小写），
+    再加两处源码特征兜底，绝不碰用户自己写的同名文件 }
+  if CompareText(ExtractFileName(TargetFilename),
+    sLWMapperUnitName + '.pas') <> 0 then Exit;
+  if (Pos('TServiceDaemonMapper', OldText) = 0) or
+     (Pos('DaemonDefs', OldText) = 0) then Exit;
+
+  { 最终工程名此刻才定下来（"保存项目"对话框刚选完，.lpi 路径已是新名） }
+  NewName := ExtractFileNameOnly(P.ProjectInfoFile);
+  if (NewName = '') or (NewName = sLWDefaultProjectName) then Exit;
+  if not LWRetargetMapperNames(OldText, NewName, NewText) then Exit;
+
+  { 直接改 CodeBuffer：写盘用的是它，编辑器页也跟着刷新，
+    不依赖保存后的定时器补写（用户要求"落盘之前就正确"） }
+  aFile.SetSourceText(NewText);
+  LwWizardLog(Format('  service: mapper retargeted to %sService (%s)',
+    [NewName, TargetFilename]));
+end;
+
 function TLWProjectFinalizer.FileSaved(Sender: TObject;
   aFile: TLazProjectFile; SaveStep: TSaveEditorFileStep;
   {%H-}TargetFilename: string): TModalResult;
 begin
   Result := mrOk;
+  { 写盘前先把服务名定成最终工程名（见 RetargetServiceName）；
+    这一步只改 CodeBuffer，不弹框、不重载，符合坑 172 的约束 }
+  if SaveStep = sefsBeforeWrite then
+  begin
+    Result := RetargetServiceName(aFile, TargetFilename);
+    Exit;
+  end;
   if SaveStep <> sefsAfterWrite then Exit;
   if (aFile = nil) or not aFile.IsPartOfProject then Exit;
   QueueEnsure;
