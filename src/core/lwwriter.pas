@@ -32,7 +32,8 @@ uses
   Classes, SysUtils, Variants, Graphics, Controls, Forms, StdCtrls, ExtCtrls, ComCtrls,
   Grids, Menus, Buttons, MaskEdit, Spin, CheckLst, ValEdit, TypInfo, LCLProc, fpjson,
   EditBtn, GroupedEdit, DB, DBCtrls, DBGrids, lwbase, lwform, lwfileupload, lwdbnav, lwweb,
-  lwchart, lwdbgrid, lwui, lwrlog, lwsidemenu, lwcaptcha, lwcamera, lwlang
+  lwchart, lwdbgrid, lwui, lwrlog, lwsidemenu, lwcaptcha, lwcamera, lwlang, lwdbtree,
+  lwtreecols
   {$IFDEF LW_VIRTUALTREEVIEW}
   , lwvirtualtree, laz.virtualtrees
   {$ENDIF}
@@ -76,7 +77,8 @@ type
     procedure WriteDBField(C: TControl; O: TJSONObject);
     procedure WriteTree(T: TTreeView; O: TJSONObject);
     procedure WriteListView(L: TListView; O: TJSONObject);
-    function TreeNodeJson(N: TTreeNode): TJSONObject;
+    function TreeNodeJson(T: TTreeView; N: TTreeNode;
+      ADbTree: TLWDBTreeView): TJSONObject;
   public
     constructor Create(AIds: TLWIdFunc);
     destructor Destroy; override;
@@ -1314,14 +1316,36 @@ begin
   Result.Add('panels', arr);
 end;
 
-function TLWWriter.TreeNodeJson(N: TTreeNode): TJSONObject;
+function TLWWriter.TreeNodeJson(T: TTreeView; N: TTreeNode;
+  ADbTree: TLWDBTreeView): TJSONObject;
 var
   o: TJSONObject;
-  arr: TJSONArray;
+  arr, cols: TJSONArray;
   ch: TTreeNode;
+  i, cnt: Integer;
 begin
   o := TJSONObject.Create;
   o.Add('text', N.Text);
+  { 多列 TreeView：各列文本一起下发，前端 multi 布局取 cols[1..] 画后面的列
+    （第 0 列直接用 text）。两种来源：
+      · TLWDBTreeView  —— 控件自己按 TextFields 缓存（数据感知）
+      · 原生 TTreeView —— lwtreecols 的登记表（业务代码手填）
+    单列时完全不输出 cols，保持原有 JSON 体积与行为不变。 }
+  cnt := 0;
+  if (ADbTree <> nil) and (ADbTree.ColumnCount > 1) then
+    cnt := ADbTree.ColumnCount
+  else if (ADbTree = nil) and (LWTreeColumnCount(T) > 1) then
+    cnt := LWTreeColumnCount(T);
+  if cnt > 1 then
+  begin
+    cols := TJSONArray.Create;
+    for i := 0 to cnt - 1 do
+      if ADbTree <> nil then
+        JArrAddStr(cols, ADbTree.CellText(N, i))
+      else
+        JArrAddStr(cols, LWTreeCellText(T, N, i));
+    o.Add('cols', cols);
+  end;
   o.Add('expanded', N.Expanded);
   o.Add('selected', N.Selected);
   o.Add('level', N.Level);
@@ -1329,7 +1353,7 @@ begin
   ch := N.GetFirstChild;
   while ch <> nil do
   begin
-    arr.Add(TreeNodeJson(ch));
+    arr.Add(TreeNodeJson(T, ch, ADbTree));
     ch := ch.GetNextSibling;
   end;
   o.Add('children', arr);
@@ -1338,14 +1362,40 @@ end;
 
 procedure TLWWriter.WriteTree(T: TTreeView; O: TJSONObject);
 var
-  arr: TJSONArray;
+  arr, cols: TJSONArray;
   n: TTreeNode;
+  i, cnt: Integer;
+  dbTree: TLWDBTreeView;
 begin
+  { 多列 TreeView：先下发列标题（vcols），前端据此渲染表头与多列行。
+     原生 TTreeView 没有列属性，列标题由 lwtreecols 的登记表提供；
+     两者都没有时输出保持原样（单列）。 }
+  dbTree := nil;
+  cnt := 0;
+  if T is TLWDBTreeView then
+  begin
+    dbTree := TLWDBTreeView(T);
+    if dbTree.ColumnCount > 1 then
+      cnt := dbTree.ColumnCount;
+  end
+  else
+    cnt := LWTreeColumnCount(T);
+  if cnt > 1 then
+  begin
+    cols := TJSONArray.Create;
+    for i := 0 to cnt - 1 do
+      if dbTree <> nil then
+        JArrAddStr(cols, dbTree.ColumnTitle(i))
+      else
+        JArrAddStr(cols, LWTreeColumnTitle(T, i));
+    O.Add('vcols', cols);
+  end;
+
   arr := TJSONArray.Create;
   n := T.Items.GetFirstNode;
   while n <> nil do
   begin
-    arr.Add(TreeNodeJson(n));
+    arr.Add(TreeNodeJson(T, n, dbTree));
     n := n.GetNextSibling;
   end;
   O.Add('nodes', arr);
