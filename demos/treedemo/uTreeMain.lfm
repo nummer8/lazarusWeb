@@ -1,0 +1,153 @@
+object TreeDemoForm: TTreeDemoForm
+  Left = 200
+  Top = 100
+  Width = 980
+  Height = 640
+  Caption = 'lazarusWeb · TreeView / VirtualTreeView（数据感知）'
+  ClientHeight = 610
+  ClientWidth = 972
+  Color = clBtnFace
+  Font.Charset = GB2312_CHARSET
+  Font.Color = clWindowText
+  Font.Height = -13
+  Font.Name = 'Microsoft YaHei'
+  Font.Style = []
+  OnCreate = FormCreate
+  object pcMain: TPageControl
+    Left = 0
+    Top = 0
+    Width = 980
+    Height = 640
+    ActivePage = tsTree
+    TabIndex = 0
+    TabOrder = 0
+    object tsTree: TTabSheet
+      Caption = 'TreeView（tv_nodes）'
+      ClientHeight = 610
+      ClientWidth = 972
+      object lblTreeTip: TLabel
+        Left = 8
+        Top = 8
+        Width = 700
+        Height = 18
+        Caption = '（数据加载中）'
+      end
+      object btnTreeReload: TButton
+        Left = 660
+        Top = 32
+        Width = 80
+        Height = 28
+        Caption = '重载'
+        OnClick = btnTreeReloadClick
+      end
+      object btnTreeAdd: TButton
+        Left = 750
+        Top = 32
+        Width = 80
+        Height = 28
+        Caption = '新增'
+        OnClick = btnTreeAddClick
+      end
+      object btnTreeDelete: TButton
+        Left = 840
+        Top = 32
+        Width = 100
+        Height = 28
+        Caption = '删除选中'
+        OnClick = btnTreeDeleteClick
+      end
+      object tvDb: TLWDBTreeView
+        Left = 8
+        Top = 70
+        Width = 460
+        Height = 520
+        Indent = 22
+        TabOrder = 0
+        OnClick = tvDbClick
+      end
+      object mmoTv: TLabel
+        Left = 480
+        Top = 70
+        Width = 480
+        Height = 520
+        AutoSize = False
+        Caption = 'tv_nodes：点节点查看记录；新增/删除后树会自动刷新。'
+        WordWrap = True
+      end
+    end
+    object tsVirtual: TTabSheet
+      Caption = 'VirtualTreeView（vst_nodes）'
+      ClientHeight = 610
+      ClientWidth = 972
+      object lblVstTip: TLabel
+        Left = 8
+        Top = 8
+        Width = 700
+        Height = 18
+        Caption = '（数据加载中）'
+      end
+      object btnVstReload: TButton
+        Left = 660
+        Top = 32
+        Width = 80
+        Height = 28
+        Caption = '重载'
+        OnClick = btnVstReloadClick
+      end
+      object btnVstAdd: TButton
+        Left = 750
+        Top = 32
+        Width = 80
+        Height = 28
+        Caption = '新增'
+        OnClick = btnVstAddClick
+      end
+      object btnVstDelete: TButton
+        Left = 840
+        Top = 32
+        Width = 100
+        Height = 28
+        Caption = '删除选中'
+        OnClick = btnVstDeleteClick
+      end
+      object mmoVst: TLabel
+        Left = 480
+        Top = 70
+        Width = 480
+        Height = 520
+        AutoSize = False
+        Caption = 'vst_nodes：点节点查看记录；新增/删除后树会自动刷新。'
+        WordWrap = True
+      end
+    end
+    object tsVstMulti: TTabSheet
+      Caption = 'VirtualTreeView（多列）'
+      ClientHeight = 610
+      ClientWidth = 972
+      object lblVstMultiTip: TLabel
+        Left = 8
+        Top = 8
+        Width = 760
+        Height = 18
+        Caption = 'TLWDBVirtualTreeView ← vst_nodes（名称 / ID / 备注）'
+      end
+      object btnVstMultiReload: TButton
+        Left = 880
+        Top = 32
+        Width = 80
+        Height = 28
+        Caption = '重载'
+        OnClick = btnVstMultiReloadClick
+      end
+      object lblVstMultiDetail: TLabel
+        Left = 8
+        Top = 480
+        Width = 940
+        Height = 110
+        AutoSize = False
+        Caption = '多列视图：名称 / ID / 备注，点节点查看该行完整信息。'
+        WordWrap = True
+      end
+    end
+  end
+end
