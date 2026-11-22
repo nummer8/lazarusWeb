@@ -1,6 +1,6 @@
 ## Comparison and Selection of Three Architectures: lazarusWeb / uniGUI / IntraWeb
 
-Although all three frameworks serve the goal of "rapidly developing web applications with Pascal/Delphi," they differ fundamentally in the nature of the server-side control tree, the rendering and communication mechanism, and the memory model. These differences directly determine the memory pressure issues you were concerned about earlier and the feasibility of front-end/back-end separation.
+Although all three frameworks serve the goal of "rapidly developing web applications with Pascal/Delphi," they differ fundamentally in the nature of the server-side control tree, the rendering and communication mechanism, and the memory model.
 
 ## 🧬 Core Difference: Is the Control Tree "Real" or a "Shadow"?
 
