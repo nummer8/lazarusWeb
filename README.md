@@ -1,4 +1,4 @@
-# 中文README 
+# 1.中文README 
 # lazarusWeb
 
 可快速将Lazarus桌面程序转换为能在浏览器运行的web应用，用**真实的 LCL 控件树**直接序列化成界面；**默认渲染层是 Alpine.js**（内置依赖，零额外部署），Ext JS 是可选渲染层（需自行提供 ext 目录并用 `--client=ext` 显式启用）。业务程序只需要把窗体基类从 `TForm` 改成 `TLWForm`，其余代码（事件、属性、`.lfm`）原样保留，就能以服务程序的形式跑在浏览器里。
@@ -902,7 +902,7 @@ Copyright (c) 2026 szlbz(秋风) QQ:315795176
 - Alpine 渲染层是框架默认渲染层，部署无需任何外部下载。
 
 
-# English README
+# 2.English README
 
 # lazarusWeb
 
